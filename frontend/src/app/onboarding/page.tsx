@@ -194,7 +194,14 @@ export default function OnboardingPage() {
                 <p className="text-muted-foreground max-w-md mx-auto">
                   Connect your Google Ads account to enable campaign management, performance monitoring, and AI-powered optimizations.
                 </p>
-                <Button variant="outline" size="lg" onClick={() => window.open("/api/onboarding/step3/oauth-url", "_blank")}>
+                <Button variant="outline" size="lg" onClick={async () => {
+                  try {
+                    const res = await api.post("/api/onboarding/step3/google-ads-url");
+                    if (res.oauth_url) window.open(res.oauth_url, "_blank");
+                  } catch {
+                    setError("Google Ads connection not configured yet. You can connect later from Settings.");
+                  }
+                }}>
                   Connect Google Ads Account
                 </Button>
                 <p className="text-xs text-muted-foreground">You can also connect later from Settings</p>
