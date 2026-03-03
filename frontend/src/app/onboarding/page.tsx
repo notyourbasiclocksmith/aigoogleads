@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card";
@@ -18,9 +18,21 @@ const steps = [
 
 export default function OnboardingPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [step, setStep] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [googleAdsConnected, setGoogleAdsConnected] = useState(false);
+
+  useEffect(() => {
+    if (searchParams.get("oauth_success") === "true") {
+      setStep(3);
+      setGoogleAdsConnected(true);
+    } else if (searchParams.get("oauth_error")) {
+      setStep(2);
+      setError(`Google Ads connection failed: ${searchParams.get("oauth_error")}`);
+    }
+  }, [searchParams]);
 
   const [tenantName, setTenantName] = useState("");
   const [industry, setIndustry] = useState("");
@@ -194,16 +206,23 @@ export default function OnboardingPage() {
                 <p className="text-muted-foreground max-w-md mx-auto">
                   Connect your Google Ads account to enable campaign management, performance monitoring, and AI-powered optimizations.
                 </p>
-                <Button variant="outline" size="lg" onClick={async () => {
-                  try {
-                    const res = await api.post("/api/onboarding/step3/google-ads-url");
-                    if (res.oauth_url) window.open(res.oauth_url, "_blank");
-                  } catch {
-                    setError("Google Ads connection not configured yet. You can connect later from Settings.");
-                  }
-                }}>
-                  Connect Google Ads Account
-                </Button>
+                {googleAdsConnected ? (
+                  <div className="flex items-center gap-2 text-green-600 font-medium">
+                    <CheckCircle2 className="w-5 h-5" />
+                    Google Ads Connected!
+                  </div>
+                ) : (
+                  <Button variant="outline" size="lg" onClick={async () => {
+                    try {
+                      const res = await api.post("/api/onboarding/step3/google-ads-url");
+                      if (res.oauth_url) window.location.href = res.oauth_url;
+                    } catch {
+                      setError("Google Ads connection not configured yet. You can connect later from Settings.");
+                    }
+                  }}>
+                    Connect Google Ads Account
+                  </Button>
+                )}
                 <p className="text-xs text-muted-foreground">You can also connect later from Settings</p>
               </div>
             )}
