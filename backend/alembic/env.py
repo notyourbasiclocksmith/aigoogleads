@@ -14,6 +14,12 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
+# Override URL from env var, converting async driver to sync for Alembic
+database_url = os.environ.get("DATABASE_URL", "")
+if database_url:
+    database_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
+    config.set_main_option("sqlalchemy.url", database_url)
+
 target_metadata = Base.metadata
 
 
