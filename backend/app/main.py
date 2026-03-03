@@ -78,3 +78,28 @@ app.include_router(evaluation.router, prefix="/api/v2/evaluation", tags=["V2 Eva
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok", "version": "2.0.0"}
+
+
+@app.get("/api/debug/tables")
+async def debug_tables():
+    from app.core.database import get_db
+    from sqlalchemy import text
+    async for db in get_db():
+        result = await db.execute(text("SELECT tablename FROM pg_tables WHERE schemaname='public'"))
+        tables = [row[0] for row in result]
+        return {"tables": tables, "count": len(tables)}
+
+
+@app.post("/api/debug/migrate")
+async def debug_migrate():
+    import subprocess, os
+    result = subprocess.run(
+        ["alembic", "upgrade", "head"],
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        capture_output=True, text=True, timeout=120
+    )
+    return {
+        "returncode": result.returncode,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+    }
