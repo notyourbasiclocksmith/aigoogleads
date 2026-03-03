@@ -92,14 +92,24 @@ async def debug_tables():
 
 @app.post("/api/debug/migrate")
 async def debug_migrate():
+    """Create all tables from SQLAlchemy metadata, then stamp alembic head."""
     import subprocess, os
+    from sqlalchemy import create_engine
+    from app.core.database import Base
+    import app.models  # noqa: ensure all models loaded
+    db_url = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+    engine = create_engine(db_url)
+    Base.metadata.create_all(engine)
+    engine.dispose()
+    # Stamp alembic so future migrations know we're at head
     result = subprocess.run(
-        ["alembic", "upgrade", "head"],
+        ["alembic", "stamp", "head"],
         cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        capture_output=True, text=True, timeout=120
+        capture_output=True, text=True, timeout=60
     )
     return {
-        "returncode": result.returncode,
-        "stdout": result.stdout,
-        "stderr": result.stderr,
+        "tables_created": True,
+        "alembic_stamp_rc": result.returncode,
+        "alembic_stdout": result.stdout,
+        "alembic_stderr": result.stderr,
     }
