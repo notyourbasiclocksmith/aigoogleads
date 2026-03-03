@@ -29,6 +29,7 @@ export default function OnboardingPage() {
   const [description, setDescription] = useState("");
   const [facebookUrl, setFacebookUrl] = useState("");
   const [instagramUrl, setInstagramUrl] = useState("");
+  const [tiktokUrl, setTiktokUrl] = useState("");
   const [gbpLink, setGbpLink] = useState("");
   const [monthlyBudget, setMonthlyBudget] = useState("");
   const [conversionGoal, setConversionGoal] = useState("calls");
@@ -55,6 +56,7 @@ export default function OnboardingPage() {
           social_links: {
             facebook: facebookUrl,
             instagram: instagramUrl,
+            tiktok: tiktokUrl,
           },
           gbp_link: gbpLink,
         });
@@ -171,6 +173,10 @@ export default function OnboardingPage() {
                 <div className="space-y-2">
                   <label className="text-sm font-medium">Instagram URL</label>
                   <Input value={instagramUrl} onChange={(e) => setInstagramUrl(e.target.value)} placeholder="https://instagram.com/yourbiz" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">TikTok URL</label>
+                  <Input value={tiktokUrl} onChange={(e) => setTiktokUrl(e.target.value)} placeholder="https://tiktok.com/@yourbiz" />
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">Google Business Profile Link</label>
