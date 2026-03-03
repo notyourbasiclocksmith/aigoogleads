@@ -90,6 +90,33 @@ async def debug_tables():
         return {"tables": tables, "count": len(tables)}
 
 
+@app.post("/api/debug/register")
+async def debug_register():
+    """Register admin user with full error reporting."""
+    import traceback
+    from app.core.database import async_session_factory
+    from app.core.security import hash_password, create_access_token, create_refresh_token
+    from app.models.user import User
+    from sqlalchemy import select
+    try:
+        async with async_session_factory() as db:
+            existing = await db.execute(select(User).where(User.email == "contact@thekeybot.com"))
+            if existing.scalar_one_or_none():
+                return {"status": "already_exists"}
+            user = User(
+                email="contact@thekeybot.com",
+                password_hash=hash_password("Monte76140@!"),
+                full_name="Admin",
+            )
+            db.add(user)
+            await db.commit()
+            await db.refresh(user)
+            token = create_access_token(user_id=user.id)
+            return {"status": "created", "user_id": user.id, "token": token}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+
+
 @app.post("/api/debug/migrate")
 async def debug_migrate():
     """Create all tables from SQLAlchemy metadata, then stamp alembic head."""
