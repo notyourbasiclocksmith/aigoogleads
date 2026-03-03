@@ -14,11 +14,23 @@ from app.models.integration_google_ads import IntegrationGoogleAds
 router = APIRouter()
 
 
+@router.post("/run")
+async def run_audit(
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    return await _perform_audit(user, db)
+
+
 @router.get("")
 async def get_audit(
     user: CurrentUser = Depends(require_tenant),
     db: AsyncSession = Depends(get_db),
 ):
+    return await _perform_audit(user, db)
+
+
+async def _perform_audit(user: CurrentUser, db: AsyncSession):
     issues = []
 
     # Check account connections

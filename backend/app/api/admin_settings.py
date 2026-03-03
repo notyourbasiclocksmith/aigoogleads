@@ -9,6 +9,8 @@ from app.core.deps import require_tenant, require_owner, CurrentUser
 from app.models.tenant_user import TenantUser
 from app.models.user import User
 from app.models.tenant import Tenant
+from app.models.business_profile import BusinessProfile
+from app.models.integration_google_ads import IntegrationGoogleAds
 
 router = APIRouter()
 
@@ -26,6 +28,138 @@ class UpdateIntegrationRequest(BaseModel):
     integration_type: str
     config: dict = {}
 
+
+# ── Profile ────────────────────────────────────────────────────
+
+@router.get("/profile")
+async def get_profile(
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Tenant).where(Tenant.id == user.tenant_id))
+    tenant = result.scalar_one_or_none()
+    result2 = await db.execute(select(BusinessProfile).where(BusinessProfile.tenant_id == user.tenant_id))
+    profile = result2.scalar_one_or_none()
+    # Check for connected Google Ads account
+    acct_result = await db.execute(
+        select(IntegrationGoogleAds).where(
+            IntegrationGoogleAds.tenant_id == user.tenant_id,
+            IntegrationGoogleAds.is_active == True,
+        ).limit(1)
+    )
+    acct = acct_result.scalar_one_or_none()
+    return {
+        "business_name": tenant.name if tenant else "",
+        "industry": tenant.industry if tenant else "",
+        "phone": profile.phone if profile else "",
+        "website_url": profile.website_url if profile else "",
+        "description": profile.description if profile else "",
+        "google_ads_customer_id": acct.customer_id if acct else None,
+    }
+
+
+class UpdateProfileRequest(BaseModel):
+    business_name: Optional[str] = None
+    industry: Optional[str] = None
+    phone: Optional[str] = None
+    website_url: Optional[str] = None
+    description: Optional[str] = None
+
+
+@router.put("/profile")
+async def update_profile(
+    req: UpdateProfileRequest,
+    user: CurrentUser = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Tenant).where(Tenant.id == user.tenant_id))
+    tenant = result.scalar_one_or_none()
+    if tenant:
+        if req.business_name is not None:
+            tenant.name = req.business_name
+        if req.industry is not None:
+            tenant.industry = req.industry
+
+    result2 = await db.execute(select(BusinessProfile).where(BusinessProfile.tenant_id == user.tenant_id))
+    profile = result2.scalar_one_or_none()
+    if profile:
+        if req.phone is not None:
+            profile.phone = req.phone
+        if req.website_url is not None:
+            profile.website_url = req.website_url
+        if req.description is not None:
+            profile.description = req.description
+
+    await db.flush()
+    return {"status": "ok"}
+
+
+# ── Guardrails ─────────────────────────────────────────────────
+
+@router.get("/guardrails")
+async def get_guardrails(
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Tenant).where(Tenant.id == user.tenant_id))
+    tenant = result.scalar_one_or_none()
+    if not tenant:
+        return {}
+    result2 = await db.execute(select(BusinessProfile).where(BusinessProfile.tenant_id == user.tenant_id))
+    profile = result2.scalar_one_or_none()
+    constraints = (profile.constraints_json or {}) if profile else {}
+    return {
+        "autonomy_mode": tenant.autonomy_mode,
+        "risk_tolerance": tenant.risk_tolerance,
+        "max_daily_budget": round(tenant.daily_budget_cap_micros / 1_000_000, 2) if tenant.daily_budget_cap_micros else None,
+        "max_cpc": constraints.get("max_cpc"),
+        "max_budget_increase_pct": tenant.weekly_change_cap_pct,
+        "min_roas": constraints.get("min_roas"),
+    }
+
+
+class UpdateGuardrailsRequest(BaseModel):
+    autonomy_mode: Optional[str] = None
+    risk_tolerance: Optional[str] = None
+    max_daily_budget: Optional[float] = None
+    max_cpc: Optional[float] = None
+    max_budget_increase_pct: Optional[int] = None
+    min_roas: Optional[float] = None
+
+
+@router.put("/guardrails")
+async def update_guardrails(
+    req: UpdateGuardrailsRequest,
+    user: CurrentUser = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Tenant).where(Tenant.id == user.tenant_id))
+    tenant = result.scalar_one_or_none()
+    if tenant:
+        if req.autonomy_mode is not None:
+            tenant.autonomy_mode = req.autonomy_mode
+        if req.risk_tolerance is not None:
+            tenant.risk_tolerance = req.risk_tolerance
+        if req.max_daily_budget is not None:
+            tenant.daily_budget_cap_micros = int(req.max_daily_budget * 1_000_000)
+        if req.max_budget_increase_pct is not None:
+            tenant.weekly_change_cap_pct = req.max_budget_increase_pct
+
+    result2 = await db.execute(select(BusinessProfile).where(BusinessProfile.tenant_id == user.tenant_id))
+    profile = result2.scalar_one_or_none()
+    if profile:
+        constraints = profile.constraints_json or {}
+        if req.max_cpc is not None:
+            constraints["max_cpc"] = req.max_cpc
+        if req.min_roas is not None:
+            constraints["min_roas"] = req.min_roas
+        profile.constraints_json = constraints
+
+    await db.flush()
+    return {"status": "ok"}
+
+
+# ── Team ───────────────────────────────────────────────────────
 
 @router.get("/team")
 async def list_team_members(

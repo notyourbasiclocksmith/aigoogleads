@@ -40,7 +40,7 @@ export default function OptimizationsPage() {
 
   async function handleRollback(changeId: string) {
     try {
-      await api.post(`/api/optimizations/change-log/${changeId}/rollback`);
+      await api.post(`/api/optimizations/rollback/${changeId}`);
       alert("Rollback initiated");
     } catch (e) { console.error(e); }
   }

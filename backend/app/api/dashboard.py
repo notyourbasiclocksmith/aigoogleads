@@ -138,3 +138,51 @@ async def get_campaign_summary(
     )
     rows = result.all()
     return {r.status: r.count for r in rows}
+
+
+@router.get("/campaigns")
+async def get_dashboard_campaigns(
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    start_date = date.today() - timedelta(days=30)
+    result = await db.execute(
+        select(Campaign).where(Campaign.tenant_id == user.tenant_id).limit(20)
+    )
+    campaigns = result.scalars().all()
+
+    campaign_data = []
+    for c in campaigns:
+        perf = await db.execute(
+            select(
+                func.sum(PerformanceDaily.impressions).label("impressions"),
+                func.sum(PerformanceDaily.clicks).label("clicks"),
+                func.sum(PerformanceDaily.cost_micros).label("cost_micros"),
+                func.sum(PerformanceDaily.conversions).label("conversions"),
+            ).where(
+                and_(
+                    PerformanceDaily.tenant_id == user.tenant_id,
+                    PerformanceDaily.entity_type == "campaign",
+                    PerformanceDaily.entity_id == c.id,
+                    PerformanceDaily.date >= start_date,
+                )
+            )
+        )
+        row = perf.one_or_none()
+        impressions = (row.impressions or 0) if row else 0
+        clicks = (row.clicks or 0) if row else 0
+        cost_micros = (row.cost_micros or 0) if row else 0
+        conversions = (row.conversions or 0) if row else 0
+
+        campaign_data.append({
+            "campaign_id": c.id,
+            "name": c.name,
+            "status": c.status,
+            "type": c.type,
+            "impressions": impressions,
+            "clicks": clicks,
+            "cost": round(cost_micros / 1_000_000, 2),
+            "conversions": round(conversions, 1),
+            "cpa": round((cost_micros / conversions / 1_000_000), 2) if conversions > 0 else 0,
+        })
+    return campaign_data

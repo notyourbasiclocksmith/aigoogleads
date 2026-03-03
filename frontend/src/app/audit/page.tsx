@@ -16,22 +16,39 @@ interface AuditItem {
   recommendation?: string;
 }
 
+function parseAuditResponse(data: any): AuditItem[] {
+  if (Array.isArray(data)) return data;
+  if (data && data.issues) {
+    const severityToStatus: Record<string, "pass" | "warn" | "fail"> = {
+      critical: "fail", high: "fail", medium: "warn", low: "pass",
+    };
+    return data.issues.map((i: any) => ({
+      category: i.category || "general",
+      check: i.title || i.check || "Check",
+      status: severityToStatus[i.severity] || "warn",
+      message: i.description || i.message || "",
+      recommendation: i.fix || i.recommendation,
+    }));
+  }
+  return [];
+}
+
 export default function AuditPage() {
   const [auditResults, setAuditResults] = useState<AuditItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
 
   useEffect(() => {
-    api.get("/api/diagnostics/audit").then((data) => {
-      setAuditResults(Array.isArray(data) ? data : []);
+    api.get("/api/ads/audit").then((data) => {
+      setAuditResults(parseAuditResponse(data));
     }).catch(() => setAuditResults([])).finally(() => setLoading(false));
   }, []);
 
   async function runAudit() {
     setRunning(true);
     try {
-      const data = await api.post("/api/diagnostics/audit/run");
-      setAuditResults(Array.isArray(data) ? data : []);
+      const data = await api.post("/api/ads/audit/run");
+      setAuditResults(parseAuditResponse(data));
     } catch (e) { console.error(e); }
     finally { setRunning(false); }
   }

@@ -12,8 +12,8 @@ import {
 
 const navItems = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
-  { label: "Accounts", href: "/ads/accounts", icon: Target },
-  { label: "Audit", href: "/ads/audit", icon: Shield },
+  { label: "Accounts", href: "/settings", icon: Target },
+  { label: "Audit", href: "/audit", icon: Shield },
   { label: "Command Console", href: "/ads/prompt", icon: Wand2 },
   { label: "Campaigns", href: "/ads/campaigns", icon: Megaphone },
   { label: "Creative Studio", href: "/creative", icon: Palette },

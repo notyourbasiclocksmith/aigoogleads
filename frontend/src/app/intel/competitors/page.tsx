@@ -15,8 +15,8 @@ export default function CompetitorsPage() {
 
   useEffect(() => {
     Promise.all([
-      api.get("/api/competitors/profiles").catch(() => []),
-      api.get("/api/competitors/auction-insights").catch(() => []),
+      api.get("/api/intel/competitors/profiles").catch(() => []),
+      api.get("/api/intel/competitors/auction-insights").catch(() => []),
     ]).then(([c, a]) => {
       setCompetitors(Array.isArray(c) ? c : []);
       setAuctionInsights(Array.isArray(a) ? a : []);
@@ -25,7 +25,7 @@ export default function CompetitorsPage() {
 
   async function triggerScan() {
     try {
-      await api.post("/api/competitors/serp-scan", { keywords: ["locksmith near me", "emergency locksmith"] });
+      await api.post("/api/intel/competitors/serp-scan", { keywords: ["locksmith near me", "emergency locksmith"] });
       alert("SERP scan triggered. Results will appear shortly.");
     } catch (e) { console.error(e); }
   }

@@ -22,7 +22,7 @@ export default function CreativePage() {
   async function handleGenerateCopy() {
     setLoading(true);
     try {
-      const data = await api.post("/api/creative/generate-copy", { service, location, offer, tone });
+      const data = await api.post("/api/creative/copy/generate", { service, location, offer, tone });
       setGeneratedCopy(data);
     } catch (e: any) {
       console.error(e);
@@ -33,7 +33,7 @@ export default function CreativePage() {
 
   async function handleGenerateImage() {
     try {
-      const data = await api.post("/api/creative/generate-image", {
+      const data = await api.post("/api/creative/image/generate", {
         template: "service_ad_banner",
         service,
         text_overlay: offer || service,
