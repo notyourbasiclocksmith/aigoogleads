@@ -105,6 +105,26 @@ function OnboardingContent() {
     }
   }, [searchParams]);
 
+  // Pre-populate fields from saved data
+  useEffect(() => {
+    api.get("/api/onboarding/data").then((data: any) => {
+      if (!data) return;
+      if (data.business_name) setTenantName(data.business_name);
+      if (data.industry) setIndustry(data.industry);
+      if (data.phone) setPhone(data.phone);
+      if (data.website_url) setWebsiteUrl(data.website_url);
+      if (data.description) setDescription(data.description);
+      if (data.facebook_url) setFacebookUrl(data.facebook_url);
+      if (data.instagram_url) setInstagramUrl(data.instagram_url);
+      if (data.tiktok_url) setTiktokUrl(data.tiktok_url);
+      if (data.gbp_link) setGbpLink(data.gbp_link);
+      if (data.monthly_budget) setMonthlyBudget(String(data.monthly_budget));
+      if (data.conversion_goal) setConversionGoal(data.conversion_goal);
+      if (data.autonomy_mode) setAutonomyMode(data.autonomy_mode);
+      if (data.google_ads_connected) setGoogleAdsConnected(true);
+    }).catch(() => {});
+  }, []);
+
   async function handleNext() {
     setError("");
     setLoading(true);

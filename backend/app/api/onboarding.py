@@ -200,6 +200,51 @@ async def onboarding_step5(
     return {"status": "ok", "step": 5, "onboarding_complete": True}
 
 
+@router.get("/data")
+async def onboarding_data(
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Tenant).where(Tenant.id == user.tenant_id))
+    tenant = result.scalar_one_or_none()
+    result2 = await db.execute(select(BusinessProfile).where(BusinessProfile.tenant_id == user.tenant_id))
+    profile = result2.scalar_one_or_none()
+
+    from app.models.integration_google_ads import IntegrationGoogleAds
+    acct_result = await db.execute(
+        select(IntegrationGoogleAds).where(
+            IntegrationGoogleAds.tenant_id == user.tenant_id,
+            IntegrationGoogleAds.is_active == True,
+        ).limit(1)
+    )
+    acct = acct_result.scalar_one_or_none()
+
+    from app.models.social_profile import SocialProfile
+    social_result = await db.execute(
+        select(SocialProfile).where(SocialProfile.tenant_id == user.tenant_id)
+    )
+    socials = social_result.scalars().all()
+    social_map = {s.platform: s.url for s in socials}
+
+    constraints = (profile.constraints_json or {}) if profile else {}
+
+    return {
+        "business_name": tenant.name if tenant else "",
+        "industry": tenant.industry if tenant else "",
+        "phone": profile.phone if profile else "",
+        "website_url": profile.website_url if profile else "",
+        "description": profile.description if profile else "",
+        "gbp_link": profile.gbp_link if profile else "",
+        "facebook_url": social_map.get("facebook", ""),
+        "instagram_url": social_map.get("instagram", ""),
+        "tiktok_url": social_map.get("tiktok", ""),
+        "google_ads_connected": acct is not None,
+        "monthly_budget": constraints.get("monthly_budget", 1000),
+        "conversion_goal": profile.primary_conversion_goal if profile else "calls",
+        "autonomy_mode": tenant.autonomy_mode if tenant else "semi_auto",
+    }
+
+
 @router.get("/status")
 async def onboarding_status(
     user: CurrentUser = Depends(require_tenant),
