@@ -14,6 +14,20 @@ logger = structlog.get_logger()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting Ignite Ads AI backend", env=settings.APP_ENV)
+    # Run Alembic migrations on startup
+    import subprocess, os
+    try:
+        result = subprocess.run(
+            ["alembic", "upgrade", "head"],
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            capture_output=True, text=True, timeout=60
+        )
+        if result.returncode == 0:
+            logger.info("Alembic migrations completed", stdout=result.stdout.strip())
+        else:
+            logger.error("Alembic migration failed", stderr=result.stderr.strip())
+    except Exception as e:
+        logger.error("Alembic migration error", error=str(e))
     yield
     logger.info("Shutting down Ignite Ads AI backend")
 
