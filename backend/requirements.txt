@@ -23,7 +23,7 @@ celery[redis]==5.3.6
 # HTTP + Scraping
 httpx==0.27.0
 beautifulsoup4==4.12.3
-lxml==5.1.0
+lxml>=5.1.0
 
 # Google Ads
 google-ads==25.2.0
@@ -32,7 +32,7 @@ google-auth-oauthlib>=1.2.0
 
 # PDF Reports
 reportlab==4.1.0
-weasyprint==61.2
+xhtml2pdf==0.2.13
 
 # Utilities
 python-dotenv==1.0.1
