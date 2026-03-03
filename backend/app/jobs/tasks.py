@@ -81,6 +81,97 @@ async def _scan_business_async(tenant_id: str):
             await scanner.close()
 
 
+@celery_app.task(name="app.jobs.tasks.analyze_business_task")
+def analyze_business_task(tenant_id: str):
+    import asyncio
+    asyncio.run(_analyze_business_async(tenant_id))
+
+
+async def _analyze_business_async(tenant_id: str):
+    from app.core.database import async_session_factory
+    from app.models.business_profile import BusinessProfile
+    from app.models.social_profile import SocialProfile
+    from app.models.tenant import Tenant
+    from app.services.social_analyzer import SocialAnalyzer
+    from datetime import datetime, timezone
+
+    async with async_session_factory() as db:
+        # Load tenant + profile + social links
+        result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+        tenant = result.scalar_one_or_none()
+        if not tenant:
+            logger.error("Tenant not found for analysis", tenant_id=tenant_id)
+            return
+
+        result2 = await db.execute(select(BusinessProfile).where(BusinessProfile.tenant_id == tenant_id))
+        profile = result2.scalar_one_or_none()
+
+        result3 = await db.execute(select(SocialProfile).where(SocialProfile.tenant_id == tenant_id))
+        socials = result3.scalars().all()
+
+        analyzer = SocialAnalyzer()
+        try:
+            analysis = await analyzer.analyze(
+                business_name=tenant.name or "Unknown Business",
+                industry=tenant.industry or profile.industry_classification if profile else "",
+                phone=profile.phone if profile else "",
+                website_url=profile.website_url if profile else None,
+                social_profiles=[{"platform": s.platform, "url": s.url} for s in socials],
+            )
+
+            # Enrich BusinessProfile with AI insights
+            if profile:
+                if analysis.get("business_summary"):
+                    profile.description = analysis["business_summary"]
+                if analysis.get("services"):
+                    profile.services_json = {"list": analysis["services"]}
+                if analysis.get("service_areas"):
+                    profile.locations_json = {"cities": analysis["service_areas"]}
+                if analysis.get("unique_selling_points"):
+                    profile.usp_json = {"list": analysis["unique_selling_points"]}
+                if analysis.get("brand_voice"):
+                    profile.brand_voice_json = analysis["brand_voice"]
+                if analysis.get("trust_signals"):
+                    profile.trust_signals_json = {"list": analysis["trust_signals"]}
+                if analysis.get("offers_and_promotions"):
+                    profile.offers_json = {"list": analysis["offers_and_promotions"]}
+                if analysis.get("competitor_keywords"):
+                    profile.competitor_targets_json = {"keywords": analysis["competitor_keywords"]}
+                if analysis.get("google_ads_recommendations"):
+                    profile.snippets_json = {
+                        "ai_recommendations": analysis["google_ads_recommendations"],
+                        "target_audience": analysis.get("target_audience", {}),
+                    }
+                # Store full analysis in constraints_json for reference
+                profile.constraints_json = {
+                    **(profile.constraints_json or {}),
+                    "ai_analysis": {
+                        "status": analysis.get("_ai_status", "unknown"),
+                        "social_assessment": analysis.get("social_media_assessment", {}),
+                        "website_assessment": analysis.get("website_assessment", {}),
+                        "completed_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                }
+                profile.updated_at = datetime.now(timezone.utc)
+
+            # Update social profiles with extracted data
+            crawled = analysis.get("_crawled", {})
+            social_crawled = crawled.get("social_data", [])
+            for crawled_social in social_crawled:
+                for sp in socials:
+                    if sp.url == crawled_social.get("url"):
+                        sp.extracted_bio = crawled_social.get("meta_description") or crawled_social.get("content", "")[:500]
+                        sp.updated_at = datetime.now(timezone.utc)
+
+            await db.commit()
+            logger.info("Business analysis saved", tenant_id=tenant_id, ai_status=analysis.get("_ai_status"))
+        except Exception as e:
+            await db.rollback()
+            logger.error("Business analysis failed", tenant_id=tenant_id, error=str(e))
+        finally:
+            await analyzer.close()
+
+
 @celery_app.task(name="app.jobs.tasks.sync_ads_account_task")
 def sync_ads_account_task(tenant_id: str, integration_id: str):
     import asyncio

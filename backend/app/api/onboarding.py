@@ -26,11 +26,6 @@ class Step1Request(BaseModel):
     primary_conversion_goal: str = "calls"
 
 
-class Step2Request(BaseModel):
-    social_links: List[Dict[str, str]] = []
-    gbp_link: Optional[str] = None
-
-
 class Step4Request(BaseModel):
     call_tracking_provider: Optional[str] = None
     call_tracking_id: Optional[str] = None
@@ -103,6 +98,13 @@ async def onboarding_step1(
     }
 
 
+class Step2Request(BaseModel):
+    website_url: Optional[str] = None
+    description: Optional[str] = None
+    social_links: Any = []
+    gbp_link: Optional[str] = None
+
+
 @router.post("/step2")
 async def onboarding_step2(
     req: Step2Request,
@@ -114,9 +116,17 @@ async def onboarding_step2(
     if not profile:
         raise HTTPException(status_code=400, detail="Complete step 1 first")
 
+    if req.website_url:
+        profile.website_url = req.website_url
+    if req.description:
+        profile.description = req.description
     profile.gbp_link = req.gbp_link
 
-    for link in req.social_links:
+    # Handle social_links as dict {platform: url} or list [{platform, url}]
+    links = req.social_links
+    if isinstance(links, dict):
+        links = [{"platform": k, "url": v} for k, v in links.items() if v]
+    for link in links:
         platform = link.get("platform", "other")
         url = link.get("url", "")
         if url:
@@ -124,7 +134,12 @@ async def onboarding_step2(
             db.add(sp)
 
     await db.flush()
-    return {"status": "ok", "step": 2}
+
+    # Trigger async business analysis (website + social crawl + AI)
+    from app.jobs.tasks import analyze_business_task
+    analyze_business_task.delay(user.tenant_id)
+
+    return {"status": "ok", "step": 2, "analysis_started": True}
 
 
 @router.post("/step3/google-ads-url")
@@ -203,3 +218,30 @@ async def onboarding_status(
     steps["step3"] = (count_result.scalar() or 0) > 0
 
     return {"steps": steps, "complete": all(steps.values())}
+
+
+@router.get("/analysis-status")
+async def analysis_status(
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(BusinessProfile).where(BusinessProfile.tenant_id == user.tenant_id))
+    profile = result.scalar_one_or_none()
+    if not profile:
+        return {"status": "not_started"}
+
+    ai_analysis = (profile.constraints_json or {}).get("ai_analysis", {})
+    ai_status = ai_analysis.get("status", "pending")
+
+    return {
+        "status": ai_status,
+        "completed_at": ai_analysis.get("completed_at"),
+        "social_assessment": ai_analysis.get("social_assessment", {}),
+        "website_assessment": ai_analysis.get("website_assessment", {}),
+        "services": (profile.services_json or {}).get("list", []),
+        "brand_voice": profile.brand_voice_json or {},
+        "usp": (profile.usp_json or {}).get("list", []),
+        "trust_signals": (profile.trust_signals_json or {}).get("list", []),
+        "ads_recommendations": (profile.snippets_json or {}).get("ai_recommendations", {}),
+        "target_audience": (profile.snippets_json or {}).get("target_audience", {}),
+    }
