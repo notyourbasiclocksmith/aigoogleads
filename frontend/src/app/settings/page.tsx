@@ -7,23 +7,38 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
-import { Save, Shield, Bell, Users, Link2 } from "lucide-react";
+import { Save, Shield, Bell, Users, Link2, RefreshCw } from "lucide-react";
 
 export default function SettingsPage() {
   const [profile, setProfile] = useState<any>({});
   const [guardrails, setGuardrails] = useState<any>({});
+  const [accounts, setAccounts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
 
   useEffect(() => {
     Promise.all([
       api.get("/api/settings/profile").catch(() => ({})),
       api.get("/api/settings/guardrails").catch(() => ({})),
-    ]).then(([p, g]) => {
+      api.get("/api/ads/accounts").catch(() => []),
+    ]).then(([p, g, a]) => {
       setProfile(p || {});
       setGuardrails(g || {});
+      setAccounts(Array.isArray(a) ? a : []);
     }).finally(() => setLoading(false));
   }, []);
+
+  async function triggerSync() {
+    const active = accounts.find((a: any) => a.is_active);
+    if (!active) return;
+    setSyncing(true);
+    try {
+      await api.post(`/api/ads/accounts/${active.id}/sync`);
+      alert("Sync triggered! Campaigns, conversions, and performance data will be pulled from Google Ads. This may take a minute.");
+    } catch (e) { console.error(e); }
+    finally { setSyncing(false); }
+  }
 
   async function saveProfile() {
     setSaving(true);
@@ -130,7 +145,19 @@ export default function SettingsPage() {
                 {profile.google_ads_customer_id ? "Connected" : "Disconnected"}
               </Badge>
             </div>
-            {!profile.google_ads_customer_id && (
+            {profile.google_ads_customer_id ? (
+              <div className="mt-3 flex items-center gap-3">
+                <Button variant="outline" onClick={triggerSync} disabled={syncing}>
+                  <RefreshCw className={`w-4 h-4 mr-2 ${syncing ? "animate-spin" : ""}`} />
+                  {syncing ? "Syncing..." : "Sync Now"}
+                </Button>
+                {accounts[0]?.last_sync_at && (
+                  <span className="text-xs text-muted-foreground">
+                    Last synced: {new Date(accounts[0].last_sync_at).toLocaleString()}
+                  </span>
+                )}
+              </div>
+            ) : (
               <Button variant="outline" className="mt-3" onClick={() => window.open("/api/onboarding/step3/oauth-url", "_blank")}>
                 Connect Google Ads
               </Button>
