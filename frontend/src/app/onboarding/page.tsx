@@ -39,11 +39,15 @@ export default function OnboardingPage() {
     setLoading(true);
     try {
       if (step === 0) {
-        await api.post("/api/onboarding/step1", {
+        const res = await api.post("/api/onboarding/step1", {
           tenant_name: tenantName,
           industry,
           phone,
         });
+        // Save tenant-scoped token for subsequent steps
+        if (res.access_token) {
+          api.setToken(res.access_token);
+        }
       } else if (step === 1) {
         await api.post("/api/onboarding/step2", {
           website_url: websiteUrl,

@@ -5,18 +5,22 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
 from app.core.database import get_db
-from app.core.deps import require_tenant, CurrentUser
+from app.core.deps import require_tenant, get_current_user, CurrentUser
+from app.core.security import create_access_token
 from app.models.business_profile import BusinessProfile
 from app.models.social_profile import SocialProfile
 from app.models.tenant import Tenant
+from app.models.tenant_user import TenantUser
+import uuid
 
 router = APIRouter()
 
 
 class Step1Request(BaseModel):
-    business_name: str
+    business_name: Optional[str] = None
+    tenant_name: Optional[str] = None
     website_url: Optional[str] = None
-    industry: str
+    industry: str = ""
     service_area: Optional[Dict[str, Any]] = None
     phone: Optional[str] = None
     primary_conversion_goal: str = "calls"
@@ -41,19 +45,42 @@ class Step5Request(BaseModel):
 @router.post("/step1")
 async def onboarding_step1(
     req: Step1Request,
-    user: CurrentUser = Depends(require_tenant),
+    user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Tenant).where(Tenant.id == user.tenant_id))
+    biz_name = req.business_name or req.tenant_name or "My Business"
+
+    # If user has no tenant yet, create one
+    tenant_id = user.tenant_id
+    if not tenant_id:
+        # Check if user already owns a tenant (registered but no tenant in JWT)
+        existing = await db.execute(
+            select(TenantUser).where(TenantUser.user_id == user.user_id)
+        )
+        tu = existing.scalars().first()
+        if tu:
+            tenant_id = tu.tenant_id
+        else:
+            # Create new tenant + membership
+            tenant_id = str(uuid.uuid4())
+            tenant = Tenant(id=tenant_id, name=biz_name, industry=req.industry)
+            db.add(tenant)
+            tu = TenantUser(tenant_id=tenant_id, user_id=user.user_id, role="owner")
+            db.add(tu)
+            await db.flush()
+
+    # Update tenant info
+    result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
     tenant = result.scalar_one_or_none()
     if tenant:
-        tenant.name = req.business_name
+        tenant.name = biz_name
         tenant.industry = req.industry
 
-    result2 = await db.execute(select(BusinessProfile).where(BusinessProfile.tenant_id == user.tenant_id))
+    # Upsert business profile
+    result2 = await db.execute(select(BusinessProfile).where(BusinessProfile.tenant_id == tenant_id))
     profile = result2.scalar_one_or_none()
     if not profile:
-        profile = BusinessProfile(tenant_id=user.tenant_id)
+        profile = BusinessProfile(tenant_id=tenant_id)
         db.add(profile)
 
     profile.website_url = req.website_url
@@ -63,7 +90,17 @@ async def onboarding_step1(
     profile.locations_json = req.service_area or {}
 
     await db.flush()
-    return {"status": "ok", "step": 1, "profile_id": profile.id}
+
+    # Issue a tenant-scoped token so subsequent steps work
+    access_token = create_access_token(user_id=user.user_id, tenant_id=tenant_id, role="owner")
+
+    return {
+        "status": "ok",
+        "step": 1,
+        "profile_id": profile.id,
+        "tenant_id": tenant_id,
+        "access_token": access_token,
+    }
 
 
 @router.post("/step2")
