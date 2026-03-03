@@ -50,8 +50,8 @@ const autonomyModes = [
     desc: "AI analyzes and recommends changes. You review and approve every optimization before it goes live.",
     features: ["Full visibility into every change", "One-click approval workflow", "Learn as AI explains its reasoning"],
     gradient: "from-blue-500/10 to-indigo-500/10",
-    border: "border-blue-200 hover:border-blue-400",
-    activeBorder: "border-blue-500 bg-gradient-to-br from-blue-50 to-indigo-50",
+    border: "border-slate-700 hover:border-blue-500/50",
+    activeBorder: "border-blue-500 bg-gradient-to-br from-blue-500/10 to-indigo-500/10",
     badge: "Conservative",
   },
   {
@@ -59,8 +59,8 @@ const autonomyModes = [
     desc: "AI handles routine optimizations automatically. You approve strategic and high-impact changes.",
     features: ["Auto-applies bid adjustments & negatives", "Alerts for budget & strategy changes", "Perfect balance of speed & control"],
     gradient: "from-purple-500/10 to-violet-500/10",
-    border: "border-purple-200 hover:border-purple-400",
-    activeBorder: "border-purple-500 bg-gradient-to-br from-purple-50 to-violet-50",
+    border: "border-slate-700 hover:border-purple-500/50",
+    activeBorder: "border-purple-500 bg-gradient-to-br from-purple-500/10 to-violet-500/10",
     badge: "Recommended",
   },
   {
@@ -68,8 +68,8 @@ const autonomyModes = [
     desc: "AI manages your campaigns end-to-end. Maximum performance with minimal oversight required.",
     features: ["Fully autonomous campaign management", "Real-time optimization 24/7", "Weekly performance summaries"],
     gradient: "from-rose-500/10 to-pink-500/10",
-    border: "border-rose-200 hover:border-rose-400",
-    activeBorder: "border-rose-500 bg-gradient-to-br from-rose-50 to-pink-50",
+    border: "border-slate-700 hover:border-rose-500/50",
+    activeBorder: "border-rose-500 bg-gradient-to-br from-rose-500/10 to-pink-500/10",
     badge: "Aggressive",
   },
 ];
@@ -548,7 +548,11 @@ function OnboardingContent() {
                             </div>
                             {/* Radio indicator */}
                             <div className={`w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center transition-colors ${
-                              isSelected ? "border-blue-500 bg-blue-500" : "border-slate-600"
+                              isSelected
+                                ? opt.mode === "suggest" ? "border-blue-500 bg-blue-500"
+                                : opt.mode === "semi_auto" ? "border-purple-500 bg-purple-500"
+                                : "border-rose-500 bg-rose-500"
+                              : "border-slate-600"
                             }`}>
                               {isSelected && <div className="w-2 h-2 rounded-full bg-white" />}
                             </div>
