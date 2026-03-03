@@ -27,12 +27,13 @@ class Step1Request(BaseModel):
 
 
 class Step4Request(BaseModel):
+    monthly_budget: int = 1000
+    conversion_goal: str = "calls"
     call_tracking_provider: Optional[str] = None
     call_tracking_id: Optional[str] = None
 
 
 class Step5Request(BaseModel):
-    daily_budget_cap_micros: int = 50_000_000
     autonomy_mode: str = "suggest"
     risk_tolerance: str = "low"
 
@@ -157,11 +158,20 @@ async def onboarding_step4(
     user: CurrentUser = Depends(require_tenant),
     db: AsyncSession = Depends(get_db),
 ):
+    # Save budget to tenant
+    result_t = await db.execute(select(Tenant).where(Tenant.id == user.tenant_id))
+    tenant = result_t.scalar_one_or_none()
+    if tenant:
+        tenant.daily_budget_cap_micros = int(req.monthly_budget / 30 * 1_000_000)
+
+    # Save conversion goal + tracking to business profile
     result = await db.execute(select(BusinessProfile).where(BusinessProfile.tenant_id == user.tenant_id))
     profile = result.scalar_one_or_none()
     if profile:
+        profile.primary_conversion_goal = req.conversion_goal
         profile.constraints_json = {
             **(profile.constraints_json or {}),
+            "monthly_budget": req.monthly_budget,
             "call_tracking_provider": req.call_tracking_provider,
             "call_tracking_id": req.call_tracking_id,
         }
@@ -178,7 +188,6 @@ async def onboarding_step5(
     result = await db.execute(select(Tenant).where(Tenant.id == user.tenant_id))
     tenant = result.scalar_one_or_none()
     if tenant:
-        tenant.daily_budget_cap_micros = req.daily_budget_cap_micros
         tenant.autonomy_mode = req.autonomy_mode
         tenant.risk_tolerance = req.risk_tolerance
 
