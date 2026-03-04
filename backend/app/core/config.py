@@ -62,7 +62,7 @@ class Settings(BaseSettings):
 
     # V2 — Email (SendGrid / Mailgun)
     EMAIL_PROVIDER_KEY: str = ""
-    EMAIL_FROM: str = "noreply@igniteadsai.com"
+    EMAIL_FROM: str = "contact@thekeybot.com"
 
     # V2 — Slack
     SLACK_DEFAULT_WEBHOOK: str = ""
