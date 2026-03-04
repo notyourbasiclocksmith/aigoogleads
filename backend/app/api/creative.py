@@ -21,11 +21,12 @@ class GenerateCopyRequest(BaseModel):
 
 
 class GenerateImageRequest(BaseModel):
-    template: str
-    business_name: Optional[str] = None
+    prompt: Optional[str] = None
     service: Optional[str] = None
-    colors: Optional[Dict[str, str]] = None
-    text_overlay: Optional[str] = None
+    engine: str = "dalle"
+    style: str = "photorealistic"
+    size: str = "1024x1024"
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class SaveAssetRequest(BaseModel):
@@ -64,27 +65,84 @@ async def generate_image(
     user: CurrentUser = Depends(require_analyst),
     db: AsyncSession = Depends(get_db),
 ):
-    from app.integrations.seopix.client import SeopixClient
-    client = SeopixClient()
-    job = await client.submit_image_job(
-        template=req.template,
-        business_name=req.business_name,
-        service=req.service,
-        colors=req.colors,
-        text_overlay=req.text_overlay,
+    from app.integrations.image_generator.client import ImageGeneratorClient
+
+    # Load business profile for auto-metadata
+    bp_result = await db.execute(
+        select(BusinessProfile).where(BusinessProfile.tenant_id == user.tenant_id)
+    )
+    profile = bp_result.scalar_one_or_none()
+
+    client = ImageGeneratorClient()
+    if not client.is_configured:
+        raise HTTPException(status_code=503, detail="Image generator not configured. Set IMAGE_GENERATOR_API_URL.")
+
+    # If no prompt provided, auto-generate one from service + profile
+    if req.prompt:
+        prompt = req.prompt
+        metadata = req.metadata or {}
+    else:
+        service = req.service or "service"
+        biz_name = profile.business_name if profile else "Our Business"
+        biz_type = profile.industry_classification if profile else "service"
+        city = ""
+        state = ""
+        if profile and profile.locations_json:
+            locs = profile.locations_json if isinstance(profile.locations_json, list) else profile.locations_json.get("cities", [])
+            if locs:
+                loc = locs[0] if isinstance(locs[0], str) else locs[0].get("name", "")
+                city = loc
+
+        prompt = (
+            f"Professional {biz_type} business photo: a licensed {service} expert "
+            f"performing {service} work for a customer. "
+            f"Clean uniform, professional tools, well-lit workspace. "
+            f"Photorealistic, high quality, suitable for Google Ads."
+        )
+        metadata = {
+            "businessName": biz_name,
+            "businessType": biz_type,
+            "city": city,
+            "state": state,
+            "description": f"Professional {service} by {biz_name} in {city}",
+            "keywords": f"{service}, {biz_type}, {city}, professional, licensed",
+        }
+
+    result = await client.generate_single(
+        prompt=prompt,
+        engine=req.engine,
+        style=req.style,
+        size=req.size,
+        metadata=metadata,
     )
 
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Image generation failed"))
+
+    # Save to asset library
     asset = Asset(
         tenant_id=user.tenant_id,
         asset_type="IMAGE",
-        source="seopix",
-        seopix_job_id=job.get("job_id"),
-        metadata_json={"template": req.template, "status": "processing"},
+        source="ai_image_generator",
+        url=result.get("image_url"),
+        metadata_json={
+            "filename": result.get("filename"),
+            "engine": req.engine,
+            "style": req.style,
+            "prompt": prompt,
+            "status": "complete",
+            **metadata,
+        },
     )
     db.add(asset)
     await db.flush()
 
-    return {"asset_id": asset.id, "job_id": job.get("job_id"), "status": "processing"}
+    return {
+        "asset_id": asset.id,
+        "image_url": result.get("image_url"),
+        "filename": result.get("filename"),
+        "status": "complete",
+    }
 
 
 @router.get("/image/{asset_id}/status")
@@ -101,20 +159,16 @@ async def check_image_status(
         raise HTTPException(status_code=404, detail="Asset not found")
 
     if asset.url:
-        return {"status": "complete", "url": asset.url}
-
-    if asset.seopix_job_id:
-        from app.integrations.seopix.client import SeopixClient
-        client = SeopixClient()
-        status = await client.check_job_status(asset.seopix_job_id)
-        if status.get("status") == "complete":
-            asset.url = status.get("url")
-            asset.metadata_json = {**asset.metadata_json, "status": "complete"}
-            await db.flush()
-            return {"status": "complete", "url": asset.url}
-        return {"status": status.get("status", "processing")}
+        return {"status": "complete", "url": asset.url, "metadata": asset.metadata_json}
 
     return {"status": "unknown"}
+
+
+@router.get("/image/health")
+async def image_generator_health():
+    from app.integrations.image_generator.client import ImageGeneratorClient
+    client = ImageGeneratorClient()
+    return await client.health_check()
 
 
 @router.get("/assets")
@@ -168,13 +222,29 @@ async def save_asset(
 @router.get("/templates")
 async def list_image_templates():
     return {
-        "templates": [
-            {"id": "locksmith_emergency", "name": "Locksmith Emergency", "description": "Emergency locksmith service image with urgency theme"},
-            {"id": "locksmith_premium", "name": "Premium Automotive Locksmith", "description": "Professional automotive locksmith image"},
-            {"id": "roofer_storm", "name": "Roofer Storm Damage", "description": "Storm damage roof repair image"},
-            {"id": "mechanic_diagnostics", "name": "Mechanic Diagnostics", "description": "Auto mechanic diagnostics image"},
-            {"id": "hvac_seasonal", "name": "HVAC Seasonal", "description": "Seasonal HVAC service image"},
-            {"id": "plumber_emergency", "name": "Plumber Emergency", "description": "Emergency plumbing service image"},
-            {"id": "generic_service", "name": "Generic Service", "description": "General service business image"},
-        ]
+        "engines": [
+            {"id": "dalle", "name": "DALL-E 3", "description": "OpenAI's best image model. Great quality, $0.04/image."},
+            {"id": "stability", "name": "Stability AI", "description": "Stable Diffusion Ultra. Photorealistic, fast."},
+            {"id": "flux", "name": "Flux.1", "description": "Fal.ai Flux Pro. High detail, artistic flexibility."},
+        ],
+        "styles": [
+            {"id": "photorealistic", "name": "Photorealistic", "description": "Professional photography look — best for Google Ads"},
+            {"id": "cartoon", "name": "Cartoon", "description": "Colorful illustrated style"},
+            {"id": "artistic", "name": "Artistic", "description": "Oil painting / fine art style"},
+            {"id": "none", "name": "No Enhancement", "description": "Raw prompt — no style enhancement applied"},
+        ],
+        "sizes": [
+            {"id": "1024x1024", "name": "Square (1024x1024)", "description": "Google Display, social media"},
+            {"id": "1792x1024", "name": "Landscape (1792x1024)", "description": "Banner ads, YouTube thumbnails"},
+            {"id": "1024x1792", "name": "Portrait (1024x1792)", "description": "Stories, vertical display"},
+        ],
+        "prompt_templates": [
+            {"id": "locksmith_emergency", "name": "Locksmith Emergency", "prompt": "Professional locksmith responding to emergency lockout, arriving at customer front door with toolkit, nighttime scene with porch light, realistic and professional"},
+            {"id": "locksmith_auto", "name": "Auto Locksmith", "prompt": "Licensed automotive locksmith programming a car key fob next to a modern car, professional uniform, specialized equipment, dealership quality service"},
+            {"id": "locksmith_rekey", "name": "Lock Rekey Service", "prompt": "Locksmith technician rekeying a residential deadbolt lock, close-up of hands working with precision tools, clean professional workspace"},
+            {"id": "plumber_emergency", "name": "Emergency Plumber", "prompt": "Professional plumber fixing a burst pipe under a kitchen sink, water being contained, heroic service moment, professional tools and uniform"},
+            {"id": "hvac_repair", "name": "HVAC Repair", "prompt": "HVAC technician servicing an air conditioning unit on a rooftop, professional uniform, diagnostic tools, clear blue sky, reliable service"},
+            {"id": "roofer_inspection", "name": "Roof Inspection", "prompt": "Professional roofer inspecting shingles on a residential roof, safety harness, clipboard, clear day, trustworthy and thorough inspection"},
+            {"id": "generic_trust", "name": "Trust & Team", "prompt": "Small business service team posing confidently in front of branded company vehicle, uniforms, friendly professional appearance, trust and reliability"},
+        ],
     }

@@ -25,9 +25,9 @@ class Settings(BaseSettings):
     GOOGLE_ADS_CLIENT_SECRET: str = ""
     GOOGLE_ADS_REDIRECT_URI: str = "http://localhost:3000/api/auth/google-ads/callback"
 
-    # seopix.ai
-    SEOPIX_API_URL: str = "https://api.seopix.ai/v1"
-    SEOPIX_API_KEY: str = ""
+    # AI Image Generator (SEOpix Flask API)
+    IMAGE_GENERATOR_API_URL: str = ""
+    IMAGE_GENERATOR_API_KEY: str = ""
 
     # S3
     S3_ENDPOINT: str = ""
