@@ -166,12 +166,66 @@ class EmailConnector(BaseConnector):
     async def push(self, payload: dict) -> dict:
         if not self.connector.credentials_encrypted:
             return {"error": "Not connected"}
-        # Stub: would use SendGrid/Mailgun API
-        await self._log_event("info", "Email send executed (stub)", payload)
-        return {"sent": True, "stub": True}
+
+        import httpx
+        creds = decrypt_credentials(self.connector.credentials_encrypted)
+        api_key = creds.get("api_key", "")
+        from_email = creds.get("from_email", "")
+
+        to_email = payload.get("to_email", "")
+        subject = payload.get("subject", "Notification from Ignite Ads AI")
+        body = payload.get("body", payload.get("message", ""))
+
+        if not to_email:
+            return {"error": "to_email required in payload"}
+
+        sendgrid_payload = {
+            "personalizations": [{"to": [{"email": to_email}]}],
+            "from": {"email": from_email, "name": "Ignite Ads AI"},
+            "subject": subject,
+            "content": [
+                {"type": "text/plain", "value": body},
+                {"type": "text/html", "value": f"<p>{body}</p>"},
+            ],
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(
+                    "https://api.sendgrid.com/v3/mail/send",
+                    json=sendgrid_payload,
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                )
+                if resp.status_code not in (200, 201, 202):
+                    await self._log_event("error", f"SendGrid error {resp.status_code}: {resp.text[:200]}")
+                    return {"sent": False, "error": f"SendGrid {resp.status_code}"}
+        except Exception as e:
+            await self._log_event("error", f"SendGrid exception: {str(e)}")
+            return {"sent": False, "error": str(e)}
+
+        await self._log_event("info", f"Email sent to {to_email}", payload)
+        return {"sent": True}
 
     async def health_check(self) -> dict:
-        return {"healthy": self.connector.status == "connected", "message": "Email connector"}
+        if self.connector.status != "connected" or not self.connector.credentials_encrypted:
+            return {"healthy": False, "message": "Email connector not connected"}
+
+        import httpx
+        creds = decrypt_credentials(self.connector.credentials_encrypted)
+        api_key = creds.get("api_key", "")
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(
+                    "https://api.sendgrid.com/v3/scopes",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+                healthy = resp.status_code == 200
+                return {"healthy": healthy, "message": "SendGrid API reachable" if healthy else f"SendGrid {resp.status_code}"}
+        except Exception as e:
+            return {"healthy": False, "message": str(e)}
 
 
 # ── Generic Webhook Connector ──

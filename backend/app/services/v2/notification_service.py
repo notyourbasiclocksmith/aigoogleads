@@ -145,8 +145,62 @@ async def _send_slack(channel: NotificationChannel, event_type: str, payload: Di
 
 
 async def _send_email(channel: NotificationChannel, event_type: str, payload: Dict[str, Any]):
-    # Stub: integrate with SendGrid/Mailgun
-    logger.info("Email notification stub", event_type=event_type, to=channel.config_json.get("to_email"))
+    import httpx
+    from app.core.config import settings
+
+    api_key = settings.EMAIL_PROVIDER_KEY
+    if not api_key:
+        raise ValueError("EMAIL_PROVIDER_KEY (SendGrid API key) not configured")
+
+    to_email = channel.config_json.get("to_email", "")
+    if not to_email:
+        raise ValueError("to_email not set on email notification channel")
+
+    from_email = channel.config_json.get("from_email") or settings.EMAIL_FROM
+    subject = f"[Ignite Ads AI] {event_type}"
+    message = payload.get("message", f"Notification: {event_type}")
+
+    # Build HTML body
+    html_body = (
+        f'<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">'
+        f'<div style="background:#1a1a2e;color:#fff;padding:20px;border-radius:8px 8px 0 0;">'
+        f'<h2 style="margin:0;">🔔 {event_type}</h2></div>'
+        f'<div style="padding:20px;background:#f9f9f9;border:1px solid #eee;border-radius:0 0 8px 8px;">'
+        f'<p style="font-size:15px;line-height:1.6;color:#333;">{message}</p>'
+    )
+    # Add detail rows from payload
+    for key, val in payload.items():
+        if key not in ("message", "test") and val:
+            html_body += f'<p style="margin:4px 0;font-size:13px;color:#666;"><strong>{key}:</strong> {val}</p>'
+    html_body += (
+        f'<hr style="border:none;border-top:1px solid #eee;margin:16px 0;">'
+        f'<p style="font-size:12px;color:#999;">Sent by Ignite Ads AI</p>'
+        f'</div></div>'
+    )
+
+    sendgrid_payload = {
+        "personalizations": [{"to": [{"email": to_email}]}],
+        "from": {"email": from_email, "name": "Ignite Ads AI"},
+        "subject": subject,
+        "content": [
+            {"type": "text/plain", "value": message},
+            {"type": "text/html", "value": html_body},
+        ],
+    }
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            "https://api.sendgrid.com/v3/mail/send",
+            json=sendgrid_payload,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        if resp.status_code not in (200, 201, 202):
+            raise ValueError(f"SendGrid error {resp.status_code}: {resp.text[:200]}")
+
+    logger.info("Email sent via SendGrid", event_type=event_type, to=to_email)
 
 
 async def _send_webhook(channel: NotificationChannel, event_type: str, payload: Dict[str, Any]):
