@@ -118,6 +118,10 @@ async def create_checkout_session(db: AsyncSession, tenant_id: str, plan: str, s
             customer=billing.stripe_customer_id,
             mode="subscription",
             line_items=[{"price": price_map.get(plan, ""), "quantity": 1}],
+            subscription_data={
+                "trial_period_days": 14,
+                "metadata": {"tenant_id": tenant_id, "plan": plan},
+            },
             success_url=success_url,
             cancel_url=cancel_url,
             metadata={"tenant_id": tenant_id, "plan": plan},
@@ -183,7 +187,7 @@ async def handle_webhook_event(db: AsyncSession, event_type: str, data: dict) ->
         billing = result.scalars().first()
         if billing and plan:
             billing.plan = plan
-            billing.status = "active"
+            billing.status = "trialing"  # checkout with trial_period_days starts as trialing
             sub_id = session.get("subscription", "")
             if sub_id:
                 billing.stripe_subscription_id = sub_id
