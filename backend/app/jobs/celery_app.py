@@ -1,3 +1,4 @@
+import ssl
 from celery import Celery
 from celery.schedules import crontab
 from app.core.config import settings
@@ -7,6 +8,10 @@ celery_app = Celery(
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_RESULT_BACKEND,
 )
+
+# SSL config for Render managed Redis (rediss://)
+_redis_ssl = settings.CELERY_BROKER_URL.startswith("rediss://")
+_ssl_opts = {"ssl_cert_reqs": ssl.CERT_NONE} if _redis_ssl else {}
 
 celery_app.conf.update(
     task_serializer="json",
@@ -19,6 +24,8 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_soft_time_limit=300,
     task_time_limit=600,
+    broker_use_ssl=_ssl_opts if _redis_ssl else None,
+    redis_backend_use_ssl=_ssl_opts if _redis_ssl else None,
 )
 
 celery_app.conf.beat_schedule = {
