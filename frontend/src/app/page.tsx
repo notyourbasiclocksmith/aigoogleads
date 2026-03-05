@@ -10,7 +10,7 @@ export default function Home() {
     if (token) {
       router.push("/dashboard");
     } else {
-      router.push("/login");
+      router.push("/marketing");
     }
   }, [router]);
 
