@@ -49,7 +49,18 @@
   * {
     @apply border-border;
   }
+  html {
+    scroll-behavior: smooth;
+  }
   body {
     @apply bg-background text-foreground;
   }
+}
+
+/* Marketing page utilities */
+.marketing-page details summary::-webkit-details-marker {
+  display: none;
+}
+.marketing-page details summary {
+  list-style: none;
 }
