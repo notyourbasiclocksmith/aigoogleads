@@ -5,7 +5,9 @@ import {
   Bot, Eye, Lightbulb, Layers, ChevronDown,
   Search, FileText, Gauge, FlaskConical,
   GitBranch, Plug, Mail, Play, Rocket, Timer, ShieldCheck, AlertTriangle,
-  LineChart, DollarSign, Megaphone,
+  LineChart, DollarSign, Megaphone, Star, Globe, MousePointerClick,
+  X, ChevronRight, Scan, MonitorSmartphone, MapPin, Phone,
+  PauseCircle, MinusCircle, TrendingDown, ArrowUpRight,
 } from "lucide-react";
 
 export const metadata: Metadata = {
@@ -812,6 +814,605 @@ function CTAFooter() {
   );
 }
 
+/* ───────────────────── SOCIAL PROOF ───────────────────── */
+function SocialProof() {
+  const stats = [
+    { value: "$1.2M+", label: "Ad Spend Optimized" },
+    { value: "9,400+", label: "Keywords Analyzed" },
+    { value: "86%", label: "Avg. CPA Reduction" },
+    { value: "2,100+", label: "Campaigns Launched" },
+  ];
+  return (
+    <section className="py-16 bg-white border-y border-gray-100">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <p className="text-center text-sm font-semibold text-gray-400 uppercase tracking-wider mb-8">
+          Trusted by service businesses &amp; agencies
+        </p>
+        <div className="flex flex-wrap items-center justify-center gap-x-12 gap-y-4 mb-12">
+          {["Dallas Auto Locksmith", "HVAC Experts TX", "Roofing Pros Group", "FastKey Locksmith", "Lone Star Plumbing", "Metro Electrical Services"].map((name) => (
+            <span key={name} className="text-gray-400 font-semibold text-sm tracking-wide">{name}</span>
+          ))}
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+          {stats.map((s) => (
+            <div key={s.label} className="text-center">
+              <div className="text-3xl sm:text-4xl font-extrabold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">{s.value}</div>
+              <p className="mt-1 text-sm text-gray-500 font-medium">{s.label}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ───────────────────── REAL RESULTS ───────────────────── */
+function RealResults() {
+  const cases = [
+    {
+      industry: "Locksmith",
+      location: "Dallas, TX",
+      before: { cpa: "$52", ctr: "2.1%", conversions: "18/mo" },
+      after: { cpa: "$28", ctr: "5.8%", conversions: "47/mo" },
+      improvement: "+161% more leads",
+      quote: "We went from struggling with Google Ads to getting more calls than we can handle.",
+    },
+    {
+      industry: "HVAC",
+      location: "Houston, TX",
+      before: { cpa: "$89", ctr: "1.4%", conversions: "12/mo" },
+      after: { cpa: "$41", ctr: "4.2%", conversions: "34/mo" },
+      improvement: "+183% more leads",
+      quote: "The AI found $2,400/mo in wasted spend we had no idea about.",
+    },
+    {
+      industry: "Plumbing",
+      location: "Austin, TX",
+      before: { cpa: "$67", ctr: "1.8%", conversions: "22/mo" },
+      after: { cpa: "$33", ctr: "5.1%", conversions: "51/mo" },
+      improvement: "+132% more leads",
+      quote: "Setup took 10 minutes. The AI built better campaigns than our agency did in 6 months.",
+    },
+  ];
+  return (
+    <section className="py-20 sm:py-28 bg-gray-50">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="text-center max-w-3xl mx-auto mb-16">
+          <h2 className="text-3xl sm:text-4xl font-extrabold text-gray-900">
+            Real Results From <span className="text-blue-600">AI Optimization</span>
+          </h2>
+          <p className="mt-4 text-lg text-gray-600">
+            See how service businesses transformed their Google Ads performance with Ignite Ads AI.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+          {cases.map((c) => (
+            <div key={c.industry} className="bg-white rounded-2xl border border-gray-200 overflow-hidden shadow-sm hover:shadow-xl transition-all">
+              <div className="bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-4">
+                <h3 className="text-white font-bold text-lg">{c.industry}</h3>
+                <p className="text-blue-200 text-sm flex items-center gap-1"><MapPin className="w-3.5 h-3.5" /> {c.location}</p>
+              </div>
+              <div className="p-6">
+                <div className="grid grid-cols-2 gap-4 mb-4">
+                  <div>
+                    <p className="text-xs font-semibold text-gray-400 uppercase mb-2">Before</p>
+                    <div className="space-y-1.5 text-sm">
+                      <p className="text-gray-500">CPA: <span className="font-bold text-red-500">{c.before.cpa}</span></p>
+                      <p className="text-gray-500">CTR: <span className="font-bold text-red-500">{c.before.ctr}</span></p>
+                      <p className="text-gray-500">Leads: <span className="font-bold text-red-500">{c.before.conversions}</span></p>
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold text-gray-400 uppercase mb-2">After</p>
+                    <div className="space-y-1.5 text-sm">
+                      <p className="text-gray-500">CPA: <span className="font-bold text-green-600">{c.after.cpa}</span></p>
+                      <p className="text-gray-500">CTR: <span className="font-bold text-green-600">{c.after.ctr}</span></p>
+                      <p className="text-gray-500">Leads: <span className="font-bold text-green-600">{c.after.conversions}</span></p>
+                    </div>
+                  </div>
+                </div>
+                <div className="bg-green-50 rounded-lg px-4 py-2 text-center mb-4">
+                  <span className="text-green-700 font-bold text-sm">{c.improvement}</span>
+                </div>
+                <div className="flex gap-2">
+                  <div className="flex-shrink-0 mt-1">
+                    <Star className="w-4 h-4 text-yellow-400 fill-yellow-400" />
+                  </div>
+                  <p className="text-sm text-gray-600 italic">&ldquo;{c.quote}&rdquo;</p>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ───────────────────── WHY DIFFERENT ───────────────────── */
+function WhyDifferent() {
+  const others = [
+    "Basic rule-based automation",
+    "No competitor analysis",
+    "Single campaign type support",
+    "Manual ad copy writing",
+    "No safety guardrails",
+    "Generic recommendations",
+    "No conversion tracking monitoring",
+    "Limited reporting",
+  ];
+  const ignite = [
+    "10-step AI campaign pipeline",
+    "Live SERP & auction intelligence",
+    "Search, Display, PMax with reasoning",
+    "Psychology-driven ad copy in your brand voice",
+    "6-layer guardrail safety engine",
+    "Industry playbook + performance learnings",
+    "24/7 conversion tracking health monitor",
+    "Weekly AI CMO reports with focus areas",
+  ];
+  return (
+    <section className="py-20 sm:py-28 bg-white">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="text-center max-w-3xl mx-auto mb-16">
+          <h2 className="text-3xl sm:text-4xl font-extrabold text-gray-900">
+            Why Ignite Ads AI Is <span className="text-blue-600">Different</span>
+          </h2>
+          <p className="mt-4 text-lg text-gray-600">
+            Most &ldquo;AI&rdquo; tools are just rule engines with a chatbot. We built a real AI strategist.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-5xl mx-auto">
+          <div className="bg-gray-50 rounded-2xl p-8 border border-gray-200">
+            <h3 className="text-lg font-bold text-gray-400 mb-6 flex items-center gap-2">
+              <X className="w-5 h-5 text-red-400" /> Other Tools
+            </h3>
+            <ul className="space-y-3">
+              {others.map((item, i) => (
+                <li key={i} className="flex items-center gap-3 text-sm text-gray-500">
+                  <X className="w-4 h-4 text-red-300 flex-shrink-0" />
+                  {item}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-2xl p-8 border-2 border-blue-200 relative">
+            <div className="absolute -top-3 left-6 px-3 py-1 rounded-full bg-blue-600 text-white text-xs font-bold">
+              Ignite Ads AI
+            </div>
+            <h3 className="text-lg font-bold text-blue-700 mb-6 flex items-center gap-2">
+              <CheckCircle2 className="w-5 h-5 text-blue-600" /> Our Platform
+            </h3>
+            <ul className="space-y-3">
+              {ignite.map((item, i) => (
+                <li key={i} className="flex items-center gap-3 text-sm text-gray-700 font-medium">
+                  <CheckCircle2 className="w-4 h-4 text-blue-500 flex-shrink-0" />
+                  {item}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ───────────────────── AI LEARNS YOUR BUSINESS ───────────────────── */
+function AILearns() {
+  const scans = [
+    { icon: Globe, label: "Your Website", desc: "Homepage, services, about, contact, locations, reviews" },
+    { icon: MapPin, label: "Service Areas", desc: "Cities, zip codes, and service radius extracted" },
+    { icon: Phone, label: "Phone & CTAs", desc: "Phone numbers and call-to-action patterns detected" },
+    { icon: Star, label: "Trust Signals", desc: "BBB, licensed & insured, years of experience, reviews" },
+    { icon: Megaphone, label: "Brand Voice", desc: "Tone detection: professional, urgent, premium, friendly" },
+    { icon: Users, label: "Social Profiles", desc: "Facebook, Instagram, YouTube, Yelp, LinkedIn, TikTok" },
+  ];
+  return (
+    <section className="py-20 sm:py-28 bg-gray-50">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-20 items-center">
+          <div>
+            <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-indigo-100 text-indigo-700 text-sm font-medium mb-6">
+              <Scan className="w-4 h-4" /> Automatic Discovery
+            </div>
+            <h2 className="text-3xl sm:text-4xl font-extrabold text-gray-900 leading-tight">
+              AI Learns Your Business{" "}
+              <span className="text-blue-600">Automatically</span>
+            </h2>
+            <p className="mt-4 text-lg text-gray-600 leading-relaxed">
+              Just enter your website URL. Our AI crawls every page, extracts your services,
+              locations, offers, and trust signals — then builds ads using your exact brand voice.
+            </p>
+            <div className="mt-8 bg-white rounded-xl border border-gray-200 p-5">
+              <div className="flex items-center gap-2 text-sm text-gray-400 mb-3">
+                <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+                AI Business Analysis Complete
+              </div>
+              <div className="space-y-2 text-sm">
+                <p className="text-gray-700"><span className="font-semibold text-gray-900">Services found:</span> Emergency Lockout, Car Key Replacement, Lock Rekey, Safe Opening, Commercial Locks</p>
+                <p className="text-gray-700"><span className="font-semibold text-gray-900">Areas:</span> Dallas, Fort Worth, Arlington, Plano, Irving</p>
+                <p className="text-gray-700"><span className="font-semibold text-gray-900">Brand voice:</span> Urgent, trustworthy, fast-response</p>
+                <p className="text-gray-700"><span className="font-semibold text-gray-900">Trust signals:</span> Licensed &amp; Insured, BBB A+, 15+ years, 500+ 5-star reviews</p>
+              </div>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            {scans.map((s) => (
+              <div key={s.label} className="bg-white rounded-xl p-5 border border-gray-100 hover:border-blue-200 hover:shadow-lg transition-all">
+                <s.icon className="w-8 h-8 text-blue-600 mb-3" />
+                <h4 className="font-bold text-gray-900 text-sm mb-1">{s.label}</h4>
+                <p className="text-xs text-gray-500 leading-relaxed">{s.desc}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ───────────────────── CREATIVE STUDIO SHOWCASE ───────────────────── */
+function CreativeShowcase() {
+  return (
+    <section className="py-20 sm:py-28 bg-white">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="text-center max-w-3xl mx-auto mb-16">
+          <h2 className="text-3xl sm:text-4xl font-extrabold text-gray-900">
+            AI-Generated Ads That <span className="text-blue-600">Actually Convert</span>
+          </h2>
+          <p className="mt-4 text-lg text-gray-600">
+            See real ad copy our AI generates — written in your brand voice with psychology-driven messaging.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-5xl mx-auto">
+          {/* Ad Preview 1 */}
+          <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+            <div className="bg-gray-50 px-5 py-3 border-b border-gray-100 flex items-center gap-2 text-xs text-gray-400">
+              <div className="w-3 h-3 rounded-full bg-blue-500" />
+              Google Search Ad Preview
+            </div>
+            <div className="p-5">
+              <p className="text-xs text-green-700 font-medium mb-1">Ad &middot; www.dallasautolocksmith.com</p>
+              <h4 className="text-blue-700 text-lg font-semibold hover:underline cursor-pointer leading-snug">
+                Locked Out of Your Car in Dallas? | 24/7 Emergency Locksmith
+              </h4>
+              <p className="text-sm text-gray-600 mt-2 leading-relaxed">
+                15-Minute Response Time. Licensed &amp; Insured. 500+ 5-Star Reviews.
+                Call Now for Fast, Affordable Car Lockout Service in Dallas-Fort Worth.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {["Emergency Lockout", "Car Key Replacement", "Free Estimate", "24/7 Service"].map((ext) => (
+                  <span key={ext} className="text-xs text-blue-600 border border-blue-200 rounded px-2 py-0.5">{ext}</span>
+                ))}
+              </div>
+            </div>
+          </div>
+          {/* Ad Preview 2 */}
+          <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+            <div className="bg-gray-50 px-5 py-3 border-b border-gray-100 flex items-center gap-2 text-xs text-gray-400">
+              <div className="w-3 h-3 rounded-full bg-blue-500" />
+              Google Search Ad Preview
+            </div>
+            <div className="p-5">
+              <p className="text-xs text-green-700 font-medium mb-1">Ad &middot; www.hvacexpertstx.com</p>
+              <h4 className="text-blue-700 text-lg font-semibold hover:underline cursor-pointer leading-snug">
+                AC Not Cooling? Houston HVAC Experts | Same Day Repair
+              </h4>
+              <p className="text-sm text-gray-600 mt-2 leading-relaxed">
+                Trusted by 2,000+ Houston Homeowners. Licensed, Bonded &amp; Insured.
+                $50 Off First Service Call. Satisfaction Guaranteed or Your Money Back.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {["AC Repair", "Heating Service", "$50 Off Coupon", "Free Diagnosis"].map((ext) => (
+                  <span key={ext} className="text-xs text-blue-600 border border-blue-200 rounded px-2 py-0.5">{ext}</span>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+        <p className="mt-8 text-center text-sm text-gray-500">
+          Headlines, descriptions, callouts, sitelinks — all generated by AI using your actual business data.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+/* ───────────────────── COMPETITOR INTEL DEMO ───────────────────── */
+function CompetitorDemo() {
+  return (
+    <section className="py-20 sm:py-28 bg-gray-50">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-20 items-center">
+          <div>
+            <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-red-100 text-red-700 text-sm font-medium mb-6">
+              <Eye className="w-4 h-4" /> Competitive Intelligence
+            </div>
+            <h2 className="text-3xl sm:text-4xl font-extrabold text-gray-900 leading-tight">
+              See Exactly What Your{" "}
+              <span className="text-blue-600">Competitors Are Doing</span>
+            </h2>
+            <p className="mt-4 text-lg text-gray-600 leading-relaxed">
+              Our AI scans Google search results for your target keywords, captures competitor ad copy,
+              analyzes their landing pages, and finds messaging gaps you can exploit.
+            </p>
+            <div className="mt-6 space-y-3">
+              {[
+                "SERP ad copy captured for every target keyword",
+                "Auction insights: impression share & outranking data",
+                "Landing page analysis: CTAs, offers, trust signals",
+                "Messaging heatmap with opportunity gaps",
+              ].map((item, i) => (
+                <div key={i} className="flex items-center gap-2.5 text-sm text-gray-700">
+                  <CheckCircle2 className="w-4 h-4 text-blue-500 flex-shrink-0" />
+                  {item}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="bg-white rounded-2xl border border-gray-200 shadow-lg overflow-hidden">
+            <div className="bg-gray-900 px-5 py-3 flex items-center gap-2 text-xs text-gray-400">
+              <Search className="w-3.5 h-3.5" />
+              <span className="text-gray-300">emergency locksmith dallas</span>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="text-xs font-semibold text-gray-400 uppercase">5 Competitors Found</div>
+              {[
+                { domain: "popslocksmith.com", is: "32%", themes: ["24/7", "Licensed"] },
+                { domain: "dallaskeypro.com", is: "28%", themes: ["Fast Response", "$19 Service Call"] },
+                { domain: "lonestarlocks.com", is: "22%", themes: ["Mobile Service", "BBB A+"] },
+                { domain: "texaslocksmith.com", is: "18%", themes: ["15 Min Arrival", "Insured"] },
+              ].map((c) => (
+                <div key={c.domain} className="flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
+                  <div>
+                    <p className="text-sm font-semibold text-gray-900">{c.domain}</p>
+                    <div className="flex gap-1.5 mt-1">
+                      {c.themes.map((t) => (
+                        <span key={t} className="text-[10px] bg-gray-100 text-gray-600 rounded px-1.5 py-0.5">{t}</span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-bold text-gray-900">{c.is}</p>
+                    <p className="text-[10px] text-gray-400">Imp. Share</p>
+                  </div>
+                </div>
+              ))}
+              <div className="bg-green-50 rounded-lg p-3 mt-2">
+                <p className="text-xs font-bold text-green-800 mb-1">Opportunity Gaps Found</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {["Warranty messaging", "Financing available", "Veteran discount", "Satisfaction guarantee"].map((g) => (
+                    <span key={g} className="text-[10px] bg-green-100 text-green-700 rounded-full px-2 py-0.5 font-medium">{g}</span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ───────────────────── AI RECOMMENDATIONS FEED ───────────────────── */
+function AIRecommendations() {
+  const recs = [
+    {
+      type: "waste",
+      severity: "high",
+      color: "red",
+      icon: PauseCircle,
+      title: "Pause keyword: \"cheap locksmith near me\"",
+      detail: "Spent $142 in 14 days with 0 conversions. This keyword attracts price-shoppers who rarely convert.",
+      impact: "Save $142/14d",
+    },
+    {
+      type: "negative",
+      severity: "medium",
+      color: "yellow",
+      icon: MinusCircle,
+      title: "Add negative keyword: \"DIY lock repair\"",
+      detail: "Search term report shows 23 clicks from DIY-intent searches. These users aren't looking for a locksmith.",
+      impact: "Save $67/mo",
+    },
+    {
+      type: "bid",
+      severity: "low",
+      color: "green",
+      icon: TrendingUp,
+      title: "Increase bid: \"car key replacement Dallas\"",
+      detail: "This keyword has a 12.4% conversion rate but you're in position 3.2. Increasing bid by 15% should capture 20+ more conversions/mo.",
+      impact: "+20 leads/mo",
+    },
+    {
+      type: "tracking",
+      severity: "critical",
+      color: "red",
+      icon: AlertTriangle,
+      title: "Conversion tracking may be broken",
+      detail: "Zero conversions detected in the last 3 days despite 847 clicks. Your Google Ads conversion tag may have been removed.",
+      impact: "Critical fix",
+    },
+  ];
+  const colorMap: Record<string, { dot: string; bg: string; badge: string }> = {
+    red: { dot: "bg-red-500", bg: "bg-red-50", badge: "bg-red-100 text-red-700" },
+    yellow: { dot: "bg-yellow-500", bg: "bg-yellow-50", badge: "bg-yellow-100 text-yellow-700" },
+    green: { dot: "bg-green-500", bg: "bg-green-50", badge: "bg-green-100 text-green-700" },
+  };
+  return (
+    <section className="py-20 sm:py-28 bg-white">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-20 items-center">
+          <div className="order-2 lg:order-1">
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-lg overflow-hidden">
+              <div className="bg-gray-900 px-5 py-3 flex items-center justify-between">
+                <span className="text-sm text-white font-semibold">AI Recommendations</span>
+                <span className="text-xs text-gray-400">4 pending</span>
+              </div>
+              <div className="divide-y divide-gray-100">
+                {recs.map((r, i) => {
+                  const c = colorMap[r.color];
+                  return (
+                    <div key={i} className="p-4 hover:bg-gray-50 transition-colors">
+                      <div className="flex items-start gap-3">
+                        <div className={`flex-shrink-0 mt-0.5 w-8 h-8 rounded-lg ${c.bg} flex items-center justify-center`}>
+                          <r.icon className={`w-4 h-4 ${r.color === "red" ? "text-red-500" : r.color === "yellow" ? "text-yellow-600" : "text-green-600"}`} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <h4 className="text-sm font-semibold text-gray-900 truncate">{r.title}</h4>
+                          </div>
+                          <p className="text-xs text-gray-500 leading-relaxed">{r.detail}</p>
+                          <div className="flex items-center gap-2 mt-2">
+                            <span className={`text-[10px] font-bold rounded-full px-2 py-0.5 ${c.badge}`}>{r.impact}</span>
+                            <button className="text-[10px] font-semibold text-blue-600 hover:text-blue-700">Approve</button>
+                            <button className="text-[10px] font-semibold text-gray-400 hover:text-gray-600">Dismiss</button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+          <div className="order-1 lg:order-2">
+            <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-blue-100 text-blue-700 text-sm font-medium mb-6">
+              <Brain className="w-4 h-4" /> Always Working
+            </div>
+            <h2 className="text-3xl sm:text-4xl font-extrabold text-gray-900 leading-tight">
+              AI That Finds Problems{" "}
+              <span className="text-blue-600">Before You Do</span>
+            </h2>
+            <p className="mt-4 text-lg text-gray-600 leading-relaxed">
+              Every day, our diagnostic engine scans your campaigns for waste, performance drops,
+              broken tracking, and optimization opportunities — then tells you exactly what to do.
+            </p>
+            <div className="mt-6 space-y-3">
+              {[
+                "Waste keyword detection & auto-pause",
+                "Negative keyword recommendations",
+                "Bid optimization with conversion data",
+                "Conversion tracking health monitoring",
+                "One-click approve or auto-apply",
+              ].map((item, i) => (
+                <div key={i} className="flex items-center gap-2.5 text-sm text-gray-700">
+                  <CheckCircle2 className="w-4 h-4 text-blue-500 flex-shrink-0" />
+                  {item}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ───────────────────── REPLACE YOUR AGENCY ───────────────────── */
+function ReplaceAgency() {
+  return (
+    <section className="py-20 sm:py-28 bg-gradient-to-br from-indigo-600 via-blue-600 to-blue-700 text-white">
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="text-center mb-16">
+          <h2 className="text-3xl sm:text-4xl font-extrabold leading-tight">
+            Replace Your PPC Agency. <span className="text-yellow-300">Save Thousands.</span>
+          </h2>
+          <p className="mt-4 text-lg text-blue-100 max-w-2xl mx-auto">
+            Get better results than a $3,000/mo agency — at a fraction of the cost.
+            Our AI never sleeps, never forgets, and optimizes every single day.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto">
+          {/* Agency */}
+          <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-8 border border-white/20">
+            <h3 className="text-xl font-bold text-white/70 mb-6">Typical PPC Agency</h3>
+            <ul className="space-y-4">
+              {[
+                { label: "Monthly cost", value: "$1,500 – $5,000" },
+                { label: "Setup time", value: "2 – 4 weeks" },
+                { label: "Optimization frequency", value: "Weekly (maybe)" },
+                { label: "Competitor monitoring", value: "Quarterly reports" },
+                { label: "Transparency", value: "Monthly PDF report" },
+                { label: "Response time", value: "24 – 72 hours" },
+              ].map((row) => (
+                <li key={row.label} className="flex justify-between text-sm">
+                  <span className="text-blue-200">{row.label}</span>
+                  <span className="text-white/60 font-medium">{row.value}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          {/* Ignite */}
+          <div className="bg-white rounded-2xl p-8 border-2 border-yellow-300 shadow-2xl relative">
+            <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-4 py-1 rounded-full bg-yellow-400 text-gray-900 text-xs font-bold">
+              10x Better Value
+            </div>
+            <h3 className="text-xl font-bold text-gray-900 mb-6">Ignite Ads AI</h3>
+            <ul className="space-y-4">
+              {[
+                { label: "Monthly cost", value: "$49 – $499", highlight: true },
+                { label: "Setup time", value: "10 minutes", highlight: true },
+                { label: "Optimization frequency", value: "24/7 continuous", highlight: true },
+                { label: "Competitor monitoring", value: "Real-time SERP scanning", highlight: true },
+                { label: "Transparency", value: "Full dashboard + change log", highlight: true },
+                { label: "Response time", value: "Instant AI analysis", highlight: true },
+              ].map((row) => (
+                <li key={row.label} className="flex justify-between text-sm">
+                  <span className="text-gray-600">{row.label}</span>
+                  <span className={`font-bold ${row.highlight ? "text-blue-600" : "text-gray-900"}`}>{row.value}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ───────────────────── AI FLOW DIAGRAM ───────────────────── */
+function AIFlowDiagram() {
+  const steps = [
+    { icon: Globe, label: "Your Website", desc: "AI crawls & analyzes" },
+    { icon: Brain, label: "AI Understands", desc: "Services, voice, USPs" },
+    { icon: Target, label: "Campaigns Built", desc: "Expert-level structure" },
+    { icon: Rocket, label: "Ads Launch", desc: "One-click to Google Ads" },
+    { icon: LineChart, label: "AI Monitors", desc: "24/7 performance watch" },
+    { icon: TrendingUp, label: "AI Optimizes", desc: "Continuous improvement" },
+  ];
+  return (
+    <section className="py-20 sm:py-28 bg-gray-50">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="text-center max-w-3xl mx-auto mb-16">
+          <h2 className="text-3xl sm:text-4xl font-extrabold text-gray-900">
+            The Full AI <span className="text-blue-600">Lifecycle</span>
+          </h2>
+          <p className="mt-4 text-lg text-gray-600">
+            From website scan to continuous optimization — your AI never stops working.
+          </p>
+        </div>
+        <div className="relative max-w-4xl mx-auto">
+          {/* Connector line */}
+          <div className="hidden md:block absolute top-1/2 left-0 right-0 h-0.5 bg-gradient-to-r from-blue-200 via-blue-400 to-blue-200 -translate-y-1/2 z-0" />
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-6 relative z-10">
+            {steps.map((s, i) => (
+              <div key={i} className="flex flex-col items-center text-center">
+                <div className="w-16 h-16 rounded-2xl bg-white border-2 border-blue-200 shadow-lg flex items-center justify-center mb-3 hover:border-blue-500 hover:shadow-xl transition-all">
+                  <s.icon className="w-7 h-7 text-blue-600" />
+                </div>
+                <h4 className="text-sm font-bold text-gray-900">{s.label}</h4>
+                <p className="text-xs text-gray-500 mt-0.5">{s.desc}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 /* ───────────────────── FOOTER ───────────────────── */
 function Footer() {
   return (
@@ -871,12 +1472,21 @@ export default function MarketingPage() {
       <Nav />
       <main>
         <Hero />
+        <SocialProof />
         <ProblemSolution />
+        <AILearns />
+        <AIFlowDiagram />
         <HowItWorks />
         <AIPipeline />
+        <CreativeShowcase />
         <Features />
+        <CompetitorDemo />
+        <AIRecommendations />
         <AutonomyModes />
         <Guardrails />
+        <WhyDifferent />
+        <RealResults />
+        <ReplaceAgency />
         <Pricing />
         <Integrations />
         <FAQ />
