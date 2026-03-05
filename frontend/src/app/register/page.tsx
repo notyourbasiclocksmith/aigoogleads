@@ -7,6 +7,8 @@ import {
   Rocket, Brain, Star,
 } from "lucide-react";
 
+import { api } from "@/lib/api";
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 const planDetails: Record<string, { name: string; price: number; icon: any; color: string }> = {
@@ -69,16 +71,10 @@ function RegisterContent() {
       const tenantId = loginData.tenants?.[0]?.tenant_id;
       if (!tenantId) {
         // Create tenant if none exists
-        const createRes = await fetch(`${API_URL}/api/workspace/tenants`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ name: companyName || fullName }),
-        });
-        const createData = await createRes.json();
-        if (createData.tenant_id) {
+        const createData = await api.post("/api/workspace/tenants", { name: companyName || fullName });
+        if (createData.tenant?.id) {
+          localStorage.setItem("tenant_id", createData.tenant.id);
+        } else if (createData.tenant_id) {
           localStorage.setItem("tenant_id", createData.tenant_id);
         }
       }
@@ -86,34 +82,19 @@ function RegisterContent() {
       const finalTenantId = localStorage.getItem("tenant_id");
 
       // 3. Create Stripe customer
-      await fetch(`${API_URL}/api/v2/billing/create-customer`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          tenant_id: finalTenantId,
-          email: email,
-          name: companyName || fullName,
-        }),
+      await api.post("/api/v2/billing/create-customer", {
+        tenant_id: finalTenantId,
+        email: email,
+        name: companyName || fullName,
       });
 
       // 4. Create checkout session
-      const checkoutRes = await fetch(`${API_URL}/api/v2/billing/checkout`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          tenant_id: finalTenantId,
-          plan: plan,
-          success_url: `${window.location.origin}/onboarding?plan=${plan}&checkout=success`,
-          cancel_url: `${window.location.origin}/pricing?canceled=true`,
-        }),
+      const checkoutData = await api.post("/api/v2/billing/checkout", {
+        tenant_id: finalTenantId,
+        plan: plan,
+        success_url: `${window.location.origin}/onboarding?plan=${plan}&checkout=success`,
+        cancel_url: `${window.location.origin}/pricing?canceled=true`,
       });
-      const checkoutData = await checkoutRes.json();
 
       if (checkoutData.checkout_url) {
         setStep("checkout");

@@ -30,6 +30,7 @@ class TokenResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     user: dict
+    tenants: list = []
 
 
 class SelectTenantRequest(BaseModel):
@@ -80,10 +81,23 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     access_token = create_access_token(user_id=user.id)
     refresh_token = create_refresh_token(user_id=user.id)
 
+    # Fetch user tenants so frontend can auto-select
+    tu_result = await db.execute(
+        select(TenantUser, Tenant)
+        .join(Tenant, TenantUser.tenant_id == Tenant.id)
+        .where(TenantUser.user_id == user.id)
+    )
+    rows = tu_result.all()
+    tenants = [
+        {"tenant_id": t.id, "name": t.name, "role": tu.role, "industry": t.industry, "tier": t.tier}
+        for tu, t in rows
+    ]
+
     return TokenResponse(
         access_token=access_token,
         refresh_token=refresh_token,
         user={"id": user.id, "email": user.email, "full_name": user.full_name},
+        tenants=tenants,
     )
 
 

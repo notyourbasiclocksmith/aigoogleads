@@ -34,7 +34,7 @@ export default function ExperimentsPage() {
 
   async function handlePromote(id: string, variantIndex: number) {
     try {
-      await api.post(`/api/experiments/${id}/promote`, { variant_index: variantIndex });
+      await api.post(`/api/experiments/${id}/promote`, { winning_variant_index: variantIndex });
       alert("Winner promoted!");
     } catch (e) { console.error(e); }
   }

@@ -48,18 +48,39 @@ export default function AgencyDashboardPage() {
 
       setTenants(list);
 
-      // Build mock KPIs — in production these come from /api/v2/mcc/rollup per tenant
-      const mockKpis: TenantKPI[] = list.map((t) => ({
-        id: t.id,
-        name: t.name,
-        industry: t.industry || "Other",
-        tier: t.tier,
-        spend: Math.round(Math.random() * 5000 + 500),
-        conversions: Math.round(Math.random() * 80 + 5),
-        cpa: Math.round(Math.random() * 60 + 15),
-        alerts: Math.floor(Math.random() * 5),
-      }));
-      setKpis(mockKpis);
+      // Fetch real KPIs per tenant from rollup endpoint
+      const kpiResults: TenantKPI[] = await Promise.all(
+        list.map(async (t) => {
+          try {
+            const rollup = await api.get(`/api/v2/mcc/rollups/kpis?tenant_id=${t.id}&range_days=30`);
+            const totals = rollup.totals || {};
+            const costDollars = (totals.cost_micros || 0) / 1_000_000;
+            const conversions = totals.conversions || 0;
+            // Fetch alert count
+            let alertCount = 0;
+            try {
+              const alerts = await api.get(`/api/dashboard/alerts`);
+              alertCount = Array.isArray(alerts) ? alerts.length : 0;
+            } catch { /* ignore if no tenant scope */ }
+            return {
+              id: t.id,
+              name: t.name,
+              industry: t.industry || "Other",
+              tier: t.tier,
+              spend: Math.round(costDollars),
+              conversions: Math.round(conversions),
+              cpa: conversions > 0 ? Math.round(costDollars / conversions) : 0,
+              alerts: alertCount,
+            };
+          } catch {
+            return {
+              id: t.id, name: t.name, industry: t.industry || "Other",
+              tier: t.tier, spend: 0, conversions: 0, cpa: 0, alerts: 0,
+            };
+          }
+        })
+      );
+      setKpis(kpiResults);
     } catch (e) {
       console.error(e);
     }

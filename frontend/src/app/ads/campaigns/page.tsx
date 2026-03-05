@@ -21,6 +21,8 @@ export default function CampaignsPage() {
     try {
       if (currentStatus === "ENABLED") {
         await api.post(`/api/campaigns/${campaignId}/pause`);
+      } else {
+        await api.post(`/api/campaigns/${campaignId}/enable`);
       }
       const updated = await api.get("/api/campaigns");
       setCampaigns(updated);

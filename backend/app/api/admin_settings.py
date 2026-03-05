@@ -48,6 +48,7 @@ async def get_profile(
         ).limit(1)
     )
     acct = acct_result.scalar_one_or_none()
+    notifications = ((profile.constraints_json or {}).get("notifications", {})) if profile else {}
     return {
         "business_name": tenant.name if tenant else "",
         "industry": tenant.industry if tenant else "",
@@ -55,6 +56,10 @@ async def get_profile(
         "website_url": profile.website_url if profile else "",
         "description": profile.description if profile else "",
         "google_ads_customer_id": acct.customer_id if acct else None,
+        "email_alerts": notifications.get("email_alerts", True),
+        "weekly_report": notifications.get("weekly_report", True),
+        "recommendation_alerts": notifications.get("recommendation_alerts", True),
+        "budget_alerts": notifications.get("budget_alerts", True),
     }
 
 
@@ -64,6 +69,10 @@ class UpdateProfileRequest(BaseModel):
     phone: Optional[str] = None
     website_url: Optional[str] = None
     description: Optional[str] = None
+    email_alerts: Optional[bool] = None
+    weekly_report: Optional[bool] = None
+    recommendation_alerts: Optional[bool] = None
+    budget_alerts: Optional[bool] = None
 
 
 @router.put("/profile")
@@ -89,6 +98,20 @@ async def update_profile(
             profile.website_url = req.website_url
         if req.description is not None:
             profile.description = req.description
+        # Persist notification preferences
+        notifications = (profile.constraints_json or {}).get("notifications", {})
+        if req.email_alerts is not None:
+            notifications["email_alerts"] = req.email_alerts
+        if req.weekly_report is not None:
+            notifications["weekly_report"] = req.weekly_report
+        if req.recommendation_alerts is not None:
+            notifications["recommendation_alerts"] = req.recommendation_alerts
+        if req.budget_alerts is not None:
+            notifications["budget_alerts"] = req.budget_alerts
+        if any(v is not None for v in [req.email_alerts, req.weekly_report, req.recommendation_alerts, req.budget_alerts]):
+            constraints = profile.constraints_json or {}
+            constraints["notifications"] = notifications
+            profile.constraints_json = constraints
 
     await db.flush()
     return {"status": "ok"}

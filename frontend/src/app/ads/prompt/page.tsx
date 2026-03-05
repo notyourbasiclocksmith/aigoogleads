@@ -42,7 +42,7 @@ export default function PromptPage() {
   async function handleLaunch() {
     if (!draft) return;
     try {
-      await api.post("/api/ads/prompt/approve-launch", { draft_id: draft.draft_id || "latest" });
+      await api.post("/api/ads/prompt/approve-launch", { draft_campaign_id: draft.draft_id || draft.id || "latest" });
       alert("Campaign approved and launching!");
     } catch (err: any) {
       setError(err.message);

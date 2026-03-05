@@ -27,19 +27,25 @@ export default function DashboardPage() {
   const [kpis, setKpis] = useState<KPIs | null>(null);
   const [alerts, setAlerts] = useState<any[]>([]);
   const [campaigns, setCampaigns] = useState<any[]>([]);
+  const [trends, setTrends] = useState<any[]>([]);
+  const [campaignSummary, setCampaignSummary] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function load() {
       try {
-        const [kpiData, alertData, campData] = await Promise.all([
+        const [kpiData, alertData, campData, trendData, summaryData] = await Promise.all([
           api.get("/api/dashboard/kpis").catch(() => null),
           api.get("/api/dashboard/alerts").catch(() => []),
           api.get("/api/dashboard/campaigns").catch(() => []),
+          api.get("/api/dashboard/trends").catch(() => []),
+          api.get("/api/dashboard/campaign-summary").catch(() => null),
         ]);
         setKpis(kpiData);
         setAlerts(Array.isArray(alertData) ? alertData : []);
         setCampaigns(Array.isArray(campData) ? campData : []);
+        setTrends(Array.isArray(trendData) ? trendData : []);
+        setCampaignSummary(summaryData);
       } catch (e) {
         console.error(e);
       } finally {
@@ -122,6 +128,48 @@ export default function DashboardPage() {
                       {a.severity}
                     </Badge>
                     <p className="text-sm">{a.message}</p>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Trends */}
+        {trends.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <TrendingUp className="w-5 h-5 text-blue-500" />
+                Daily Trends (Last 30 Days)
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {trends.slice(-7).map((day: any, i: number) => (
+                  <div key={i} className="text-center p-2 bg-slate-50 rounded-lg">
+                    <div className="text-xs text-muted-foreground">{day.date}</div>
+                    <div className="text-sm font-medium">{formatNumber(day.clicks || 0)} clicks</div>
+                    <div className="text-xs text-slate-500">{formatCurrency((day.cost_micros || 0) / 1_000_000)}</div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Campaign Status Summary */}
+        {campaignSummary && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Campaign Status Breakdown</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {Object.entries(campaignSummary).map(([status, count]: [string, any]) => (
+                  <div key={status} className="text-center p-3 bg-slate-50 rounded-lg">
+                    <div className="text-xs text-muted-foreground uppercase">{status}</div>
+                    <div className="text-xl font-bold">{count}</div>
                   </div>
                 ))}
               </div>

@@ -175,3 +175,39 @@ async def pause_campaign(
     await db.flush()
 
     return {"status": "paused"}
+
+
+@router.post("/{campaign_id}/enable")
+async def enable_campaign(
+    campaign_id: str,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    if user.role not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    result = await db.execute(
+        select(Campaign).where(Campaign.id == campaign_id, Campaign.tenant_id == user.tenant_id)
+    )
+    campaign = result.scalar_one_or_none()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    old_status = campaign.status
+    campaign.status = "ENABLED"
+
+    log = ChangeLog(
+        tenant_id=user.tenant_id,
+        actor_type="user",
+        actor_id=user.user_id,
+        google_customer_id=campaign.google_customer_id,
+        entity_type="campaign",
+        entity_id=campaign_id,
+        before_json={"status": old_status},
+        after_json={"status": "ENABLED"},
+        reason="Manual enable by user",
+    )
+    db.add(log)
+    await db.flush()
+
+    return {"status": "enabled"}
