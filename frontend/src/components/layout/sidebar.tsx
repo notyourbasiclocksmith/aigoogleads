@@ -46,7 +46,7 @@ export function Sidebar() {
             IA
           </div>
           <div>
-            <div className="font-bold text-lg leading-tight">Ignite Ads</div>
+            <div className="font-bold text-lg leading-tight">IgniteAds.ai</div>
             <div className="text-xs text-slate-400">AI CMO Platform</div>
           </div>
         </Link>

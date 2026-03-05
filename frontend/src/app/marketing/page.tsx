@@ -11,22 +11,22 @@ import {
 } from "lucide-react";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://aigoogleads.vercel.app"),
-  title: "Ignite Ads AI — AI-Powered Google Ads Management Platform",
+  metadataBase: new URL("https://igniteads.ai"),
+  title: "IgniteAds.ai — AI-Powered Google Ads Management Platform",
   description:
-    "Stop wasting ad spend. Ignite Ads AI uses artificial intelligence to build, optimize, and manage your Google Ads campaigns with expert-level precision. Prompt-to-campaign in seconds. Built-in guardrails. 3 autonomy modes.",
+    "Stop wasting ad spend. IgniteAds.ai uses artificial intelligence to build, optimize, and manage your Google Ads campaigns with expert-level precision. Prompt-to-campaign in seconds. Built-in guardrails. 3 autonomy modes.",
   keywords:
     "AI Google Ads, Google Ads automation, AI campaign management, Google Ads AI tool, PPC automation, Google Ads optimizer, AI ad copy generator, Google Ads for small business, automated Google Ads, smart bidding AI",
-  authors: [{ name: "Ignite Ads AI" }],
-  creator: "Ignite Ads AI",
-  publisher: "Ignite Ads AI",
+  authors: [{ name: "IgniteAds.ai" }],
+  creator: "IgniteAds.ai",
+  publisher: "IgniteAds.ai",
   robots: "index, follow",
   openGraph: {
     type: "website",
     locale: "en_US",
-    url: "https://aigoogleads.vercel.app/marketing",
-    siteName: "Ignite Ads AI",
-    title: "Ignite Ads AI — AI-Powered Google Ads Management Platform",
+    url: "https://igniteads.ai/marketing",
+    siteName: "IgniteAds.ai",
+    title: "IgniteAds.ai — AI-Powered Google Ads Management Platform",
     description:
       "Stop wasting ad spend. AI builds, optimizes, and manages your Google Ads with expert-level precision. Prompt-to-campaign in seconds.",
     images: [
@@ -34,19 +34,19 @@ export const metadata: Metadata = {
         url: "/og-image.png",
         width: 1200,
         height: 630,
-        alt: "Ignite Ads AI Platform",
+        alt: "IgniteAds.ai Platform",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "Ignite Ads AI — AI-Powered Google Ads Management",
+    title: "IgniteAds.ai — AI-Powered Google Ads Management",
     description:
       "Stop wasting ad spend. AI builds, optimizes, and manages your Google Ads with expert-level precision.",
     images: ["/og-image.png"],
   },
   alternates: {
-    canonical: "https://aigoogleads.vercel.app/marketing",
+    canonical: "https://igniteads.ai/marketing",
   },
 };
 
@@ -54,7 +54,7 @@ function JsonLd() {
   const structuredData = {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
-    name: "Ignite Ads AI",
+    name: "IgniteAds.ai",
     applicationCategory: "BusinessApplication",
     operatingSystem: "Web",
     description:
@@ -110,7 +110,7 @@ function Nav() {
               <Zap className="w-5 h-5 text-white" />
             </div>
             <span className="text-xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
-              Ignite Ads AI
+              IgniteAds.ai
             </span>
           </div>
           <div className="hidden md:flex items-center gap-8 text-sm font-medium text-gray-600">
@@ -269,7 +269,7 @@ function ProblemSolution() {
             <div className="absolute -inset-4 bg-gradient-to-r from-blue-500/10 to-indigo-500/10 rounded-3xl blur-2xl" />
             <div className="relative bg-gradient-to-br from-blue-600 to-indigo-700 rounded-2xl p-8 sm:p-10 text-white">
               <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/15 text-sm font-medium mb-6">
-                <Sparkles className="w-4 h-4" /> The Ignite Ads AI Solution
+                <Sparkles className="w-4 h-4" /> The IgniteAds.ai Solution
               </div>
               <h3 className="text-2xl sm:text-3xl font-bold leading-tight">
                 AI That Manages Your Ads Like an Expert — 24/7
@@ -729,7 +729,7 @@ function Integrations() {
 function FAQ() {
   const faqs = [
     {
-      q: "Do I need Google Ads experience to use Ignite Ads AI?",
+      q: "Do I need Google Ads experience to use IgniteAds.ai?",
       a: "Not at all. Our AI handles the complexity. Just describe what you want in plain English — like \"Launch a campaign for emergency plumbing in Houston\" — and our 10-step AI pipeline builds an expert-level campaign for you.",
     },
     {
@@ -738,7 +738,7 @@ function FAQ() {
     },
     {
       q: "How is this different from Google's Smart Campaigns?",
-      a: "Google's Smart Campaigns give you almost zero control and transparency. Ignite Ads AI gives you expert-level campaign structure (SKAGs, themed ad groups), psychology-driven ad copy, competitive intelligence, three autonomy modes, and full visibility into every decision the AI makes.",
+      a: "Google's Smart Campaigns give you almost zero control and transparency. IgniteAds.ai gives you expert-level campaign structure (SKAGs, themed ad groups), psychology-driven ad copy, competitive intelligence, three autonomy modes, and full visibility into every decision the AI makes.",
     },
     {
       q: "Can I use this for my agency with multiple clients?",
@@ -882,7 +882,7 @@ function RealResults() {
             Real Results From <span className="text-blue-600">AI Optimization</span>
           </h2>
           <p className="mt-4 text-lg text-gray-600">
-            See how service businesses transformed their Google Ads performance with Ignite Ads AI.
+            See how service businesses transformed their Google Ads performance with IgniteAds.ai.
           </p>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
@@ -956,7 +956,7 @@ function WhyDifferent() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="text-center max-w-3xl mx-auto mb-16">
           <h2 className="text-3xl sm:text-4xl font-extrabold text-gray-900">
-            Why Ignite Ads AI Is <span className="text-blue-600">Different</span>
+            Why IgniteAds.ai Is <span className="text-blue-600">Different</span>
           </h2>
           <p className="mt-4 text-lg text-gray-600">
             Most &ldquo;AI&rdquo; tools are just rule engines with a chatbot. We built a real AI strategist.
@@ -978,7 +978,7 @@ function WhyDifferent() {
           </div>
           <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-2xl p-8 border-2 border-blue-200 relative">
             <div className="absolute -top-3 left-6 px-3 py-1 rounded-full bg-blue-600 text-white text-xs font-bold">
-              Ignite Ads AI
+              IgniteAds.ai
             </div>
             <h3 className="text-lg font-bold text-blue-700 mb-6 flex items-center gap-2">
               <CheckCircle2 className="w-5 h-5 text-blue-600" /> Our Platform
@@ -1349,7 +1349,7 @@ function ReplaceAgency() {
             <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-4 py-1 rounded-full bg-yellow-400 text-gray-900 text-xs font-bold">
               10x Better Value
             </div>
-            <h3 className="text-xl font-bold text-gray-900 mb-6">Ignite Ads AI</h3>
+            <h3 className="text-xl font-bold text-gray-900 mb-6">IgniteAds.ai</h3>
             <ul className="space-y-4">
               {[
                 { label: "Monthly cost", value: "$49 – $499", highlight: true },
@@ -1424,7 +1424,7 @@ function Footer() {
               <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-600 to-indigo-600 flex items-center justify-center">
                 <Zap className="w-5 h-5 text-white" />
               </div>
-              <span className="text-lg font-bold text-white">Ignite Ads AI</span>
+              <span className="text-lg font-bold text-white">IgniteAds.ai</span>
             </div>
             <p className="text-sm leading-relaxed">
               AI-powered Google Ads management for service businesses and agencies.
@@ -1456,7 +1456,7 @@ function Footer() {
           </div>
         </div>
         <div className="mt-12 pt-8 border-t border-gray-800 flex flex-col sm:flex-row items-center justify-between gap-4 text-sm">
-          <p>&copy; {new Date().getFullYear()} Ignite Ads AI. All rights reserved.</p>
+          <p>&copy; {new Date().getFullYear()} IgniteAds.ai. All rights reserved.</p>
           <p>Built with AI for businesses that demand results.</p>
         </div>
       </div>

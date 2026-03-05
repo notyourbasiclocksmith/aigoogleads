@@ -5,8 +5,8 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Ignite Ads AI — AI Google Ads Marketing Worker",
-  description: "Multi-tenant AI-powered Google Ads campaign assistant for service SMBs",
+  title: "IgniteAds.ai — AI-Powered Google Ads Management",
+  description: "AI-powered Google Ads management platform that builds, optimizes, and manages campaigns with expert-level precision for service businesses.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

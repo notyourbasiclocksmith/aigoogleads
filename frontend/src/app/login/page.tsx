@@ -52,8 +52,8 @@ export default function LoginPage() {
               IA
             </div>
           </div>
-          <h1 className="text-3xl font-bold text-white">Ignite Ads AI</h1>
-          <p className="text-blue-200 mt-2">AI-Powered Google Ads Marketing Worker</p>
+          <h1 className="text-3xl font-bold text-white">IgniteAds.ai</h1>
+          <p className="text-blue-200 mt-2">AI-Powered Google Ads Management</p>
         </div>
 
         <Card>

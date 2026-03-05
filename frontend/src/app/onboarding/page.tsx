@@ -187,7 +187,7 @@ function OnboardingContent() {
               <Sparkles className="w-5 h-5 text-white" />
             </div>
             <div>
-              <h1 className="text-lg font-bold text-white">Ignite Ads AI</h1>
+              <h1 className="text-lg font-bold text-white">IgniteAds.ai</h1>
               <p className="text-xs text-slate-400">Intelligent Ad Management</p>
             </div>
           </div>
@@ -250,7 +250,7 @@ function OnboardingContent() {
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center">
               <Sparkles className="w-4 h-4 text-white" />
             </div>
-            <span className="text-sm font-bold text-white">Ignite Ads AI</span>
+            <span className="text-sm font-bold text-white">IgniteAds.ai</span>
           </div>
           <span className="text-xs text-slate-400">Step {step + 1}/{steps.length}</span>
         </div>
@@ -531,7 +531,7 @@ function OnboardingContent() {
                   <div className="p-4 rounded-xl bg-pink-500/5 border border-pink-500/20">
                     <p className="text-sm text-pink-300 flex items-center gap-2">
                       <Brain className="w-4 h-4" />
-                      Choose how much control Ignite AI has over your campaigns. You can change this anytime.
+                      Choose how much control IgniteAds.ai has over your campaigns. You can change this anytime.
                     </p>
                   </div>
 
