@@ -87,9 +87,9 @@ async def check_limit_endpoint(tenant_id: str, metric: str, db: AsyncSession = D
 async def list_plans():
     return {
         "plans": [
-            {"name": "starter", "label": "Starter", "limits": PLAN_LIMITS["starter"], "price": "$49/mo"},
-            {"name": "pro", "label": "Pro", "limits": PLAN_LIMITS["pro"], "price": "$199/mo"},
-            {"name": "elite", "label": "Elite", "limits": PLAN_LIMITS["elite"], "price": "$499/mo"},
+            {"name": "starter", "label": "Starter", "limits": PLAN_LIMITS["starter"], "price": "$97/mo", "price_cents": 9700},
+            {"name": "pro", "label": "Pro", "limits": PLAN_LIMITS["pro"], "price": "$197/mo", "price_cents": 19700},
+            {"name": "elite", "label": "Elite", "limits": PLAN_LIMITS["elite"], "price": "$397/mo", "price_cents": 39700},
         ]
     }
 

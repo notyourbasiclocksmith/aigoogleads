@@ -23,6 +23,7 @@ PLAN_LIMITS: Dict[str, Dict[str, int]] = {
         "seopix_credits": 10,
         "accounts_connected": 1,
         "autopilot_actions": 100,
+        "ad_spend_limit": 5000,
     },
     "pro": {
         "prompts": 500,
@@ -30,6 +31,7 @@ PLAN_LIMITS: Dict[str, Dict[str, int]] = {
         "seopix_credits": 100,
         "accounts_connected": 5,
         "autopilot_actions": 1000,
+        "ad_spend_limit": 25000,
     },
     "elite": {
         "prompts": -1,  # unlimited
@@ -37,8 +39,30 @@ PLAN_LIMITS: Dict[str, Dict[str, int]] = {
         "seopix_credits": 500,
         "accounts_connected": -1,
         "autopilot_actions": -1,
+        "ad_spend_limit": -1,
     },
 }
+
+PLAN_PRICES: Dict[str, int] = {
+    "starter": 9700,   # $97/mo
+    "pro": 19700,      # $197/mo
+    "elite": 39700,    # $397/mo
+}
+
+# Stripe price IDs → plan name mapping (set via env or hardcoded for live)
+STRIPE_PRICE_TO_PLAN: Dict[str, str] = {}
+
+
+def _build_price_to_plan_map() -> Dict[str, str]:
+    """Build reverse map from Stripe price IDs to plan names."""
+    mapping = {}
+    if settings.STRIPE_PRICE_STARTER:
+        mapping[settings.STRIPE_PRICE_STARTER] = "starter"
+    if settings.STRIPE_PRICE_PRO:
+        mapping[settings.STRIPE_PRICE_PRO] = "pro"
+    if settings.STRIPE_PRICE_ELITE:
+        mapping[settings.STRIPE_PRICE_ELITE] = "elite"
+    return mapping
 
 
 async def get_or_create_billing(db: AsyncSession, tenant_id: str) -> BillingCustomer:
@@ -126,7 +150,9 @@ async def create_portal_session(db: AsyncSession, tenant_id: str, return_url: st
 
 async def handle_webhook_event(db: AsyncSession, event_type: str, data: dict) -> Dict[str, Any]:
     """Handle Stripe webhook events for subscription changes."""
-    if event_type == "customer.subscription.updated":
+    price_to_plan = _build_price_to_plan_map()
+
+    if event_type in ("customer.subscription.created", "customer.subscription.updated"):
         sub = data.get("object", {})
         customer_id = sub.get("customer", "")
         stmt = select(BillingCustomer).where(BillingCustomer.stripe_customer_id == customer_id)
@@ -134,11 +160,36 @@ async def handle_webhook_event(db: AsyncSession, event_type: str, data: dict) ->
         billing = result.scalars().first()
         if billing:
             billing.status = sub.get("status", billing.status)
-            plan_item = sub.get("items", {}).get("data", [{}])[0]
             billing.stripe_subscription_id = sub.get("id", billing.stripe_subscription_id)
+            # Resolve plan from price ID
+            items_data = sub.get("items", {}).get("data", [])
+            if items_data:
+                price_id = items_data[0].get("price", {}).get("id", "")
+                resolved_plan = price_to_plan.get(price_id)
+                if resolved_plan:
+                    billing.plan = resolved_plan
+                    logger.info("Plan resolved from Stripe price", plan=resolved_plan, price_id=price_id)
             if sub.get("current_period_end"):
                 billing.current_period_end = datetime.fromtimestamp(sub["current_period_end"], tz=timezone.utc)
-            return {"updated": True}
+            return {"updated": True, "plan": billing.plan}
+
+    elif event_type == "checkout.session.completed":
+        session = data.get("object", {})
+        customer_id = session.get("customer", "")
+        metadata = session.get("metadata", {})
+        plan = metadata.get("plan", "")
+        stmt = select(BillingCustomer).where(BillingCustomer.stripe_customer_id == customer_id)
+        result = await db.execute(stmt)
+        billing = result.scalars().first()
+        if billing and plan:
+            billing.plan = plan
+            billing.status = "active"
+            sub_id = session.get("subscription", "")
+            if sub_id:
+                billing.stripe_subscription_id = sub_id
+            logger.info("Checkout completed, plan set", plan=plan, customer_id=customer_id)
+            return {"checkout_completed": True, "plan": plan}
+
     elif event_type == "customer.subscription.deleted":
         sub = data.get("object", {})
         customer_id = sub.get("customer", "")
@@ -148,6 +199,7 @@ async def handle_webhook_event(db: AsyncSession, event_type: str, data: dict) ->
         if billing:
             billing.status = "canceled"
             return {"canceled": True}
+
     return {"handled": False}
 
 

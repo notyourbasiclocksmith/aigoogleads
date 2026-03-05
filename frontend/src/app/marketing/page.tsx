@@ -124,7 +124,7 @@ function Nav() {
               Log In
             </a>
             <a
-              href="/login"
+              href="/pricing"
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-sm font-semibold shadow-lg shadow-blue-500/25 hover:shadow-blue-500/40 transition-all hover:-translate-y-0.5"
             >
               Start Free Trial <ArrowRight className="w-4 h-4" />
@@ -163,7 +163,7 @@ function Hero() {
           </p>
           <div className="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
             <a
-              href="/login"
+              href="/pricing"
               className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-8 py-4 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-bold text-lg shadow-xl shadow-blue-500/25 hover:shadow-blue-500/40 transition-all hover:-translate-y-0.5"
             >
               <Rocket className="w-5 h-5" /> Start Free Trial
@@ -623,25 +623,25 @@ function Pricing() {
   const plans = [
     {
       name: "Starter",
-      price: 49,
+      price: 97,
       desc: "Perfect for single-location businesses getting started with AI ads.",
-      features: ["1 Google Ads account", "Suggest mode (manual approval)", "1 report per month", "10 AI campaign prompts", "Email support"],
+      features: ["1 Google Ads account", "Up to $5K/mo ad spend", "Suggest mode (manual approval)", "50 AI campaign prompts/mo", "20 SERP competitor scans", "Email support"],
       cta: "Start Free Trial",
       highlighted: false,
     },
     {
       name: "Pro",
-      price: 199,
+      price: 197,
       desc: "For growing businesses that want AI doing the heavy lifting.",
-      features: ["3 Google Ads accounts", "Semi-Auto mode", "Weekly reports", "50 AI campaign prompts", "Creative Studio", "Competitive Intelligence", "Priority support"],
+      features: ["5 Google Ads accounts", "Up to $25K/mo ad spend", "Semi-Auto mode", "500 AI campaign prompts/mo", "200 SERP competitor scans", "Creative Studio", "Competitive Intelligence", "Priority support"],
       cta: "Start Free Trial",
       highlighted: true,
     },
     {
       name: "Elite",
-      price: 499,
+      price: 397,
       desc: "For agencies and multi-location businesses demanding full power.",
-      features: ["Unlimited accounts", "Full-Auto mode", "Weekly + Monthly reports", "Unlimited AI prompts", "Agency / MCC mode", "All integrations", "All connectors", "Dedicated support"],
+      features: ["Unlimited accounts", "Unlimited ad spend", "Full-Auto mode", "Unlimited AI prompts", "Unlimited SERP scans", "Agency / MCC mode", "All integrations & connectors", "Dedicated support"],
       cta: "Start Free Trial",
       highlighted: false,
     },
@@ -672,7 +672,7 @@ function Pricing() {
               </div>
               <p className="mt-3 text-sm text-gray-600">{p.desc}</p>
               <a
-                href="/login"
+                href={`/pricing?plan=${p.name.toLowerCase()}`}
                 className={`mt-6 block w-full text-center py-3 rounded-xl font-semibold text-sm transition-all ${
                   p.highlighted
                     ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-500/25 hover:shadow-blue-500/40"
@@ -792,7 +792,7 @@ function CTAFooter() {
         </p>
         <div className="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
           <a
-            href="/login"
+            href="/pricing"
             className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-10 py-4 rounded-xl bg-white text-blue-600 font-bold text-lg shadow-xl hover:shadow-2xl transition-all hover:-translate-y-0.5"
           >
             <Rocket className="w-5 h-5" /> Start Free Trial
@@ -1352,7 +1352,7 @@ function ReplaceAgency() {
             <h3 className="text-xl font-bold text-gray-900 mb-6">IgniteAds.ai</h3>
             <ul className="space-y-4">
               {[
-                { label: "Monthly cost", value: "$49 – $499", highlight: true },
+                { label: "Monthly cost", value: "$97 – $397", highlight: true },
                 { label: "Setup time", value: "10 minutes", highlight: true },
                 { label: "Optimization frequency", value: "24/7 continuous", highlight: true },
                 { label: "Competitor monitoring", value: "Real-time SERP scanning", highlight: true },
@@ -1443,7 +1443,7 @@ function Footer() {
             <h4 className="font-semibold text-white mb-4">Platform</h4>
             <ul className="space-y-2 text-sm">
               <li><a href="/login" className="hover:text-white transition-colors">Log In</a></li>
-              <li><a href="/login" className="hover:text-white transition-colors">Sign Up</a></li>
+              <li><a href="/register" className="hover:text-white transition-colors">Sign Up</a></li>
               <li><a href="mailto:contact@thekeybot.com" className="hover:text-white transition-colors">Contact</a></li>
             </ul>
           </div>
