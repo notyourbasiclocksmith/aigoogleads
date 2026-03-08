@@ -178,6 +178,17 @@ def sync_ads_account_task(tenant_id: str, integration_id: str):
     asyncio.run(_sync_ads_account_async(tenant_id, integration_id))
 
 
+async def _update_sync_progress(db, integration, status: str, message: str, progress: int, **kwargs):
+    """Helper to flush sync progress to DB so the frontend can poll it."""
+    integration.sync_status = status
+    integration.sync_message = message
+    integration.sync_progress = progress
+    for k, v in kwargs.items():
+        if hasattr(integration, k):
+            setattr(integration, k, v)
+    await db.commit()
+
+
 async def _sync_ads_account_async(tenant_id: str, integration_id: str):
     from app.core.database import async_session_factory
     from app.models.integration_google_ads import IntegrationGoogleAds
@@ -196,17 +207,29 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
             return
 
         try:
+            # Step 1: Start sync
+            await _update_sync_progress(
+                db, integration, "syncing", "Connecting to Google Ads...", 5,
+                sync_started_at=datetime.now(timezone.utc), sync_error=None,
+                campaigns_synced=0, conversions_synced=0,
+            )
+
             client = GoogleAdsClient(
                 customer_id=integration.customer_id,
                 refresh_token_encrypted=integration.refresh_token_encrypted,
                 login_customer_id=integration.login_customer_id,
             )
 
+            # Step 2: Account info
+            await _update_sync_progress(db, integration, "syncing", "Fetching account info...", 15)
             account_info = await client.get_account_info()
             if account_info.get("name"):
                 integration.account_name = account_info["name"]
 
+            # Step 3: Campaigns
+            await _update_sync_progress(db, integration, "syncing", "Pulling campaigns...", 30)
             campaigns = await client.get_campaigns()
+            campaign_count = 0
             for c in campaigns:
                 existing = await db.execute(
                     select(Campaign).where(
@@ -232,8 +255,17 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
                     camp.name = c["name"]
                     camp.status = c["status"]
                     camp.budget_micros = c.get("budget_micros", 0)
+                campaign_count += 1
+            await _update_sync_progress(
+                db, integration, "syncing",
+                f"Synced {campaign_count} campaign{'s' if campaign_count != 1 else ''}",
+                50, campaigns_synced=campaign_count,
+            )
 
+            # Step 4: Conversion actions
+            await _update_sync_progress(db, integration, "syncing", "Pulling conversion actions...", 60)
             conv_actions = await client.get_conversion_actions()
+            conv_count = 0
             for ca in conv_actions:
                 existing = await db.execute(
                     select(Conversion).where(
@@ -254,7 +286,15 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
                         last_verified_at=datetime.now(timezone.utc),
                     )
                     db.add(conv)
+                conv_count += 1
+            await _update_sync_progress(
+                db, integration, "syncing",
+                f"Synced {conv_count} conversion action{'s' if conv_count != 1 else ''}",
+                75, conversions_synced=conv_count,
+            )
 
+            # Step 5: Performance metrics
+            await _update_sync_progress(db, integration, "syncing", "Pulling 30-day performance data...", 80)
             metrics = await client.get_performance_metrics("LAST_30_DAYS")
             for m in metrics:
                 perf = PerformanceDaily(
@@ -272,13 +312,30 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
                 )
                 db.add(perf)
 
+            # Step 6: Complete
             integration.last_sync_at = datetime.now(timezone.utc)
             integration.health_score = 85
-
-            await db.commit()
-            logger.info("Ads account sync complete", tenant_id=tenant_id, integration_id=integration_id)
+            await _update_sync_progress(
+                db, integration, "completed",
+                f"Sync complete — {campaign_count} campaigns, {conv_count} conversions, {len(metrics)} days of metrics",
+                100,
+            )
+            logger.info("Ads account sync complete", tenant_id=tenant_id, integration_id=integration_id,
+                        campaigns=campaign_count, conversions=conv_count, metrics=len(metrics))
         except Exception as e:
             await db.rollback()
+            # Re-fetch integration to update error status
+            async with async_session_factory() as err_db:
+                res = await err_db.execute(
+                    select(IntegrationGoogleAds).where(IntegrationGoogleAds.id == integration_id)
+                )
+                integ = res.scalar_one_or_none()
+                if integ:
+                    integ.sync_status = "failed"
+                    integ.sync_message = f"Sync failed: {str(e)[:400]}"
+                    integ.sync_progress = 0
+                    integ.sync_error = str(e)[:1000]
+                    await err_db.commit()
             logger.error("Ads account sync failed", tenant_id=tenant_id, error=str(e))
 
 

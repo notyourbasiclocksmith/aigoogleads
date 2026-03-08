@@ -83,6 +83,11 @@ async def list_accounts(
             "is_active": a.is_active,
             "health_score": a.health_score,
             "last_sync_at": a.last_sync_at.isoformat() if a.last_sync_at else None,
+            "sync_status": getattr(a, "sync_status", "idle") or "idle",
+            "sync_message": getattr(a, "sync_message", None),
+            "sync_progress": getattr(a, "sync_progress", 0) or 0,
+            "campaigns_synced": getattr(a, "campaigns_synced", 0) or 0,
+            "conversions_synced": getattr(a, "conversions_synced", 0) or 0,
             "created_at": a.created_at.isoformat() if a.created_at else None,
         }
         for a in accounts
@@ -159,3 +164,32 @@ async def trigger_sync(
     sync_ads_account_task.delay(user.tenant_id, account.id)
 
     return {"status": "sync_triggered"}
+
+
+@router.get("/{account_id}/sync-status")
+async def get_sync_status(
+    account_id: str,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Poll sync progress for a Google Ads account."""
+    result = await db.execute(
+        select(IntegrationGoogleAds).where(
+            IntegrationGoogleAds.id == account_id,
+            IntegrationGoogleAds.tenant_id == user.tenant_id,
+        )
+    )
+    account = result.scalar_one_or_none()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    return {
+        "sync_status": account.sync_status or "idle",
+        "sync_message": account.sync_message,
+        "sync_progress": account.sync_progress or 0,
+        "sync_started_at": account.sync_started_at.isoformat() if account.sync_started_at else None,
+        "sync_error": account.sync_error,
+        "campaigns_synced": account.campaigns_synced or 0,
+        "conversions_synced": account.conversions_synced or 0,
+        "last_sync_at": account.last_sync_at.isoformat() if account.last_sync_at else None,
+    }

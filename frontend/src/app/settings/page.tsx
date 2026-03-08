@@ -1,13 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { AppLayout } from "@/components/layout/sidebar";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
-import { Save, Shield, Bell, Users, Link2, RefreshCw } from "lucide-react";
+import { Save, Shield, Bell, Users, Link2, RefreshCw, CheckCircle2, XCircle, Loader2, BarChart3, Zap } from "lucide-react";
 
 export default function SettingsPage() {
   const [profile, setProfile] = useState<any>({});
@@ -15,7 +15,8 @@ export default function SettingsPage() {
   const [accounts, setAccounts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [syncing, setSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<any>(null);
+  const pollRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -25,19 +26,43 @@ export default function SettingsPage() {
     ]).then(([p, g, a]) => {
       setProfile(p || {});
       setGuardrails(g || {});
-      setAccounts(Array.isArray(a) ? a : []);
+      const accts = Array.isArray(a) ? a : [];
+      setAccounts(accts);
+      // If an account is already syncing, start polling
+      const active = accts.find((acc: any) => acc.sync_status === "syncing");
+      if (active) {
+        setSyncStatus({ sync_status: active.sync_status, sync_message: active.sync_message, sync_progress: active.sync_progress });
+        startPolling(active.id);
+      }
     }).finally(() => setLoading(false));
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, []);
+
+  const startPolling = useCallback((accountId: string) => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      try {
+        const status = await api.get(`/api/ads/accounts/${accountId}/sync-status`);
+        setSyncStatus(status);
+        if (status.sync_status === "completed" || status.sync_status === "failed") {
+          if (pollRef.current) clearInterval(pollRef.current);
+          pollRef.current = null;
+          // Refresh accounts list
+          const a = await api.get("/api/ads/accounts").catch(() => []);
+          setAccounts(Array.isArray(a) ? a : []);
+        }
+      } catch (e) { console.error("Poll error:", e); }
+    }, 2000);
   }, []);
 
   async function triggerSync() {
     const active = accounts.find((a: any) => a.is_active);
     if (!active) return;
-    setSyncing(true);
+    setSyncStatus({ sync_status: "syncing", sync_message: "Starting sync...", sync_progress: 0 });
     try {
       await api.post(`/api/ads/accounts/${active.id}/sync`);
-      alert("Sync triggered! Campaigns, conversions, and performance data will be pulled from Google Ads. This may take a minute.");
-    } catch (e) { console.error(e); }
-    finally { setSyncing(false); }
+      startPolling(active.id);
+    } catch (e) { console.error(e); setSyncStatus(null); }
   }
 
   async function saveProfile() {
@@ -131,36 +156,98 @@ export default function SettingsPage() {
             </CardTitle>
             <CardDescription>Manage your Google Ads account integration</CardDescription>
           </CardHeader>
-          <CardContent>
-            <div className="flex items-center justify-between p-4 rounded-lg border">
-              <div>
-                <p className="font-medium">Google Ads Account</p>
-                <p className="text-sm text-muted-foreground">
-                  {profile.google_ads_customer_id
-                    ? `Connected: ${profile.google_ads_customer_id}`
-                    : "Not connected"}
-                </p>
-              </div>
-              <Badge variant={profile.google_ads_customer_id ? "success" : "secondary"}>
-                {profile.google_ads_customer_id ? "Connected" : "Disconnected"}
-              </Badge>
-            </div>
-            {profile.google_ads_customer_id ? (
-              <div className="mt-3 flex items-center gap-3">
-                <Button variant="outline" onClick={triggerSync} disabled={syncing}>
-                  <RefreshCw className={`w-4 h-4 mr-2 ${syncing ? "animate-spin" : ""}`} />
-                  {syncing ? "Syncing..." : "Sync Now"}
-                </Button>
-                {accounts[0]?.last_sync_at && (
-                  <span className="text-xs text-muted-foreground">
-                    Last synced: {new Date(accounts[0].last_sync_at).toLocaleString()}
-                  </span>
+          <CardContent className="space-y-4">
+            {accounts.map((acct: any) => (
+              <div key={acct.id} className="p-4 rounded-lg border space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-medium">{acct.account_name || "Google Ads Account"}</p>
+                    <p className="text-sm text-muted-foreground">
+                      Customer ID: {acct.customer_id}
+                    </p>
+                  </div>
+                  <Badge variant={acct.is_active ? "default" : "secondary"}>
+                    {acct.is_active ? "Connected" : "Disconnected"}
+                  </Badge>
+                </div>
+
+                {/* Sync Progress */}
+                {syncStatus && syncStatus.sync_status === "syncing" && (
+                  <div className="space-y-2 p-3 rounded-lg bg-blue-50 border border-blue-200">
+                    <div className="flex items-center gap-2">
+                      <Loader2 className="w-4 h-4 text-blue-600 animate-spin" />
+                      <span className="text-sm font-medium text-blue-800">
+                        {syncStatus.sync_message || "Syncing..."}
+                      </span>
+                    </div>
+                    <div className="w-full bg-blue-100 rounded-full h-2.5">
+                      <div
+                        className="bg-blue-600 h-2.5 rounded-full transition-all duration-500"
+                        style={{ width: `${syncStatus.sync_progress || 0}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between text-xs text-blue-600">
+                      <span>{syncStatus.sync_progress || 0}% complete</span>
+                      <span>
+                        {syncStatus.campaigns_synced > 0 && `${syncStatus.campaigns_synced} campaigns`}
+                        {syncStatus.conversions_synced > 0 && ` · ${syncStatus.conversions_synced} conversions`}
+                      </span>
+                    </div>
+                  </div>
                 )}
+
+                {syncStatus && syncStatus.sync_status === "completed" && (
+                  <div className="p-3 rounded-lg bg-green-50 border border-green-200 flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-green-600" />
+                    <span className="text-sm text-green-800">{syncStatus.sync_message}</span>
+                  </div>
+                )}
+
+                {syncStatus && syncStatus.sync_status === "failed" && (
+                  <div className="p-3 rounded-lg bg-red-50 border border-red-200 flex items-start gap-2">
+                    <XCircle className="w-4 h-4 text-red-600 mt-0.5" />
+                    <div>
+                      <span className="text-sm font-medium text-red-800">Sync Failed</span>
+                      <p className="text-xs text-red-600 mt-0.5">{syncStatus.sync_message}</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Sync stats */}
+                {(acct.campaigns_synced > 0 || acct.conversions_synced > 0) && (!syncStatus || syncStatus.sync_status !== "syncing") && (
+                  <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                    <span className="flex items-center gap-1"><BarChart3 className="w-3 h-3" /> {acct.campaigns_synced} campaigns</span>
+                    <span className="flex items-center gap-1"><Zap className="w-3 h-3" /> {acct.conversions_synced} conversions</span>
+                  </div>
+                )}
+
+                {/* Sync button + last synced */}
+                <div className="flex items-center gap-3">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={triggerSync}
+                    disabled={syncStatus?.sync_status === "syncing"}
+                  >
+                    <RefreshCw className={`w-4 h-4 mr-2 ${syncStatus?.sync_status === "syncing" ? "animate-spin" : ""}`} />
+                    {syncStatus?.sync_status === "syncing" ? "Syncing..." : "Sync Now"}
+                  </Button>
+                  {acct.last_sync_at && (
+                    <span className="text-xs text-muted-foreground">
+                      Last synced: {new Date(acct.last_sync_at).toLocaleString()}
+                    </span>
+                  )}
+                </div>
               </div>
-            ) : (
-              <Button variant="outline" className="mt-3" onClick={() => window.open("/api/onboarding/step3/oauth-url", "_blank")}>
-                Connect Google Ads
-              </Button>
+            ))}
+
+            {accounts.length === 0 && (
+              <div className="text-center py-6">
+                <p className="text-sm text-muted-foreground mb-3">No Google Ads accounts connected</p>
+                <Button variant="outline" onClick={() => window.location.href = "/onboarding"}>
+                  Connect Google Ads
+                </Button>
+              </div>
             )}
           </CardContent>
         </Card>
