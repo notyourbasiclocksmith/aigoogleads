@@ -193,6 +193,9 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
     from app.core.database import async_session_factory
     from app.models.integration_google_ads import IntegrationGoogleAds
     from app.models.campaign import Campaign
+    from app.models.ad_group import AdGroup
+    from app.models.ad import Ad
+    from app.models.keyword import Keyword
     from app.models.conversion import Conversion
     from app.models.performance_daily import PerformanceDaily
     from app.integrations.google_ads.client import GoogleAdsClient
@@ -221,15 +224,17 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
             )
 
             # Step 2: Account info
-            await _update_sync_progress(db, integration, "syncing", "Fetching account info...", 15)
+            await _update_sync_progress(db, integration, "syncing", "Fetching account info...", 10)
             account_info = await client.get_account_info()
             if account_info.get("name"):
                 integration.account_name = account_info["name"]
 
             # Step 3: Campaigns
-            await _update_sync_progress(db, integration, "syncing", "Pulling campaigns...", 30)
+            await _update_sync_progress(db, integration, "syncing", "Pulling campaigns...", 15)
             campaigns = await client.get_campaigns()
             campaign_count = 0
+            # Build a mapping from google campaign_id -> our Campaign UUID
+            google_id_to_uuid = {}
             for c in campaigns:
                 existing = await db.execute(
                     select(Campaign).where(
@@ -251,18 +256,127 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
                         is_draft=False,
                     )
                     db.add(camp)
+                    await db.flush()  # flush to get camp.id
                 else:
                     camp.name = c["name"]
                     camp.status = c["status"]
                     camp.budget_micros = c.get("budget_micros", 0)
+                    camp.bidding_strategy = c.get("bidding_strategy") or camp.bidding_strategy
+                google_id_to_uuid[c["campaign_id"]] = camp.id
                 campaign_count += 1
             await _update_sync_progress(
                 db, integration, "syncing",
-                f"Synced {campaign_count} campaign{'s' if campaign_count != 1 else ''}",
-                50, campaigns_synced=campaign_count,
+                f"Synced {campaign_count} campaigns",
+                25, campaigns_synced=campaign_count,
             )
 
-            # Step 4: Conversion actions
+            # Step 4: Ad groups, keywords, and ads for each campaign
+            total_ag = 0
+            total_kw = 0
+            total_ad = 0
+            for idx, c in enumerate(campaigns):
+                camp_uuid = google_id_to_uuid.get(c["campaign_id"])
+                if not camp_uuid:
+                    continue
+
+                pct = 25 + int((idx / max(len(campaigns), 1)) * 25)
+                await _update_sync_progress(
+                    db, integration, "syncing",
+                    f"Pulling ad groups for '{c['name']}'...", pct,
+                )
+
+                ad_groups = await client.get_ad_groups(c["campaign_id"])
+                for ag in ad_groups:
+                    existing_ag = await db.execute(
+                        select(AdGroup).where(
+                            AdGroup.tenant_id == tenant_id,
+                            AdGroup.ad_group_id == ag["ad_group_id"],
+                        )
+                    )
+                    ad_grp = existing_ag.scalar_one_or_none()
+                    if not ad_grp:
+                        ad_grp = AdGroup(
+                            tenant_id=tenant_id,
+                            campaign_id=camp_uuid,
+                            ad_group_id=ag["ad_group_id"],
+                            name=ag["name"],
+                            status=ag["status"],
+                        )
+                        db.add(ad_grp)
+                        await db.flush()
+                    else:
+                        ad_grp.name = ag["name"]
+                        ad_grp.status = ag["status"]
+                    total_ag += 1
+
+                    # Keywords for this ad group
+                    keywords = await client.get_keywords(ag["ad_group_id"])
+                    for kw in keywords:
+                        existing_kw = await db.execute(
+                            select(Keyword).where(
+                                Keyword.tenant_id == tenant_id,
+                                Keyword.keyword_id == kw["keyword_id"],
+                            )
+                        )
+                        kw_obj = existing_kw.scalar_one_or_none()
+                        if not kw_obj:
+                            kw_obj = Keyword(
+                                tenant_id=tenant_id,
+                                ad_group_id=ad_grp.id,
+                                keyword_id=kw["keyword_id"],
+                                text=kw["text"],
+                                match_type=kw["match_type"],
+                                status=kw["status"],
+                                quality_score=kw.get("quality_score"),
+                                cpc_bid_micros=kw.get("cpc_bid_micros", 0),
+                            )
+                            db.add(kw_obj)
+                        else:
+                            kw_obj.text = kw["text"]
+                            kw_obj.match_type = kw["match_type"]
+                            kw_obj.status = kw["status"]
+                            kw_obj.quality_score = kw.get("quality_score")
+                            kw_obj.cpc_bid_micros = kw.get("cpc_bid_micros", 0)
+                        total_kw += 1
+
+                    # Ads for this ad group
+                    ads = await client.get_ads(ag["ad_group_id"])
+                    for ad in ads:
+                        existing_ad = await db.execute(
+                            select(Ad).where(
+                                Ad.tenant_id == tenant_id,
+                                Ad.ad_id == ad["ad_id"],
+                            )
+                        )
+                        ad_obj = existing_ad.scalar_one_or_none()
+                        if not ad_obj:
+                            ad_obj = Ad(
+                                tenant_id=tenant_id,
+                                ad_group_id=ad_grp.id,
+                                ad_id=ad["ad_id"],
+                                ad_type=ad.get("type", "RESPONSIVE_SEARCH_AD"),
+                                headlines_json=ad.get("headlines", []),
+                                descriptions_json=ad.get("descriptions", []),
+                                final_urls_json=ad.get("final_urls", []),
+                                status=ad["status"],
+                            )
+                            db.add(ad_obj)
+                        else:
+                            ad_obj.headlines_json = ad.get("headlines", [])
+                            ad_obj.descriptions_json = ad.get("descriptions", [])
+                            ad_obj.final_urls_json = ad.get("final_urls", [])
+                            ad_obj.status = ad["status"]
+                        total_ad += 1
+
+                await db.flush()
+
+            await _update_sync_progress(
+                db, integration, "syncing",
+                f"Synced {total_ag} ad groups, {total_kw} keywords, {total_ad} ads",
+                55,
+            )
+
+            # Step 5: Conversion actions
             await _update_sync_progress(db, integration, "syncing", "Pulling conversion actions...", 60)
             conv_actions = await client.get_conversion_actions()
             conv_count = 0
@@ -289,39 +403,54 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
                 conv_count += 1
             await _update_sync_progress(
                 db, integration, "syncing",
-                f"Synced {conv_count} conversion action{'s' if conv_count != 1 else ''}",
-                75, conversions_synced=conv_count,
+                f"Synced {conv_count} conversion actions",
+                70, conversions_synced=conv_count,
             )
 
-            # Step 5: Performance metrics
-            await _update_sync_progress(db, integration, "syncing", "Pulling 30-day performance data...", 80)
+            # Step 6: Performance metrics — upsert by (tenant, campaign_id, date)
+            await _update_sync_progress(db, integration, "syncing", "Pulling 30-day performance data...", 75)
             metrics = await client.get_performance_metrics("LAST_30_DAYS")
+            metrics_count = 0
             for m in metrics:
-                perf = PerformanceDaily(
-                    tenant_id=tenant_id,
-                    entity_type="campaign",
-                    entity_id=m["campaign_id"],
-                    date=m["date"],
-                    impressions=m.get("impressions", 0),
-                    clicks=m.get("clicks", 0),
-                    cost_micros=m.get("cost_micros", 0),
-                    conversions=m.get("conversions", 0),
-                    conv_value=m.get("conv_value", 0),
-                    ctr=m.get("ctr", 0),
-                    cpc_micros=m.get("avg_cpc", 0),
+                # Use google campaign_id as entity_id so dashboard joins work
+                google_cid = m["campaign_id"]
+                existing_perf = await db.execute(
+                    select(PerformanceDaily).where(
+                        PerformanceDaily.tenant_id == tenant_id,
+                        PerformanceDaily.entity_type == "campaign",
+                        PerformanceDaily.entity_id == google_cid,
+                        PerformanceDaily.date == m["date"],
+                    )
                 )
-                db.add(perf)
+                perf = existing_perf.scalar_one_or_none()
+                if not perf:
+                    perf = PerformanceDaily(
+                        tenant_id=tenant_id,
+                        entity_type="campaign",
+                        entity_id=google_cid,
+                        date=m["date"],
+                    )
+                    db.add(perf)
+                perf.impressions = m.get("impressions", 0)
+                perf.clicks = m.get("clicks", 0)
+                perf.cost_micros = m.get("cost_micros", 0)
+                perf.conversions = m.get("conversions", 0)
+                perf.conv_value = m.get("conv_value", 0)
+                perf.ctr = m.get("ctr", 0)
+                perf.cpc_micros = m.get("avg_cpc", 0)
+                metrics_count += 1
 
-            # Step 6: Complete
+            # Step 7: Complete
             integration.last_sync_at = datetime.now(timezone.utc)
             integration.health_score = 85
             await _update_sync_progress(
                 db, integration, "completed",
-                f"Sync complete — {campaign_count} campaigns, {conv_count} conversions, {len(metrics)} days of metrics",
+                f"Sync complete — {campaign_count} campaigns, {total_ag} ad groups, {total_kw} keywords, {total_ad} ads, {conv_count} conversions, {metrics_count} metric rows",
                 100,
             )
             logger.info("Ads account sync complete", tenant_id=tenant_id, integration_id=integration_id,
-                        campaigns=campaign_count, conversions=conv_count, metrics=len(metrics))
+                        campaigns=campaign_count, ad_groups=total_ag, keywords=total_kw,
+                        ads=total_ad, conversions=conv_count, metrics=metrics_count)
         except Exception as e:
             await db.rollback()
             # Re-fetch integration to update error status

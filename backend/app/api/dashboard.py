@@ -163,7 +163,7 @@ async def get_dashboard_campaigns(
                 and_(
                     PerformanceDaily.tenant_id == user.tenant_id,
                     PerformanceDaily.entity_type == "campaign",
-                    PerformanceDaily.entity_id == c.id,
+                    PerformanceDaily.entity_id == (c.campaign_id or c.id),
                     PerformanceDaily.date >= start_date,
                 )
             )

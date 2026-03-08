@@ -280,6 +280,46 @@ class GoogleAdsClient:
             logger.error("Failed to get auction insights", error=str(e))
             return []
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    async def get_ads(self, ad_group_id: str) -> List[Dict[str, Any]]:
+        await self._ensure_token()
+        try:
+            client = self._get_client()
+            ga_service = client.get_service("GoogleAdsService")
+            query = f"""
+                SELECT ad_group_ad.ad.id, ad_group_ad.ad.type,
+                       ad_group_ad.ad.responsive_search_ad.headlines,
+                       ad_group_ad.ad.responsive_search_ad.descriptions,
+                       ad_group_ad.ad.final_urls,
+                       ad_group_ad.status
+                FROM ad_group_ad
+                WHERE ad_group.id = {ad_group_id}
+                  AND ad_group_ad.status != 'REMOVED'
+            """
+            response = ga_service.search(customer_id=self.customer_id, query=query)
+            ads = []
+            for row in response:
+                ad = row.ad_group_ad.ad
+                headlines = []
+                descriptions = []
+                try:
+                    headlines = [h.text for h in ad.responsive_search_ad.headlines]
+                    descriptions = [d.text for d in ad.responsive_search_ad.descriptions]
+                except Exception:
+                    pass
+                ads.append({
+                    "ad_id": str(ad.id),
+                    "type": ad.type_.name if hasattr(ad.type_, 'name') else str(ad.type_),
+                    "headlines": headlines,
+                    "descriptions": descriptions,
+                    "final_urls": list(ad.final_urls),
+                    "status": row.ad_group_ad.status.name,
+                })
+            return ads
+        except Exception as e:
+            logger.error("Failed to get ads", error=str(e))
+            return []
+
     # ── WRITE OPERATIONS (CHANGESETS) ────────────────────────────────
 
     async def create_campaign(self, campaign_data: Dict[str, Any]) -> Dict[str, Any]:

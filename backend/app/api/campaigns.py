@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, desc
+from sqlalchemy import select, and_, desc, func
 from pydantic import BaseModel
 from typing import Optional, List
+from datetime import date, timedelta
 
 from app.core.database import get_db
 from app.core.deps import require_tenant, CurrentUser
@@ -11,6 +12,7 @@ from app.models.ad_group import AdGroup
 from app.models.ad import Ad
 from app.models.keyword import Keyword
 from app.models.change_log import ChangeLog
+from app.models.performance_daily import PerformanceDaily
 
 router = APIRouter()
 
@@ -33,8 +35,34 @@ async def list_campaigns(
 
     result = await db.execute(query)
     campaigns = result.scalars().all()
-    return [
-        {
+
+    start_date = date.today() - timedelta(days=30)
+    campaign_data = []
+    for c in campaigns:
+        # Join performance data using Google's campaign_id (stored in entity_id)
+        entity_key = c.campaign_id or c.id
+        perf = await db.execute(
+            select(
+                func.sum(PerformanceDaily.impressions).label("impressions"),
+                func.sum(PerformanceDaily.clicks).label("clicks"),
+                func.sum(PerformanceDaily.cost_micros).label("cost_micros"),
+                func.sum(PerformanceDaily.conversions).label("conversions"),
+            ).where(
+                and_(
+                    PerformanceDaily.tenant_id == user.tenant_id,
+                    PerformanceDaily.entity_type == "campaign",
+                    PerformanceDaily.entity_id == entity_key,
+                    PerformanceDaily.date >= start_date,
+                )
+            )
+        )
+        row = perf.one_or_none()
+        impressions = (row.impressions or 0) if row else 0
+        clicks = (row.clicks or 0) if row else 0
+        cost_micros = (row.cost_micros or 0) if row else 0
+        conversions = (row.conversions or 0) if row else 0
+
+        campaign_data.append({
             "id": c.id,
             "name": c.name,
             "type": c.type,
@@ -45,11 +73,16 @@ async def list_campaigns(
             "bidding_strategy": c.bidding_strategy,
             "is_draft": c.is_draft,
             "campaign_id": c.campaign_id,
+            "impressions": impressions,
+            "clicks": clicks,
+            "cost": round(cost_micros / 1_000_000, 2),
+            "conversions": round(conversions, 1),
+            "ctr": round((clicks / impressions * 100), 2) if impressions > 0 else 0,
+            "cpa": round((cost_micros / conversions / 1_000_000), 2) if conversions > 0 else 0,
             "created_at": c.created_at.isoformat() if c.created_at else None,
             "updated_at": c.updated_at.isoformat() if c.updated_at else None,
-        }
-        for c in campaigns
-    ]
+        })
+    return campaign_data
 
 
 @router.get("/{campaign_id}")
