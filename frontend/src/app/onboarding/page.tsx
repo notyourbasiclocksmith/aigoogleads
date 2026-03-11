@@ -101,6 +101,7 @@ function OnboardingContent() {
   const [loadingCustomers, setLoadingCustomers] = useState(false);
   const [accountSelected, setAccountSelected] = useState(false);
   const [selectingAccount, setSelectingAccount] = useState(false);
+  const [manualCustomerId, setManualCustomerId] = useState("");
 
   useEffect(() => {
     if (searchParams.get("oauth_success") === "true") {
@@ -473,22 +474,58 @@ function OnboardingContent() {
                               <span className="text-sm text-slate-400">Loading your accounts...</span>
                             </div>
                           ) : accessibleCustomers.length === 0 ? (
-                            <div className="py-4">
-                              <p className="text-sm text-slate-400 mb-4">No accessible accounts found. You may need to re-authorize.</p>
-                              <Button
-                                size="sm"
-                                onClick={async () => {
-                                  try {
-                                    const res = await api.post("/api/onboarding/step3/google-ads-url");
-                                    if (res.oauth_url) window.location.href = res.oauth_url;
-                                  } catch {
-                                    setError("Google Ads connection not available.");
-                                  }
-                                }}
-                                className="bg-orange-500 hover:bg-orange-600 text-white rounded-xl"
-                              >
-                                Reconnect Google Ads
-                              </Button>
+                            <div className="py-4 space-y-4">
+                              <p className="text-sm text-slate-400">Could not auto-detect accounts. Enter your Google Ads Customer ID manually.</p>
+                              <p className="text-xs text-slate-500">Find it at the top of your Google Ads dashboard (e.g. 123-456-7890)</p>
+                              <div className="flex gap-2 max-w-md mx-auto">
+                                <input
+                                  type="text"
+                                  placeholder="e.g. 894-688-3394"
+                                  value={manualCustomerId}
+                                  onChange={(e) => setManualCustomerId(e.target.value)}
+                                  className="flex-1 px-4 py-2.5 rounded-xl bg-slate-800/50 border border-slate-700/50 text-white placeholder:text-slate-500 text-sm focus:outline-none focus:border-orange-500/50 focus:ring-1 focus:ring-orange-500/30"
+                                />
+                                <Button
+                                  disabled={!manualCustomerId.replace(/[-\s]/g, '').match(/^\d{7,10}$/) || selectingAccount}
+                                  onClick={async () => {
+                                    setSelectingAccount(true);
+                                    setError("");
+                                    try {
+                                      const accounts = await api.get("/api/ads/accounts");
+                                      const pending = accounts.find((a: any) => a.customer_id === "pending");
+                                      if (!pending) { setError("No pending account found."); setSelectingAccount(false); return; }
+                                      await api.post(`/api/ads/accounts/${pending.id}/select-customer`, {
+                                        customer_id: manualCustomerId.replace(/[-\s]/g, ''),
+                                        account_name: `Account ${manualCustomerId}`,
+                                      });
+                                      setAccountSelected(true);
+                                    } catch (e: any) {
+                                      setError(e.message || "Failed to connect account");
+                                    }
+                                    setSelectingAccount(false);
+                                  }}
+                                  className="bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-semibold rounded-xl"
+                                >
+                                  {selectingAccount ? <Loader2 className="w-4 h-4 animate-spin" /> : "Connect"}
+                                </Button>
+                              </div>
+                              <div className="pt-2">
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={async () => {
+                                    try {
+                                      const res = await api.post("/api/onboarding/step3/google-ads-url");
+                                      if (res.oauth_url) window.location.href = res.oauth_url;
+                                    } catch {
+                                      setError("Google Ads connection not available.");
+                                    }
+                                  }}
+                                  className="text-slate-400 hover:text-white text-xs"
+                                >
+                                  Or reconnect Google Ads
+                                </Button>
+                              </div>
                             </div>
                           ) : (
                             <div className="text-left space-y-3 max-w-md mx-auto">

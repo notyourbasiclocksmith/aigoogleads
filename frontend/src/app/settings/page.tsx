@@ -24,6 +24,8 @@ export default function SettingsPage() {
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
   const [selectingAccount, setSelectingAccount] = useState(false);
   const [pickerError, setPickerError] = useState("");
+  const [manualCustomerId, setManualCustomerId] = useState("");
+  const [showManualInput, setShowManualInput] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -243,22 +245,73 @@ export default function SettingsPage() {
                 {pickerError && (
                   <div className="p-3 rounded-lg bg-red-50 border border-red-200 space-y-3">
                     <p className="text-sm text-red-700">{pickerError}</p>
-                    {pickerError.toLowerCase().includes("decrypt") || pickerError.toLowerCase().includes("reconnect") ? (
+                    <div className="flex flex-wrap gap-2">
+                      {pickerError.toLowerCase().includes("decrypt") || pickerError.toLowerCase().includes("reconnect") ? (
+                        <Button
+                          onClick={async () => {
+                            try {
+                              const res = await api.post("/api/ads/accounts/reconnect-oauth");
+                              if (res.oauth_url) window.location.href = res.oauth_url;
+                            } catch (e: any) {
+                              setPickerError(e.message || "Failed to start reconnection");
+                            }
+                          }}
+                          className="bg-red-600 hover:bg-red-700 text-white"
+                          size="sm"
+                        >
+                          <ExternalLink className="w-4 h-4 mr-2" /> Reconnect Google Ads
+                        </Button>
+                      ) : null}
+                      {!showManualInput && (
+                        <Button
+                          onClick={() => setShowManualInput(true)}
+                          variant="outline"
+                          size="sm"
+                        >
+                          Enter Customer ID Manually
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {showManualInput && accessibleCustomers.length === 0 && (
+                  <div className="p-4 rounded-lg border border-blue-200 bg-blue-50 space-y-3">
+                    <p className="text-sm text-blue-800 font-medium">Enter your Google Ads Customer ID</p>
+                    <p className="text-xs text-blue-700">Find it at the top of your Google Ads dashboard (e.g. 123-456-7890)</p>
+                    <div className="flex gap-2">
+                      <Input
+                        placeholder="e.g. 894-688-3394"
+                        value={manualCustomerId}
+                        onChange={(e: any) => setManualCustomerId(e.target.value)}
+                        className="flex-1 bg-white"
+                      />
                       <Button
+                        disabled={!manualCustomerId.replace(/[-\s]/g, '').match(/^\d{7,10}$/) || selectingAccount}
                         onClick={async () => {
+                          setSelectingAccount(true);
+                          setPickerError("");
                           try {
-                            const res = await api.post("/api/ads/accounts/reconnect-oauth");
-                            if (res.oauth_url) window.location.href = res.oauth_url;
+                            const pending = accounts.find((a: any) => a.customer_id === "pending");
+                            if (!pending) { setPickerError("No pending account found."); setSelectingAccount(false); return; }
+                            await api.post(`/api/ads/accounts/${pending.id}/select-customer`, {
+                              customer_id: manualCustomerId.replace(/[-\s]/g, ''),
+                              account_name: `Account ${manualCustomerId}`,
+                            });
+                            const a = await api.get("/api/ads/accounts").catch(() => []);
+                            setAccounts(Array.isArray(a) ? a : []);
+                            setManualCustomerId("");
+                            setShowManualInput(false);
                           } catch (e: any) {
-                            setPickerError(e.message || "Failed to start reconnection");
+                            setPickerError(e.message || "Failed to connect account");
                           }
+                          setSelectingAccount(false);
                         }}
-                        className="bg-red-600 hover:bg-red-700 text-white"
-                        size="sm"
                       >
-                        <ExternalLink className="w-4 h-4 mr-2" /> Reconnect Google Ads
+                        {selectingAccount ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-1" />}
+                        Connect
                       </Button>
-                    ) : null}
+                    </div>
                   </div>
                 )}
 
