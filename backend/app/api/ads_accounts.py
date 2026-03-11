@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, and_, func, delete
 from pydantic import BaseModel
 from typing import Optional
 import structlog
@@ -20,6 +20,12 @@ router = APIRouter()
 class ConnectAccountRequest(BaseModel):
     auth_code: str
     customer_id: str
+    login_customer_id: Optional[str] = None
+
+
+class SelectCustomerRequest(BaseModel):
+    customer_id: str
+    account_name: Optional[str] = None
     login_customer_id: Optional[str] = None
 
 
@@ -50,18 +56,36 @@ async def oauth_callback(
         logger.error("Failed to exchange OAuth code for tokens")
         return RedirectResponse(url=f"{frontend_url}/onboarding?oauth_error=token_exchange_failed")
 
-    # Save integration with a placeholder customer_id (user will select account later)
+    # Reuse existing pending integration if one exists (avoid duplicates from repeated OAuth)
     async with async_session_factory() as db:
-        integration = IntegrationGoogleAds(
-            tenant_id=tenant_id,
-            customer_id="pending",
-            refresh_token_encrypted=encrypt_token(tokens["refresh_token"]),
-            access_token_cache=tokens.get("access_token"),
-            account_name="Google Ads (pending setup)",
+        existing_result = await db.execute(
+            select(IntegrationGoogleAds).where(
+                and_(
+                    IntegrationGoogleAds.tenant_id == tenant_id,
+                    IntegrationGoogleAds.customer_id == "pending",
+                    IntegrationGoogleAds.is_active == True,
+                )
+            ).order_by(IntegrationGoogleAds.created_at.desc()).limit(1)
         )
-        db.add(integration)
+        existing = existing_result.scalar_one_or_none()
+
+        if existing:
+            # Update existing pending integration with fresh tokens
+            existing.refresh_token_encrypted = encrypt_token(tokens["refresh_token"])
+            existing.access_token_cache = tokens.get("access_token")
+            logger.info("Updated existing pending integration", tenant_id=tenant_id, integration_id=existing.id)
+        else:
+            integration = IntegrationGoogleAds(
+                tenant_id=tenant_id,
+                customer_id="pending",
+                refresh_token_encrypted=encrypt_token(tokens["refresh_token"]),
+                access_token_cache=tokens.get("access_token"),
+                account_name="Google Ads (pending setup)",
+            )
+            db.add(integration)
+            logger.info("Google Ads OAuth connected (new)", tenant_id=tenant_id)
+
         await db.commit()
-        logger.info("Google Ads OAuth connected", tenant_id=tenant_id, integration_id=integration.id)
 
     return RedirectResponse(url=f"{frontend_url}/onboarding?oauth_success=true")
 
@@ -142,6 +166,178 @@ async def disconnect_account(
     account.is_active = False
     await db.flush()
     return {"status": "disconnected"}
+
+
+@router.get("/accessible-customers")
+async def list_accessible_customers(
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Use the stored OAuth refresh token to call Google Ads ListAccessibleCustomers,
+    then fetch each customer's descriptive name.
+    Returns a list of {customer_id, name, is_manager, currency, timezone}.
+    """
+    # Find the newest integration for this tenant (pending or otherwise) that has a refresh token
+    result = await db.execute(
+        select(IntegrationGoogleAds).where(
+            and_(
+                IntegrationGoogleAds.tenant_id == user.tenant_id,
+                IntegrationGoogleAds.is_active == True,
+            )
+        ).order_by(IntegrationGoogleAds.created_at.desc()).limit(1)
+    )
+    integration = result.scalar_one_or_none()
+    if not integration:
+        raise HTTPException(status_code=404, detail="No Google Ads connection found. Please connect first.")
+
+    try:
+        refresh_token = decrypt_token(integration.refresh_token_encrypted)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Failed to decrypt stored credentials. Please reconnect Google Ads.")
+
+    # Use the google-ads library to list accessible customers
+    try:
+        from google.ads.googleads.client import GoogleAdsClient as GAdsClient
+
+        credentials = {
+            "developer_token": settings.GOOGLE_ADS_DEVELOPER_TOKEN,
+            "client_id": settings.GOOGLE_ADS_CLIENT_ID,
+            "client_secret": settings.GOOGLE_ADS_CLIENT_SECRET,
+            "refresh_token": refresh_token,
+            "use_proto_plus": True,
+        }
+        gads_client = GAdsClient.load_from_dict(credentials)
+        customer_service = gads_client.get_service("CustomerService")
+        response = customer_service.list_accessible_customers()
+
+        accessible = []
+        ga_service = gads_client.get_service("GoogleAdsService")
+
+        for resource_name in response.resource_names:
+            cid = resource_name.split("/")[-1]
+            try:
+                query = """SELECT customer.id, customer.descriptive_name,
+                                  customer.currency_code, customer.time_zone, customer.manager
+                           FROM customer LIMIT 1"""
+                rows = ga_service.search(customer_id=cid, query=query)
+                for row in rows:
+                    accessible.append({
+                        "customer_id": str(row.customer.id),
+                        "name": row.customer.descriptive_name or f"Account {cid}",
+                        "is_manager": row.customer.manager,
+                        "currency": row.customer.currency_code,
+                        "timezone": row.customer.time_zone,
+                    })
+            except Exception as e:
+                # Account might not be accessible for querying (e.g. cancelled)
+                logger.warning("Could not query customer", customer_id=cid, error=str(e))
+                accessible.append({
+                    "customer_id": cid,
+                    "name": f"Account {cid}",
+                    "is_manager": False,
+                    "currency": "",
+                    "timezone": "",
+                    "error": "Could not fetch details",
+                })
+
+        return accessible
+
+    except Exception as e:
+        logger.error("Failed to list accessible customers", error=str(e))
+        raise HTTPException(status_code=502, detail=f"Google Ads API error: {str(e)}")
+
+
+@router.post("/{account_id}/select-customer")
+async def select_customer(
+    account_id: str,
+    req: SelectCustomerRequest,
+    user: CurrentUser = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Assign a real Google Ads customer_id to a pending integration.
+    Also cleans up any other pending duplicates for this tenant.
+    """
+    result = await db.execute(
+        select(IntegrationGoogleAds).where(
+            and_(
+                IntegrationGoogleAds.id == account_id,
+                IntegrationGoogleAds.tenant_id == user.tenant_id,
+            )
+        )
+    )
+    account = result.scalar_one_or_none()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    # Format customer_id: strip dashes for storage
+    clean_id = req.customer_id.replace("-", "").strip()
+    if not clean_id.isdigit() or len(clean_id) < 7:
+        raise HTTPException(status_code=400, detail="Invalid Google Ads Customer ID")
+
+    account.customer_id = clean_id
+    account.account_name = req.account_name or f"Account {clean_id}"
+    if req.login_customer_id:
+        account.login_customer_id = req.login_customer_id.replace("-", "").strip()
+
+    # Clean up other pending duplicates for this tenant
+    await db.execute(
+        delete(IntegrationGoogleAds).where(
+            and_(
+                IntegrationGoogleAds.tenant_id == user.tenant_id,
+                IntegrationGoogleAds.customer_id == "pending",
+                IntegrationGoogleAds.id != account_id,
+            )
+        )
+    )
+
+    await db.flush()
+    logger.info("Customer ID assigned", account_id=account_id, customer_id=clean_id)
+
+    # Trigger initial sync
+    from app.jobs.tasks import sync_ads_account_task
+    sync_ads_account_task.delay(user.tenant_id, account.id)
+
+    return {
+        "id": account.id,
+        "customer_id": clean_id,
+        "account_name": account.account_name,
+        "status": "connected",
+        "sync_triggered": True,
+    }
+
+
+@router.delete("/cleanup-pending")
+async def cleanup_pending(
+    user: CurrentUser = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Remove all duplicate pending integrations, keeping only the newest one.
+    """
+    result = await db.execute(
+        select(IntegrationGoogleAds).where(
+            and_(
+                IntegrationGoogleAds.tenant_id == user.tenant_id,
+                IntegrationGoogleAds.customer_id == "pending",
+            )
+        ).order_by(IntegrationGoogleAds.created_at.desc())
+    )
+    pending = result.scalars().all()
+
+    if len(pending) <= 1:
+        return {"removed": 0, "kept": len(pending)}
+
+    # Keep the first (newest), delete the rest
+    keep_id = pending[0].id
+    to_delete = [p.id for p in pending[1:]]
+    await db.execute(
+        delete(IntegrationGoogleAds).where(IntegrationGoogleAds.id.in_(to_delete))
+    )
+    await db.flush()
+
+    return {"removed": len(to_delete), "kept": 1, "kept_id": keep_id}
 
 
 @router.post("/{account_id}/sync")

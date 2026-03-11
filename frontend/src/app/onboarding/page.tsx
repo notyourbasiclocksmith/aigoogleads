@@ -95,15 +95,61 @@ function OnboardingContent() {
   const [conversionGoal, setConversionGoal] = useState("calls");
   const [autonomyMode, setAutonomyMode] = useState("semi_auto");
 
+  // Google Ads account picker state
+  const [accessibleCustomers, setAccessibleCustomers] = useState<any[]>([]);
+  const [selectedCustomerId, setSelectedCustomerId] = useState("");
+  const [loadingCustomers, setLoadingCustomers] = useState(false);
+  const [accountSelected, setAccountSelected] = useState(false);
+  const [selectingAccount, setSelectingAccount] = useState(false);
+
   useEffect(() => {
     if (searchParams.get("oauth_success") === "true") {
-      setStep(3);
+      setStep(2);
       setGoogleAdsConnected(true);
+      // Fetch accessible customers so user can pick one
+      loadAccessibleCustomers();
     } else if (searchParams.get("oauth_error")) {
       setStep(2);
       setError(`Google Ads connection failed: ${searchParams.get("oauth_error")}`);
     }
   }, [searchParams]);
+
+  async function loadAccessibleCustomers() {
+    setLoadingCustomers(true);
+    try {
+      const customers = await api.get("/api/ads/accounts/accessible-customers");
+      setAccessibleCustomers(Array.isArray(customers) ? customers : []);
+    } catch (e: any) {
+      console.error("Failed to load accessible customers", e);
+      setAccessibleCustomers([]);
+    }
+    setLoadingCustomers(false);
+  }
+
+  async function handleSelectAccount() {
+    if (!selectedCustomerId) return;
+    setSelectingAccount(true);
+    setError("");
+    try {
+      // Get the pending account ID
+      const accounts = await api.get("/api/ads/accounts");
+      const pending = accounts.find((a: any) => a.customer_id === "pending");
+      if (!pending) {
+        setError("No pending account found. Please reconnect Google Ads.");
+        setSelectingAccount(false);
+        return;
+      }
+      const selected = accessibleCustomers.find((c: any) => c.customer_id === selectedCustomerId);
+      await api.post(`/api/ads/accounts/${pending.id}/select-customer`, {
+        customer_id: selectedCustomerId,
+        account_name: selected?.name || `Account ${selectedCustomerId}`,
+      });
+      setAccountSelected(true);
+    } catch (e: any) {
+      setError(e.message || "Failed to select account");
+    }
+    setSelectingAccount(false);
+  }
 
   // Check if onboarding is already complete — redirect to dashboard
   // Also pre-populate fields from saved data if still in progress
@@ -392,20 +438,112 @@ function OnboardingContent() {
                     <div className="absolute top-0 right-0 w-32 h-32 bg-orange-500/10 rounded-full blur-3xl" />
 
                     <div className="relative z-10">
-                      {googleAdsConnected ? (
+                      {googleAdsConnected && accountSelected ? (
+                        /* ── Account fully linked ── */
                         <>
                           <div className="w-20 h-20 mx-auto rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center mb-5">
                             <CheckCircle2 className="w-10 h-10 text-emerald-400" />
                           </div>
                           <h3 className="text-xl font-bold text-white mb-2">Google Ads Connected</h3>
                           <p className="text-slate-400 max-w-sm mx-auto mb-4">
-                            Your account is linked. We&apos;ll sync your campaigns and start analyzing performance.
+                            Your account is linked and syncing. We&apos;ll start analyzing your campaigns.
                           </p>
                           <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm font-medium">
-                            <CheckCircle2 className="w-4 h-4" /> Account verified
+                            <CheckCircle2 className="w-4 h-4" /> Account verified &amp; syncing
                           </div>
                         </>
+                      ) : googleAdsConnected ? (
+                        /* ── OAuth done, need to pick account ── */
+                        <>
+                          <div className="w-20 h-20 mx-auto rounded-2xl bg-orange-500/10 border border-orange-500/30 flex items-center justify-center mb-5">
+                            <svg className="w-10 h-10" viewBox="0 0 24 24" fill="none">
+                              <path d="M12 2L2 7l10 5 10-5-10-5z" fill="#FBBC05" />
+                              <path d="M2 17l10 5 10-5" stroke="#4285F4" strokeWidth="2" />
+                              <path d="M2 12l10 5 10-5" stroke="#34A853" strokeWidth="2" />
+                            </svg>
+                          </div>
+                          <h3 className="text-xl font-bold text-white mb-2">Select Your Google Ads Account</h3>
+                          <p className="text-slate-400 max-w-sm mx-auto mb-6">
+                            Google connected successfully! Now choose which account to manage.
+                          </p>
+
+                          {loadingCustomers ? (
+                            <div className="flex items-center justify-center gap-2 py-6">
+                              <Loader2 className="w-5 h-5 text-orange-400 animate-spin" />
+                              <span className="text-sm text-slate-400">Loading your accounts...</span>
+                            </div>
+                          ) : accessibleCustomers.length === 0 ? (
+                            <div className="py-4">
+                              <p className="text-sm text-slate-400 mb-4">No accessible accounts found. You may need to re-authorize.</p>
+                              <Button
+                                size="sm"
+                                onClick={async () => {
+                                  try {
+                                    const res = await api.post("/api/onboarding/step3/google-ads-url");
+                                    if (res.oauth_url) window.location.href = res.oauth_url;
+                                  } catch {
+                                    setError("Google Ads connection not available.");
+                                  }
+                                }}
+                                className="bg-orange-500 hover:bg-orange-600 text-white rounded-xl"
+                              >
+                                Reconnect Google Ads
+                              </Button>
+                            </div>
+                          ) : (
+                            <div className="text-left space-y-3 max-w-md mx-auto">
+                              {accessibleCustomers.map((c: any) => (
+                                <button
+                                  key={c.customer_id}
+                                  onClick={() => setSelectedCustomerId(c.customer_id)}
+                                  className={`w-full flex items-center gap-3 p-4 rounded-xl border text-left transition-all duration-200 ${
+                                    selectedCustomerId === c.customer_id
+                                      ? "border-orange-500 bg-orange-500/10 ring-1 ring-orange-500/30"
+                                      : "border-slate-700/50 bg-slate-800/30 hover:border-slate-600"
+                                  }`}
+                                >
+                                  <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                                    selectedCustomerId === c.customer_id ? "bg-orange-500/20" : "bg-slate-800"
+                                  }`}>
+                                    <Target className={`w-5 h-5 ${
+                                      selectedCustomerId === c.customer_id ? "text-orange-400" : "text-slate-400"
+                                    }`} />
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <p className={`text-sm font-semibold truncate ${
+                                      selectedCustomerId === c.customer_id ? "text-orange-300" : "text-slate-300"
+                                    }`}>{c.name}</p>
+                                    <p className="text-xs text-slate-500 mt-0.5">
+                                      ID: {c.customer_id.replace(/(\d{3})(\d{3})(\d{4})/, "$1-$2-$3")}
+                                      {c.currency ? ` · ${c.currency}` : ""}
+                                      {c.is_manager ? " · Manager Account" : ""}
+                                    </p>
+                                  </div>
+                                  <div className={`w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center transition-colors ${
+                                    selectedCustomerId === c.customer_id
+                                      ? "border-orange-500 bg-orange-500"
+                                      : "border-slate-600"
+                                  }`}>
+                                    {selectedCustomerId === c.customer_id && <div className="w-2 h-2 rounded-full bg-white" />}
+                                  </div>
+                                </button>
+                              ))}
+                              <Button
+                                onClick={handleSelectAccount}
+                                disabled={!selectedCustomerId || selectingAccount}
+                                className="w-full h-11 mt-4 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-semibold rounded-xl shadow-lg shadow-orange-500/20 transition-all duration-200 disabled:opacity-50"
+                              >
+                                {selectingAccount ? (
+                                  <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Connecting...</>
+                                ) : (
+                                  <>Link Selected Account <ArrowRight className="w-4 h-4 ml-2" /></>
+                                )}
+                              </Button>
+                            </div>
+                          )}
+                        </>
                       ) : (
+                        /* ── Not connected yet ── */
                         <>
                           <div className="w-20 h-20 mx-auto rounded-2xl bg-gradient-to-br from-orange-500/20 to-amber-500/20 border border-orange-500/30 flex items-center justify-center mb-5">
                             <svg className="w-10 h-10" viewBox="0 0 24 24" fill="none">

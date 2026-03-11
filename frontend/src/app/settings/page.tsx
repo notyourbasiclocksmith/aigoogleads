@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
-import { Save, Shield, Bell, Users, Link2, RefreshCw, CheckCircle2, XCircle, Loader2, BarChart3, Zap } from "lucide-react";
+import { Save, Shield, Bell, Users, Link2, RefreshCw, CheckCircle2, XCircle, Loader2, BarChart3, Zap, AlertTriangle, Target } from "lucide-react";
 
 export default function SettingsPage() {
   const [profile, setProfile] = useState<any>({});
@@ -17,6 +17,13 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [syncStatus, setSyncStatus] = useState<any>(null);
   const pollRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Account picker state for pending accounts
+  const [accessibleCustomers, setAccessibleCustomers] = useState<any[]>([]);
+  const [loadingCustomers, setLoadingCustomers] = useState(false);
+  const [selectedCustomerId, setSelectedCustomerId] = useState("");
+  const [selectingAccount, setSelectingAccount] = useState(false);
+  const [pickerError, setPickerError] = useState("");
 
   useEffect(() => {
     Promise.all([
@@ -63,6 +70,51 @@ export default function SettingsPage() {
       await api.post(`/api/ads/accounts/${active.id}/sync`);
       startPolling(active.id);
     } catch (e) { console.error(e); setSyncStatus(null); }
+  }
+
+  const hasPending = accounts.some((a: any) => a.customer_id === "pending" && a.is_active);
+
+  async function loadAccessibleCustomers() {
+    setLoadingCustomers(true);
+    setPickerError("");
+    try {
+      const customers = await api.get("/api/ads/accounts/accessible-customers");
+      setAccessibleCustomers(Array.isArray(customers) ? customers : []);
+      if (Array.isArray(customers) && customers.length === 0) {
+        setPickerError("No accessible Google Ads accounts found. Please reconnect.");
+      }
+    } catch (e: any) {
+      setPickerError(e.message || "Failed to load accounts from Google Ads");
+      setAccessibleCustomers([]);
+    }
+    setLoadingCustomers(false);
+  }
+
+  async function handleSelectCustomer() {
+    if (!selectedCustomerId) return;
+    setSelectingAccount(true);
+    setPickerError("");
+    try {
+      const pending = accounts.find((a: any) => a.customer_id === "pending");
+      if (!pending) {
+        setPickerError("No pending account found.");
+        setSelectingAccount(false);
+        return;
+      }
+      const selected = accessibleCustomers.find((c: any) => c.customer_id === selectedCustomerId);
+      await api.post(`/api/ads/accounts/${pending.id}/select-customer`, {
+        customer_id: selectedCustomerId,
+        account_name: selected?.name || `Account ${selectedCustomerId}`,
+      });
+      // Refresh accounts list
+      const a = await api.get("/api/ads/accounts").catch(() => []);
+      setAccounts(Array.isArray(a) ? a : []);
+      setAccessibleCustomers([]);
+      setSelectedCustomerId("");
+    } catch (e: any) {
+      setPickerError(e.message || "Failed to select account");
+    }
+    setSelectingAccount(false);
   }
 
   async function saveProfile() {
@@ -157,13 +209,97 @@ export default function SettingsPage() {
             <CardDescription>Manage your Google Ads account integration</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            {accounts.map((acct: any) => (
+            {/* Pending account picker */}
+            {hasPending && (
+              <div className="p-4 rounded-lg border border-amber-200 bg-amber-50 space-y-4">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
+                  <div>
+                    <p className="font-medium text-amber-800">Account setup incomplete</p>
+                    <p className="text-sm text-amber-700 mt-1">
+                      Google Ads is connected but you haven&apos;t selected which account to manage.
+                      Click below to choose your Google Ads account.
+                    </p>
+                  </div>
+                </div>
+
+                {accessibleCustomers.length === 0 && !loadingCustomers && (
+                  <Button
+                    onClick={loadAccessibleCustomers}
+                    disabled={loadingCustomers}
+                    className="bg-amber-600 hover:bg-amber-700 text-white"
+                  >
+                    <Target className="w-4 h-4 mr-2" /> Load My Google Ads Accounts
+                  </Button>
+                )}
+
+                {loadingCustomers && (
+                  <div className="flex items-center gap-2 py-2">
+                    <Loader2 className="w-4 h-4 text-amber-600 animate-spin" />
+                    <span className="text-sm text-amber-700">Loading accounts from Google Ads...</span>
+                  </div>
+                )}
+
+                {pickerError && (
+                  <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
+                    {pickerError}
+                  </div>
+                )}
+
+                {accessibleCustomers.length > 0 && (
+                  <div className="space-y-2">
+                    {accessibleCustomers.map((c: any) => (
+                      <button
+                        key={c.customer_id}
+                        onClick={() => setSelectedCustomerId(c.customer_id)}
+                        className={`w-full flex items-center gap-3 p-3 rounded-lg border text-left transition-all ${
+                          selectedCustomerId === c.customer_id
+                            ? "border-blue-500 bg-blue-50 ring-1 ring-blue-500/30"
+                            : "border-slate-200 bg-white hover:border-slate-300"
+                        }`}
+                      >
+                        <Target className={`w-5 h-5 flex-shrink-0 ${
+                          selectedCustomerId === c.customer_id ? "text-blue-600" : "text-slate-400"
+                        }`} />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-slate-900 truncate">{c.name}</p>
+                          <p className="text-xs text-slate-500">
+                            ID: {c.customer_id.replace(/(\d{3})(\d{3})(\d{4})/, "$1-$2-$3")}
+                            {c.currency ? ` · ${c.currency}` : ""}
+                            {c.is_manager ? " · Manager" : ""}
+                          </p>
+                        </div>
+                        <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
+                          selectedCustomerId === c.customer_id ? "border-blue-500 bg-blue-500" : "border-slate-300"
+                        }`}>
+                          {selectedCustomerId === c.customer_id && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                        </div>
+                      </button>
+                    ))}
+                    <Button
+                      onClick={handleSelectCustomer}
+                      disabled={!selectedCustomerId || selectingAccount}
+                      className="w-full mt-2"
+                    >
+                      {selectingAccount ? (
+                        <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Connecting...</>
+                      ) : (
+                        <><CheckCircle2 className="w-4 h-4 mr-2" /> Connect Selected Account</>
+                      )}
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Connected (non-pending) accounts */}
+            {accounts.filter((a: any) => a.customer_id !== "pending").map((acct: any) => (
               <div key={acct.id} className="p-4 rounded-lg border space-y-3">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="font-medium">{acct.account_name || "Google Ads Account"}</p>
                     <p className="text-sm text-muted-foreground">
-                      Customer ID: {acct.customer_id}
+                      Customer ID: {acct.customer_id.replace(/(\d{3})(\d{3})(\d{4})/, "$1-$2-$3")}
                     </p>
                   </div>
                   <Badge variant={acct.is_active ? "default" : "secondary"}>
@@ -242,6 +378,16 @@ export default function SettingsPage() {
             ))}
 
             {accounts.length === 0 && (
+              <div className="text-center py-6">
+                <p className="text-sm text-muted-foreground mb-3">No Google Ads accounts connected</p>
+                <Button variant="outline" onClick={() => window.location.href = "/onboarding"}>
+                  Connect Google Ads
+                </Button>
+              </div>
+            )}
+
+            {/* Show message if only pending accounts and no real ones */}
+            {accounts.length > 0 && !hasPending && accounts.filter((a: any) => a.customer_id !== "pending").length === 0 && (
               <div className="text-center py-6">
                 <p className="text-sm text-muted-foreground mb-3">No Google Ads accounts connected</p>
                 <Button variant="outline" onClick={() => window.location.href = "/onboarding"}>
