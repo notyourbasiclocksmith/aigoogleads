@@ -52,4 +52,6 @@ from app.models.v2 import (  # noqa: E402, F401
     CompetitorCreative, CompetitorAlert,
     BillingCustomer, UsageCounter, CreditLedgerEntry,
     NotificationChannel, NotificationRule, NotificationSent,
+    OperatorScan, OperatorRecommendation, OperatorChangeSet,
+    OperatorMutation, CreativeAudit,
 )

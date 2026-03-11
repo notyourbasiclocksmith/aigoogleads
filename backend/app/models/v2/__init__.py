@@ -25,6 +25,11 @@ from app.models.v2.credit_ledger_entry import CreditLedgerEntry
 from app.models.v2.notification_channel import NotificationChannel
 from app.models.v2.notification_rule import NotificationRule
 from app.models.v2.notification_sent import NotificationSent
+from app.models.v2.operator_scan import OperatorScan
+from app.models.v2.operator_recommendation import OperatorRecommendation
+from app.models.v2.operator_change_set import OperatorChangeSet
+from app.models.v2.operator_mutation import OperatorMutation
+from app.models.v2.creative_audit import CreativeAudit
 
 __all__ = [
     "GoogleAdsAccessibleAccount", "TenantGoogleAdsBinding",
@@ -38,4 +43,6 @@ __all__ = [
     "CompetitorCreative", "CompetitorAlert",
     "BillingCustomer", "UsageCounter", "CreditLedgerEntry",
     "NotificationChannel", "NotificationRule", "NotificationSent",
+    "OperatorScan", "OperatorRecommendation", "OperatorChangeSet",
+    "OperatorMutation", "CreativeAudit",
 ]

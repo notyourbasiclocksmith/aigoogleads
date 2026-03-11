@@ -7,10 +7,11 @@ import {
   LayoutDashboard, Target, Megaphone, Wand2, Palette,
   Search, Zap, FlaskConical, FileText, Settings, LogOut,
   Shield, BarChart3, Building2, GitBranch, Plug, Scale,
-  CreditCard, Bell, Trophy, Crosshair,
+  CreditCard, Bell, Trophy, Crosshair, Brain,
 } from "lucide-react";
 
 const navItems = [
+  { label: "AI Operator", href: "/operator", icon: Brain },
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
   { label: "Accounts", href: "/settings", icon: Target },
   { label: "Audit", href: "/audit", icon: Shield },
