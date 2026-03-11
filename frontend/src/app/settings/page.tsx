@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
-import { Save, Shield, Bell, Users, Link2, RefreshCw, CheckCircle2, XCircle, Loader2, BarChart3, Zap, AlertTriangle, Target } from "lucide-react";
+import { Save, Shield, Bell, Users, Link2, RefreshCw, CheckCircle2, XCircle, Loader2, BarChart3, Zap, AlertTriangle, Target, ExternalLink } from "lucide-react";
 
 export default function SettingsPage() {
   const [profile, setProfile] = useState<any>({});
@@ -241,8 +241,24 @@ export default function SettingsPage() {
                 )}
 
                 {pickerError && (
-                  <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
-                    {pickerError}
+                  <div className="p-3 rounded-lg bg-red-50 border border-red-200 space-y-3">
+                    <p className="text-sm text-red-700">{pickerError}</p>
+                    {pickerError.toLowerCase().includes("decrypt") || pickerError.toLowerCase().includes("reconnect") ? (
+                      <Button
+                        onClick={async () => {
+                          try {
+                            const res = await api.post("/api/ads/accounts/reconnect-oauth");
+                            if (res.oauth_url) window.location.href = res.oauth_url;
+                          } catch (e: any) {
+                            setPickerError(e.message || "Failed to start reconnection");
+                          }
+                        }}
+                        className="bg-red-600 hover:bg-red-700 text-white"
+                        size="sm"
+                      >
+                        <ExternalLink className="w-4 h-4 mr-2" /> Reconnect Google Ads
+                      </Button>
+                    ) : null}
                   </div>
                 )}
 

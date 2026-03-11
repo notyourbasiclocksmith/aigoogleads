@@ -168,6 +168,16 @@ async def disconnect_account(
     return {"status": "disconnected"}
 
 
+@router.post("/reconnect-oauth")
+async def reconnect_oauth(
+    user: CurrentUser = Depends(require_tenant),
+):
+    """Generate a fresh OAuth URL so the user can re-authorize Google Ads."""
+    from app.integrations.google_ads.oauth import get_oauth_url
+    url = get_oauth_url(state=f"{user.tenant_id}:{user.user_id}")
+    return {"oauth_url": url}
+
+
 @router.get("/accessible-customers")
 async def list_accessible_customers(
     user: CurrentUser = Depends(require_tenant),
