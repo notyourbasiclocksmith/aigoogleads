@@ -234,6 +234,42 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
                 login_customer_id=integration.login_customer_id,
             )
 
+            # Auto-detect manager (MCC) account if login_customer_id is not set
+            if not integration.login_customer_id:
+                await _update_sync_progress(db, integration, "syncing", "Detecting manager account...", 7)
+                try:
+                    raw_client = client._get_client()
+                    customer_service = raw_client.get_service("CustomerService")
+                    accessible = customer_service.list_accessible_customers()
+                    ga_svc = raw_client.get_service("GoogleAdsService")
+                    for rn in accessible.resource_names:
+                        cid = rn.split("/")[-1]
+                        if cid == integration.customer_id:
+                            continue
+                        try:
+                            q = "SELECT customer.id, customer.manager FROM customer LIMIT 1"
+                            for row in ga_svc.search(customer_id=cid, query=q):
+                                if row.customer.manager:
+                                    integration.login_customer_id = cid
+                                    await db.commit()
+                                    logger.info("Auto-detected manager account",
+                                                login_customer_id=cid,
+                                                customer_id=integration.customer_id)
+                                    client = GoogleAdsClient(
+                                        customer_id=integration.customer_id,
+                                        refresh_token_encrypted=integration.refresh_token_encrypted,
+                                        login_customer_id=cid,
+                                    )
+                                    break
+                        except Exception:
+                            continue
+                        if integration.login_customer_id:
+                            break
+                    if not integration.login_customer_id:
+                        logger.info("No manager account found, proceeding without login_customer_id")
+                except Exception as mcc_err:
+                    logger.warning("Could not auto-detect manager account", error=str(mcc_err))
+
             # Step 2: Account info
             await _update_sync_progress(db, integration, "syncing", "Fetching account info...", 10)
             account_info = await client.get_account_info()
