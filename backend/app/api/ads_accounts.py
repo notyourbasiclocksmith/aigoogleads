@@ -496,12 +496,20 @@ async def audit_credentials(
         )
         results["mgr_query_v23"] = {"status": mgr_resp.status_code, "body": mgr_resp.text[:500]}
 
-        # Query client account with login-customer-id (v23)
+        # Query client account WITH login-customer-id (v23)
         client_resp = await client.post(
             f"https://googleads.googleapis.com/v23/customers/{client_cid}/googleAds:search",
             headers=headers_login,
             json={"query": "SELECT customer.id, customer.descriptive_name FROM customer LIMIT 1"},
         )
-        results["client_query_v23"] = {"status": client_resp.status_code, "body": client_resp.text[:500]}
+        results["client_with_login_v23"] = {"status": client_resp.status_code, "body": client_resp.text[:500]}
+
+        # Query client account WITHOUT login-customer-id (v23) — test direct access
+        client_resp2 = await client.post(
+            f"https://googleads.googleapis.com/v23/customers/{client_cid}/googleAds:search",
+            headers=headers,
+            json={"query": "SELECT customer.id, customer.descriptive_name FROM customer LIMIT 1"},
+        )
+        results["client_no_login_v23"] = {"status": client_resp2.status_code, "body": client_resp2.text[:500]}
 
     return results
