@@ -29,6 +29,10 @@ class SelectCustomerRequest(BaseModel):
     login_customer_id: Optional[str] = None
 
 
+class SyncRequest(BaseModel):
+    login_customer_id: Optional[str] = None
+
+
 @router.get("/oauth/callback")
 async def oauth_callback(
     code: str = Query(None),
@@ -358,6 +362,7 @@ async def cleanup_pending(
 @router.post("/{account_id}/sync")
 async def trigger_sync(
     account_id: str,
+    req: Optional[SyncRequest] = None,
     user: CurrentUser = Depends(require_tenant),
     db: AsyncSession = Depends(get_db),
 ):
@@ -370,6 +375,10 @@ async def trigger_sync(
     account = result.scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+
+    if req and req.login_customer_id:
+        account.login_customer_id = req.login_customer_id.replace("-", "").strip()
+        await db.commit()
 
     from app.jobs.tasks import sync_ads_account_task
     sync_ads_account_task.delay(user.tenant_id, account.id)
