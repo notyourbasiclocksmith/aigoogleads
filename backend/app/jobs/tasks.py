@@ -234,43 +234,44 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
                 login_customer_id=integration.login_customer_id,
             )
 
-            # Auto-detect manager (MCC) account if login_customer_id is not set
-            if not integration.login_customer_id:
-                await _update_sync_progress(db, integration, "syncing", "Detecting manager account...", 7)
-                try:
-                    raw_client = client._get_client()
-                    customer_service = raw_client.get_service("CustomerService")
-                    accessible = customer_service.list_accessible_customers()
-                    ga_svc = raw_client.get_service("GoogleAdsService")
-                    for rn in accessible.resource_names:
-                        cid = rn.split("/")[-1]
-                        if cid == integration.customer_id:
-                            continue
-                        try:
-                            q = "SELECT customer.id, customer.manager FROM customer LIMIT 1"
-                            for row in ga_svc.search(customer_id=cid, query=q):
-                                if row.customer.manager:
-                                    # Manager found, but user has direct access to target account
-                                    # Clear login_customer_id to avoid USER_PERMISSION_DENIED
-                                    integration.login_customer_id = None
-                                    await db.commit()
-                                    logger.info("Auto-detected manager account, but using direct access",
-                                                manager_cid=cid,
-                                                customer_id=integration.customer_id)
-                                    client = GoogleAdsClient(
-                                        customer_id=integration.customer_id,
-                                        refresh_token_encrypted=integration.refresh_token_encrypted,
-                                        login_customer_id=None,
-                                    )
-                                    break
-                        except Exception:
-                            continue
-                        if integration.login_customer_id:
-                            break
+            # Auto-detect manager (MCC) account and clear login_customer_id if user has direct access
+            await _update_sync_progress(db, integration, "syncing", "Detecting manager account...", 7)
+            try:
+                raw_client = client._get_client()
+                customer_service = raw_client.get_service("CustomerService")
+                accessible = customer_service.list_accessible_customers()
+                ga_svc = raw_client.get_service("GoogleAdsService")
+                for rn in accessible.resource_names:
+                    cid = rn.split("/")[-1]
+                    if cid == integration.customer_id:
+                        continue
+                    try:
+                        q = "SELECT customer.id, customer.manager FROM customer LIMIT 1"
+                        for row in ga_svc.search(customer_id=cid, query=q):
+                            if row.customer.manager:
+                                # Manager found, but user has direct access to target account
+                                # Clear login_customer_id to avoid USER_PERMISSION_DENIED
+                                integration.login_customer_id = None
+                                await db.commit()
+                                logger.info("Auto-detected manager account, clearing login_customer_id for direct access",
+                                            manager_cid=cid,
+                                            customer_id=integration.customer_id)
+                                client = GoogleAdsClient(
+                                    customer_id=integration.customer_id,
+                                    refresh_token_encrypted=integration.refresh_token_encrypted,
+                                    login_customer_id=None,
+                                )
+                                break
+                    except Exception:
+                        continue
                     if not integration.login_customer_id:
-                        logger.info("No manager account found, proceeding without login_customer_id")
-                except Exception as mcc_err:
-                    logger.warning("Could not auto-detect manager account", error=str(mcc_err))
+                        break
+                if integration.login_customer_id:
+                    logger.info("No changes needed, proceeding with current login_customer_id")
+                else:
+                    logger.info("Proceeding without login_customer_id (direct access)")
+            except Exception as mcc_err:
+                logger.warning("Could not auto-detect manager account", error=str(mcc_err))
 
             # Step 2: Account info
             await _update_sync_progress(db, integration, "syncing", "Fetching account info...", 10)
