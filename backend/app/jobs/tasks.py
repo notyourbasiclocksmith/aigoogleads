@@ -2,7 +2,8 @@
 Background Jobs — All Celery tasks for Ignite Ads AI.
 """
 from app.jobs.celery_app import celery_app
-from sqlalchemy import select, create_engine
+from sqlalchemy import select, and_, func, delete, create_engine
+from tenacity import RetryError
 from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import settings
 import structlog
@@ -453,6 +454,11 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
                         ads=total_ad, conversions=conv_count, metrics=metrics_count)
         except Exception as e:
             await db.rollback()
+            # Extract real error from RetryError wrapper
+            real_error = e
+            if isinstance(e, RetryError) and e.last_attempt and e.last_attempt.exception():
+                real_error = e.last_attempt.exception()
+            error_msg = str(real_error)
             # Re-fetch integration to update error status
             async with async_session_factory() as err_db:
                 res = await err_db.execute(
@@ -461,11 +467,11 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
                 integ = res.scalar_one_or_none()
                 if integ:
                     integ.sync_status = "failed"
-                    integ.sync_message = f"Sync failed: {str(e)[:400]}"
+                    integ.sync_message = f"Sync failed: {error_msg[:400]}"
                     integ.sync_progress = 0
-                    integ.sync_error = str(e)[:1000]
+                    integ.sync_error = error_msg[:1000]
                     await err_db.commit()
-            logger.error("Ads account sync failed", tenant_id=tenant_id, error=str(e))
+            logger.error("Ads account sync failed", tenant_id=tenant_id, error=error_msg)
 
 
 @celery_app.task(name="app.jobs.tasks.launch_campaign_task")

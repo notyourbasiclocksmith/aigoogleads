@@ -10,7 +10,7 @@ Capabilities:
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 import structlog
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, stop_after_attempt, wait_exponential, RetryError
 
 from app.core.config import settings
 from app.core.security import decrypt_token
@@ -39,9 +39,11 @@ class GoogleAdsClient:
         tokens = await refresh_access_token(self._refresh_token)
         if tokens:
             self._access_token = tokens["access_token"]
-            self._token_expires_at = datetime.now(timezone.utc)
+            expires_in = tokens.get("expires_in", 3500)
+            from datetime import timedelta
+            self._token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(expires_in) - 60)
         else:
-            raise Exception("Failed to refresh Google Ads access token")
+            raise Exception("Failed to refresh Google Ads access token — Google returned non-200. Check client_id/secret and refresh_token.")
 
     def _get_client(self):
         """
@@ -62,9 +64,8 @@ class GoogleAdsClient:
 
     # ── READ OPERATIONS ──────────────────────────────────────────────
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
     async def get_account_info(self) -> Dict[str, Any]:
-        await self._ensure_token()
         logger.info("Fetching account info", customer_id=self.customer_id)
         try:
             client = self._get_client()
@@ -88,9 +89,8 @@ class GoogleAdsClient:
             logger.error("Failed to get account info", error=str(e))
             return {"customer_id": self.customer_id, "error": str(e)}
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
     async def get_campaigns(self) -> List[Dict[str, Any]]:
-        await self._ensure_token()
         logger.info("Fetching campaigns", customer_id=self.customer_id)
         try:
             client = self._get_client()
@@ -119,9 +119,8 @@ class GoogleAdsClient:
             logger.error("Failed to get campaigns", error=str(e))
             return []
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
     async def get_ad_groups(self, campaign_id: str) -> List[Dict[str, Any]]:
-        await self._ensure_token()
         try:
             client = self._get_client()
             ga_service = client.get_service("GoogleAdsService")
@@ -146,9 +145,8 @@ class GoogleAdsClient:
             logger.error("Failed to get ad groups", error=str(e))
             return []
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
     async def get_keywords(self, ad_group_id: str) -> List[Dict[str, Any]]:
-        await self._ensure_token()
         try:
             client = self._get_client()
             ga_service = client.get_service("GoogleAdsService")
@@ -180,9 +178,8 @@ class GoogleAdsClient:
             logger.error("Failed to get keywords", error=str(e))
             return []
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
     async def get_performance_metrics(self, date_range: str = "LAST_30_DAYS") -> List[Dict[str, Any]]:
-        await self._ensure_token()
         try:
             client = self._get_client()
             ga_service = client.get_service("GoogleAdsService")
@@ -216,9 +213,8 @@ class GoogleAdsClient:
             logger.error("Failed to get performance metrics", error=str(e))
             return []
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
     async def get_conversion_actions(self) -> List[Dict[str, Any]]:
-        await self._ensure_token()
         try:
             client = self._get_client()
             ga_service = client.get_service("GoogleAdsService")
@@ -243,9 +239,8 @@ class GoogleAdsClient:
             logger.error("Failed to get conversion actions", error=str(e))
             return []
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
     async def get_auction_insights(self, campaign_id: str) -> List[Dict[str, Any]]:
-        await self._ensure_token()
         try:
             client = self._get_client()
             ga_service = client.get_service("GoogleAdsService")
@@ -280,9 +275,8 @@ class GoogleAdsClient:
             logger.error("Failed to get auction insights", error=str(e))
             return []
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
     async def get_ads(self, ad_group_id: str) -> List[Dict[str, Any]]:
-        await self._ensure_token()
         try:
             client = self._get_client()
             ga_service = client.get_service("GoogleAdsService")
