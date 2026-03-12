@@ -27,7 +27,7 @@ beautifulsoup4==4.12.3
 lxml>=5.1.0
 
 # Google Ads
-google-ads==25.2.0
+google-ads==29.2.0
 google-auth>=2.28.0
 google-auth-oauthlib>=1.2.0
 

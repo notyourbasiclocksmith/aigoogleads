@@ -474,53 +474,34 @@ async def audit_credentials(
         mgr_cid = "8946883394"
         client_cid = "5795378641"
 
-        # Step 3a: ListAccessibleCustomers WITHOUT login-customer-id (v19)
         headers = {
             "Authorization": f"Bearer {access_token}",
             "developer-token": settings.GOOGLE_ADS_DEVELOPER_TOKEN,
         }
-        lac_resp = await client.get(
-            "https://googleads.googleapis.com/v19/customers:listAccessibleCustomers",
-            headers=headers,
-        )
-        results["lac_v19_no_login"] = {"status": lac_resp.status_code, "body": lac_resp.text[:300]}
-
-        # Step 3b: ListAccessibleCustomers WITH login-customer-id (v19)
         headers_login = {**headers, "login-customer-id": mgr_cid}
-        lac2_resp = await client.get(
-            "https://googleads.googleapis.com/v19/customers:listAccessibleCustomers",
-            headers=headers_login,
-        )
-        results["lac_v19_with_login"] = {"status": lac2_resp.status_code, "body": lac2_resp.text[:300]}
 
-        # Step 3c: ListAccessibleCustomers v18
-        lac3_resp = await client.get(
-            "https://googleads.googleapis.com/v18/customers:listAccessibleCustomers",
-            headers=headers_login,
-        )
-        results["lac_v18_with_login"] = {"status": lac3_resp.status_code, "body": lac3_resp.text[:300]}
+        # Test across API versions
+        for ver in ["v23", "v19", "v17"]:
+            lac_resp = await client.get(
+                f"https://googleads.googleapis.com/{ver}/customers:listAccessibleCustomers",
+                headers=headers_login,
+            )
+            results[f"lac_{ver}"] = {"status": lac_resp.status_code, "body": lac_resp.text[:300]}
 
-        # Step 3d: ListAccessibleCustomers v17
-        lac4_resp = await client.get(
-            "https://googleads.googleapis.com/v17/customers:listAccessibleCustomers",
-            headers=headers_login,
-        )
-        results["lac_v17_with_login"] = {"status": lac4_resp.status_code, "body": lac4_resp.text[:300]}
-
-        # Step 4: Query manager account directly (with login-customer-id, v19)
+        # Query manager account (v23)
         mgr_resp = await client.post(
-            f"https://googleads.googleapis.com/v19/customers/{mgr_cid}/googleAds:search",
+            f"https://googleads.googleapis.com/v23/customers/{mgr_cid}/googleAds:search",
             headers=headers_login,
             json={"query": "SELECT customer.id, customer.descriptive_name, customer.manager FROM customer LIMIT 1"},
         )
-        results["mgr_query_v19"] = {"status": mgr_resp.status_code, "body": mgr_resp.text[:300]}
+        results["mgr_query_v23"] = {"status": mgr_resp.status_code, "body": mgr_resp.text[:500]}
 
-        # Step 5: Query client account (with login-customer-id, v19)
+        # Query client account with login-customer-id (v23)
         client_resp = await client.post(
-            f"https://googleads.googleapis.com/v19/customers/{client_cid}/googleAds:search",
+            f"https://googleads.googleapis.com/v23/customers/{client_cid}/googleAds:search",
             headers=headers_login,
             json={"query": "SELECT customer.id, customer.descriptive_name FROM customer LIMIT 1"},
         )
-        results["client_query_v19"] = {"status": client_resp.status_code, "body": client_resp.text[:300]}
+        results["client_query_v23"] = {"status": client_resp.status_code, "body": client_resp.text[:500]}
 
     return results
