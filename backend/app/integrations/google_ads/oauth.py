@@ -2,8 +2,11 @@
 Google Ads OAuth — Connect + token refresh
 """
 import httpx
+import structlog
 from typing import Dict, Any, Optional
 from app.core.config import settings
+
+logger = structlog.get_logger()
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -37,6 +40,11 @@ async def exchange_code_for_tokens(auth_code: str) -> Optional[Dict[str, Any]]:
             },
         )
         if resp.status_code != 200:
+            logger.error("OAuth token exchange failed",
+                         status=resp.status_code,
+                         response=resp.text[:500],
+                         client_id_prefix=settings.GOOGLE_ADS_CLIENT_ID[:15],
+                         redirect_uri=settings.GOOGLE_ADS_REDIRECT_URI)
             return None
         data = resp.json()
         return {
@@ -59,6 +67,10 @@ async def refresh_access_token(refresh_token: str) -> Optional[Dict[str, Any]]:
             },
         )
         if resp.status_code != 200:
+            logger.error("OAuth token refresh failed",
+                         status=resp.status_code,
+                         response=resp.text[:500],
+                         client_id_prefix=settings.GOOGLE_ADS_CLIENT_ID[:15])
             return None
         data = resp.json()
         return {
