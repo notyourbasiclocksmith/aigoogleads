@@ -81,6 +81,7 @@ function OnboardingContent() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [googleAdsConnected, setGoogleAdsConnected] = useState(false);
+  const [onboardingComplete, setOnboardingComplete] = useState(false);
 
   const [tenantName, setTenantName] = useState("");
   const [industry, setIndustry] = useState("");
@@ -94,6 +95,7 @@ function OnboardingContent() {
   const [monthlyBudget, setMonthlyBudget] = useState("1000");
   const [conversionGoal, setConversionGoal] = useState("calls");
   const [autonomyMode, setAutonomyMode] = useState("semi_auto");
+  const [serviceArea, setServiceArea] = useState("");
 
   // Google Ads account picker state
   const [accessibleCustomers, setAccessibleCustomers] = useState<any[]>([]);
@@ -176,6 +178,7 @@ function OnboardingContent() {
         if (data.conversion_goal) setConversionGoal(data.conversion_goal);
         if (data.autonomy_mode) setAutonomyMode(data.autonomy_mode);
         if (data.google_ads_connected) setGoogleAdsConnected(true);
+        if (data.service_area) setServiceArea(data.service_area);
       }).catch(() => {});
     }).catch(() => {});
   }, [router]);
@@ -187,7 +190,12 @@ function OnboardingContent() {
       if (step === 0) {
         if (!tenantName.trim()) { setError("Please enter your business name"); setLoading(false); return; }
         if (!industry) { setError("Please select an industry"); setLoading(false); return; }
-        const res = await api.post("/api/onboarding/step1", { tenant_name: tenantName, industry, phone });
+        const res = await api.post("/api/onboarding/step1", {
+          tenant_name: tenantName,
+          industry,
+          phone,
+          service_area: serviceArea ? { primary: serviceArea } : undefined,
+        });
         if (res.access_token) api.setToken(res.access_token);
       } else if (step === 1) {
         await api.post("/api/onboarding/step2", {
@@ -204,7 +212,8 @@ function OnboardingContent() {
         });
       } else if (step === 4) {
         await api.post("/api/onboarding/step5", { autonomy_mode: autonomyMode });
-        router.push("/dashboard");
+        setOnboardingComplete(true);
+        setTimeout(() => router.push("/dashboard"), 2500);
         return;
       }
       setStep(step + 1);
@@ -216,6 +225,28 @@ function OnboardingContent() {
   }
 
   const progress = ((step + 1) / steps.length) * 100;
+
+  if (onboardingComplete) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <div className="text-center space-y-6 animate-in fade-in duration-500">
+          <div className="w-24 h-24 mx-auto rounded-3xl bg-gradient-to-br from-emerald-500/20 to-teal-500/20 border border-emerald-500/30 flex items-center justify-center">
+            <CheckCircle2 className="w-12 h-12 text-emerald-400" />
+          </div>
+          <div>
+            <h2 className="text-3xl font-bold text-white mb-2">You&apos;re All Set!</h2>
+            <p className="text-slate-400 max-w-md mx-auto">
+              Your AI marketing assistant is ready. Redirecting to your dashboard...
+            </p>
+          </div>
+          <div className="flex items-center justify-center gap-2">
+            <Loader2 className="w-4 h-4 text-emerald-400 animate-spin" />
+            <span className="text-sm text-slate-500">Setting up your workspace</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-950 flex">
@@ -367,6 +398,18 @@ function OnboardingContent() {
                       className="h-12 bg-slate-800/50 border-slate-700 text-white placeholder:text-slate-500 focus:border-blue-500 focus:ring-blue-500/20 rounded-xl"
                     />
                     <p className="text-xs text-slate-500">Used for call tracking and ad extensions</p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-slate-300 flex items-center gap-2">
+                      <MapPin className="w-4 h-4 text-blue-400" /> Service Area
+                    </label>
+                    <Input
+                      value={serviceArea} onChange={(e) => setServiceArea(e.target.value)}
+                      placeholder="e.g. Dallas, TX or Dallas-Fort Worth metro"
+                      className="h-12 bg-slate-800/50 border-slate-700 text-white placeholder:text-slate-500 focus:border-blue-500 focus:ring-blue-500/20 rounded-xl"
+                    />
+                    <p className="text-xs text-slate-500">Where your business operates — used for geo-targeting your ads</p>
                   </div>
                 </div>
               )}
@@ -799,6 +842,8 @@ function OnboardingContent() {
                   <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Saving...</>
                 ) : step === 4 ? (
                   <><Rocket className="w-4 h-4 mr-2" /> Launch Dashboard</>
+                ) : step === 2 && !googleAdsConnected ? (
+                  <>Skip for Now <ArrowRight className="w-4 h-4 ml-2" /></>
                 ) : (
                   <>Continue <ArrowRight className="w-4 h-4 ml-2" /></>
                 )}

@@ -426,8 +426,8 @@ export default function SettingsPage() {
                   </div>
                 )}
 
-                {/* Sync button + last synced */}
-                <div className="flex items-center gap-3">
+                {/* Action buttons */}
+                <div className="flex items-center gap-3 flex-wrap">
                   <Button
                     variant="outline"
                     size="sm"
@@ -436,6 +436,38 @@ export default function SettingsPage() {
                   >
                     <RefreshCw className={`w-4 h-4 mr-2 ${syncStatus?.sync_status === "syncing" ? "animate-spin" : ""}`} />
                     {syncStatus?.sync_status === "syncing" ? "Syncing..." : "Sync Now"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      try {
+                        const res = await api.post("/api/ads/accounts/reconnect-oauth");
+                        if (res.oauth_url) window.location.href = res.oauth_url;
+                      } catch (e: any) {
+                        alert(e.message || "Failed to start reconnection");
+                      }
+                    }}
+                  >
+                    <ExternalLink className="w-4 h-4 mr-2" /> Reconnect
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200"
+                    onClick={async () => {
+                      if (!confirm("Disconnect this Google Ads account? You can reconnect later.")) return;
+                      try {
+                        await api.delete(`/api/ads/accounts/${acct.id}`);
+                        const a = await api.get("/api/ads/accounts").catch(() => []);
+                        setAccounts(Array.isArray(a) ? a : []);
+                        setSyncStatus(null);
+                      } catch (e: any) {
+                        alert(e.message || "Failed to disconnect account");
+                      }
+                    }}
+                  >
+                    <XCircle className="w-4 h-4 mr-2" /> Disconnect
                   </Button>
                   {acct.last_sync_at && (
                     <span className="text-xs text-muted-foreground">
@@ -449,8 +481,18 @@ export default function SettingsPage() {
             {accounts.length === 0 && (
               <div className="text-center py-6">
                 <p className="text-sm text-muted-foreground mb-3">No Google Ads accounts connected</p>
-                <Button variant="outline" onClick={() => window.location.href = "/onboarding"}>
-                  Connect Google Ads
+                <Button
+                  variant="outline"
+                  onClick={async () => {
+                    try {
+                      const res = await api.post("/api/ads/accounts/reconnect-oauth");
+                      if (res.oauth_url) window.location.href = res.oauth_url;
+                    } catch {
+                      window.location.href = "/onboarding";
+                    }
+                  }}
+                >
+                  <Link2 className="w-4 h-4 mr-2" /> Connect Google Ads
                 </Button>
               </div>
             )}
@@ -459,8 +501,18 @@ export default function SettingsPage() {
             {accounts.length > 0 && !hasPending && accounts.filter((a: any) => a.customer_id !== "pending").length === 0 && (
               <div className="text-center py-6">
                 <p className="text-sm text-muted-foreground mb-3">No Google Ads accounts connected</p>
-                <Button variant="outline" onClick={() => window.location.href = "/onboarding"}>
-                  Connect Google Ads
+                <Button
+                  variant="outline"
+                  onClick={async () => {
+                    try {
+                      const res = await api.post("/api/ads/accounts/reconnect-oauth");
+                      if (res.oauth_url) window.location.href = res.oauth_url;
+                    } catch {
+                      window.location.href = "/onboarding";
+                    }
+                  }}
+                >
+                  <Link2 className="w-4 h-4 mr-2" /> Connect Google Ads
                 </Button>
               </div>
             )}

@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     GOOGLE_ADS_DEVELOPER_TOKEN: str = ""
     GOOGLE_ADS_CLIENT_ID: str = ""
     GOOGLE_ADS_CLIENT_SECRET: str = ""
-    GOOGLE_ADS_REDIRECT_URI: str = "http://localhost:3000/api/auth/google-ads/callback"
+    GOOGLE_ADS_REDIRECT_URI: str = "http://localhost:8000/api/ads/accounts/oauth/callback"
 
     # AI Image Generator (SEOpix Flask API)
     IMAGE_GENERATOR_API_URL: str = ""

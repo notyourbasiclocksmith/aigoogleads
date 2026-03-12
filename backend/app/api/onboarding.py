@@ -239,6 +239,7 @@ async def onboarding_data(
         "instagram_url": social_map.get("instagram", ""),
         "tiktok_url": social_map.get("tiktok", ""),
         "google_ads_connected": acct is not None,
+        "service_area": (profile.locations_json or {}).get("primary", "") if profile else "",
         "monthly_budget": constraints.get("monthly_budget", 1000),
         "conversion_goal": profile.primary_conversion_goal if profile else "calls",
         "autonomy_mode": tenant.autonomy_mode if tenant else "semi_auto",

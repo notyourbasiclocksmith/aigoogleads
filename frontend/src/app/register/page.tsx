@@ -81,26 +81,40 @@ function RegisterContent() {
 
       const finalTenantId = localStorage.getItem("tenant_id");
 
-      // 3. Create Stripe customer
-      await api.post("/api/v2/billing/create-customer", {
-        tenant_id: finalTenantId,
-        email: email,
-        name: companyName || fullName,
-      });
+      // 3. Try Stripe billing (optional — skip if not configured)
+      let redirectedToCheckout = false;
+      try {
+        await api.post("/api/v2/billing/create-customer", {
+          tenant_id: finalTenantId,
+          email: email,
+          name: companyName || fullName,
+        });
 
-      // 4. Create checkout session
-      const checkoutData = await api.post("/api/v2/billing/checkout", {
-        tenant_id: finalTenantId,
-        plan: plan,
-        success_url: `${window.location.origin}/onboarding?plan=${plan}&checkout=success`,
-        cancel_url: `${window.location.origin}/pricing?canceled=true`,
-      });
+        const checkoutData = await api.post("/api/v2/billing/checkout", {
+          tenant_id: finalTenantId,
+          plan: plan,
+          success_url: `${window.location.origin}/onboarding?plan=${plan}&checkout=success`,
+          cancel_url: `${window.location.origin}/pricing?canceled=true`,
+        });
 
-      if (checkoutData.checkout_url) {
-        setStep("checkout");
-        window.location.href = checkoutData.checkout_url;
-      } else {
-        // Fallback: go to onboarding
+        if (checkoutData.checkout_url) {
+          setStep("checkout");
+          redirectedToCheckout = true;
+          window.location.href = checkoutData.checkout_url;
+        }
+      } catch {
+        // Stripe not configured — skip billing for now
+        console.info("Stripe billing not configured, proceeding to onboarding");
+      }
+
+      if (!redirectedToCheckout) {
+        // Select tenant so onboarding has a tenant-scoped token
+        if (finalTenantId) {
+          try {
+            const selectData = await api.post("/api/auth/select-tenant", { tenant_id: finalTenantId });
+            if (selectData.access_token) api.setToken(selectData.access_token);
+          } catch {}
+        }
         router.push(`/onboarding?plan=${plan}`);
       }
     } catch (err: any) {

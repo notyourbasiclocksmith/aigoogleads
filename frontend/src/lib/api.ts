@@ -1,4 +1,9 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// Use relative URLs in browser (leverages Next.js rewrites to proxy /api/* to backend).
+// Only use the explicit backend URL for SSR or when explicitly set.
+const API_URL =
+  typeof window !== "undefined"
+    ? ""
+    : process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 interface ApiOptions {
   method?: string;
