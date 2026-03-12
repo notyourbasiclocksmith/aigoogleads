@@ -224,6 +224,31 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
                 login_customer_id=integration.login_customer_id,
             )
 
+            # ── DIAGNOSTIC: pre-flight OAuth credential test ──
+            import httpx
+            from app.core.security import decrypt_token
+            _rt = decrypt_token(integration.refresh_token_encrypted)
+            logger.info("Pre-flight OAuth test",
+                        client_id_len=len(settings.GOOGLE_ADS_CLIENT_ID),
+                        client_id_prefix=settings.GOOGLE_ADS_CLIENT_ID[:12],
+                        client_secret_len=len(settings.GOOGLE_ADS_CLIENT_SECRET),
+                        client_secret_prefix=settings.GOOGLE_ADS_CLIENT_SECRET[:8],
+                        refresh_token_len=len(_rt) if _rt else 0,
+                        refresh_token_prefix=_rt[:8] if _rt else "NONE")
+            async with httpx.AsyncClient() as hc:
+                _resp = await hc.post("https://oauth2.googleapis.com/token", data={
+                    "grant_type": "refresh_token",
+                    "client_id": settings.GOOGLE_ADS_CLIENT_ID,
+                    "client_secret": settings.GOOGLE_ADS_CLIENT_SECRET,
+                    "refresh_token": _rt,
+                })
+                logger.info("Pre-flight OAuth result",
+                            status=_resp.status_code,
+                            body=_resp.text[:500])
+                if _resp.status_code != 200:
+                    raise Exception(f"OAuth pre-flight failed ({_resp.status_code}): {_resp.text[:300]}")
+            # ── END DIAGNOSTIC ──
+
             # Step 2: Account info
             await _update_sync_progress(db, integration, "syncing", "Fetching account info...", 10)
             account_info = await client.get_account_info()
