@@ -96,7 +96,12 @@ async def list_accounts(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(IntegrationGoogleAds).where(IntegrationGoogleAds.tenant_id == user.tenant_id)
+        select(IntegrationGoogleAds).where(
+            and_(
+                IntegrationGoogleAds.tenant_id == user.tenant_id,
+                IntegrationGoogleAds.is_active == True,
+            )
+        )
     )
     accounts = result.scalars().all()
     return [
@@ -163,7 +168,7 @@ async def disconnect_account(
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    account.is_active = False
+    await db.delete(account)
     await db.flush()
     return {"status": "disconnected"}
 
@@ -291,13 +296,13 @@ async def select_customer(
     if req.login_customer_id:
         account.login_customer_id = req.login_customer_id.replace("-", "").strip()
 
-    # Clean up other pending duplicates for this tenant
+    # Clean up other pending duplicates AND existing duplicates with the same customer_id
     await db.execute(
         delete(IntegrationGoogleAds).where(
             and_(
                 IntegrationGoogleAds.tenant_id == user.tenant_id,
-                IntegrationGoogleAds.customer_id == "pending",
                 IntegrationGoogleAds.id != account_id,
+                IntegrationGoogleAds.customer_id.in_(["pending", clean_id]),
             )
         )
     )
