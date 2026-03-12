@@ -250,15 +250,17 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
                             q = "SELECT customer.id, customer.manager FROM customer LIMIT 1"
                             for row in ga_svc.search(customer_id=cid, query=q):
                                 if row.customer.manager:
-                                    integration.login_customer_id = cid
+                                    # Manager found, but user has direct access to target account
+                                    # Clear login_customer_id to avoid USER_PERMISSION_DENIED
+                                    integration.login_customer_id = None
                                     await db.commit()
-                                    logger.info("Auto-detected manager account",
-                                                login_customer_id=cid,
+                                    logger.info("Auto-detected manager account, but using direct access",
+                                                manager_cid=cid,
                                                 customer_id=integration.customer_id)
                                     client = GoogleAdsClient(
                                         customer_id=integration.customer_id,
                                         refresh_token_encrypted=integration.refresh_token_encrypted,
-                                        login_customer_id=cid,
+                                        login_customer_id=None,
                                     )
                                     break
                         except Exception:
