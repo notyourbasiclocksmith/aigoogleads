@@ -413,3 +413,99 @@ async def get_sync_status(
         "conversions_synced": account.conversions_synced or 0,
         "last_sync_at": account.last_sync_at.isoformat() if account.last_sync_at else None,
     }
+
+
+@router.get("/diag/audit-credentials")
+async def audit_credentials(
+    user: CurrentUser = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    """TEMPORARY: Audit Google Ads API credentials via REST API (no library)."""
+    import httpx
+
+    results = {
+        "developer_token": settings.GOOGLE_ADS_DEVELOPER_TOKEN[:8] + "...",
+        "developer_token_len": len(settings.GOOGLE_ADS_DEVELOPER_TOKEN or ""),
+        "client_id": settings.GOOGLE_ADS_CLIENT_ID[:20] + "...",
+        "client_secret_len": len(settings.GOOGLE_ADS_CLIENT_SECRET or ""),
+    }
+
+    # Find the integration
+    res = await db.execute(
+        select(IntegrationGoogleAds).where(
+            IntegrationGoogleAds.tenant_id == user.tenant_id,
+            IntegrationGoogleAds.is_active == True,
+        )
+    )
+    integration = res.scalar_one_or_none()
+    if not integration:
+        results["error"] = "No active integration found"
+        return results
+
+    results["customer_id"] = integration.customer_id
+    results["login_customer_id"] = integration.login_customer_id
+
+    # Step 1: Decrypt refresh token
+    try:
+        refresh_token = decrypt_token(integration.refresh_token_encrypted)
+        results["refresh_token_prefix"] = refresh_token[:15] + "..."
+        results["refresh_token_len"] = len(refresh_token)
+    except Exception as e:
+        results["decrypt_error"] = str(e)
+        return results
+
+    # Step 2: Get fresh access token
+    async with httpx.AsyncClient() as client:
+        token_resp = await client.post("https://oauth2.googleapis.com/token", data={
+            "refresh_token": refresh_token,
+            "client_id": settings.GOOGLE_ADS_CLIENT_ID,
+            "client_secret": settings.GOOGLE_ADS_CLIENT_SECRET,
+            "grant_type": "refresh_token",
+        })
+        results["oauth_token_status"] = token_resp.status_code
+        if token_resp.status_code != 200:
+            results["oauth_token_error"] = token_resp.text[:300]
+            return results
+
+        access_token = token_resp.json()["access_token"]
+        results["access_token_obtained"] = True
+
+        # Step 3: Test ListAccessibleCustomers via REST
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "developer-token": settings.GOOGLE_ADS_DEVELOPER_TOKEN,
+        }
+        lac_resp = await client.get(
+            "https://googleads.googleapis.com/v19/customers:listAccessibleCustomers",
+            headers=headers,
+        )
+        results["list_accessible_status"] = lac_resp.status_code
+        results["list_accessible_body"] = lac_resp.text[:500]
+
+        if lac_resp.status_code == 200:
+            customers = lac_resp.json().get("resourceNames", [])
+            results["accessible_customers"] = customers
+
+            # Step 4: Query manager account
+            mgr_cid = "8946883394"
+            headers_mgr = {**headers}
+            mgr_resp = await client.post(
+                f"https://googleads.googleapis.com/v19/customers/{mgr_cid}/googleAds:search",
+                headers=headers_mgr,
+                json={"query": "SELECT customer.id, customer.descriptive_name, customer.manager FROM customer LIMIT 1"},
+            )
+            results["manager_query_status"] = mgr_resp.status_code
+            results["manager_query_body"] = mgr_resp.text[:500]
+
+            # Step 5: Query client account WITH login-customer-id
+            client_cid = "5795378641"
+            headers_client = {**headers, "login-customer-id": mgr_cid}
+            client_resp = await client.post(
+                f"https://googleads.googleapis.com/v19/customers/{client_cid}/googleAds:search",
+                headers=headers_client,
+                json={"query": "SELECT customer.id, customer.descriptive_name FROM customer LIMIT 1"},
+            )
+            results["client_query_status"] = client_resp.status_code
+            results["client_query_body"] = client_resp.text[:500]
+
+    return results
