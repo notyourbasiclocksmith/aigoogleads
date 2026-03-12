@@ -191,7 +191,7 @@ async def _update_sync_progress(db, integration, status: str, message: str, prog
 
 
 async def _sync_ads_account_async(tenant_id: str, integration_id: str):
-    from app.core.database import async_session_factory
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
     from app.models.integration_google_ads import IntegrationGoogleAds
     from app.models.campaign import Campaign
     from app.models.ad_group import AdGroup
@@ -202,12 +202,22 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
     from app.integrations.google_ads.client import GoogleAdsClient
     from datetime import datetime, timezone
 
-    async with async_session_factory() as db:
+    # Create a fresh engine for this task — each asyncio.run() has its own event loop,
+    # so we cannot reuse the global async engine whose pool is tied to a different loop.
+    task_engine = create_async_engine(
+        settings.DATABASE_URL, pool_size=5, max_overflow=5, pool_pre_ping=True,
+    )
+    task_session_factory = async_sessionmaker(
+        task_engine, class_=AsyncSession, expire_on_commit=False,
+    )
+
+    async with task_session_factory() as db:
         result = await db.execute(
             select(IntegrationGoogleAds).where(IntegrationGoogleAds.id == integration_id)
         )
         integration = result.scalar_one_or_none()
         if not integration:
+            await task_engine.dispose()
             return
 
         try:
@@ -223,31 +233,6 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
                 refresh_token_encrypted=integration.refresh_token_encrypted,
                 login_customer_id=integration.login_customer_id,
             )
-
-            # ── DIAGNOSTIC: pre-flight OAuth credential test ──
-            import httpx
-            from app.core.security import decrypt_token
-            _rt = decrypt_token(integration.refresh_token_encrypted)
-            logger.info("Pre-flight OAuth test",
-                        client_id_len=len(settings.GOOGLE_ADS_CLIENT_ID),
-                        client_id_prefix=settings.GOOGLE_ADS_CLIENT_ID[:12],
-                        client_secret_len=len(settings.GOOGLE_ADS_CLIENT_SECRET),
-                        client_secret_prefix=settings.GOOGLE_ADS_CLIENT_SECRET[:8],
-                        refresh_token_len=len(_rt) if _rt else 0,
-                        refresh_token_prefix=_rt[:8] if _rt else "NONE")
-            async with httpx.AsyncClient() as hc:
-                _resp = await hc.post("https://oauth2.googleapis.com/token", data={
-                    "grant_type": "refresh_token",
-                    "client_id": settings.GOOGLE_ADS_CLIENT_ID,
-                    "client_secret": settings.GOOGLE_ADS_CLIENT_SECRET,
-                    "refresh_token": _rt,
-                })
-                logger.info("Pre-flight OAuth result",
-                            status=_resp.status_code,
-                            body=_resp.text[:500])
-                if _resp.status_code != 200:
-                    raise Exception(f"OAuth pre-flight failed ({_resp.status_code}): {_resp.text[:300]}")
-            # ── END DIAGNOSTIC ──
 
             # Step 2: Account info
             await _update_sync_progress(db, integration, "syncing", "Fetching account info...", 10)
@@ -485,7 +470,7 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
                 real_error = e.last_attempt.exception()
             error_msg = str(real_error)
             # Re-fetch integration to update error status
-            async with async_session_factory() as err_db:
+            async with task_session_factory() as err_db:
                 res = await err_db.execute(
                     select(IntegrationGoogleAds).where(IntegrationGoogleAds.id == integration_id)
                 )
@@ -497,6 +482,8 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
                     integ.sync_error = error_msg[:1000]
                     await err_db.commit()
             logger.error("Ads account sync failed", tenant_id=tenant_id, error=error_msg)
+
+    await task_engine.dispose()
 
 
 @celery_app.task(name="app.jobs.tasks.launch_campaign_task")
