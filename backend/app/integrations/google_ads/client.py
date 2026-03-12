@@ -178,11 +178,16 @@ class GoogleAdsClient:
             ORDER BY segments.date
         """
         response = ga_service.search(customer_id=self.customer_id, query=query)
-        return [
-            {
+        from datetime import datetime
+        results = []
+        for row in response:
+            # Convert Google's date string to date object
+            date_str = str(row.segments.date)
+            date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
+            results.append({
                 "campaign_id": str(row.campaign.id),
                 "campaign_name": row.campaign.name,
-                "date": row.segments.date,
+                "date": date_obj,
                 "impressions": row.metrics.impressions,
                 "clicks": row.metrics.clicks,
                 "cost_micros": row.metrics.cost_micros,
@@ -190,9 +195,8 @@ class GoogleAdsClient:
                 "conv_value": row.metrics.conversions_value,
                 "ctr": row.metrics.ctr,
                 "avg_cpc": row.metrics.average_cpc,
-            }
-            for row in response
-        ]
+            })
+        return results
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
     async def get_conversion_actions(self) -> List[Dict[str, Any]]:
