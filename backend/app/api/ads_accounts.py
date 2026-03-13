@@ -417,6 +417,51 @@ async def diag_sync_status(
     ]
 
 
+@router.get("/diag/data-audit")
+async def diag_data_audit(
+    key: str = Query(""),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin: check row counts in all data tables."""
+    if key != "gads2026diag":
+        raise HTTPException(status_code=403, detail="Invalid key")
+
+    from app.models.campaign import Campaign
+    from app.models.ad_group import AdGroup
+    from app.models.keyword import Keyword
+    from app.models.ad import Ad
+    from app.models.performance_daily import PerformanceDaily
+    from app.models.search_term_performance import SearchTermPerformance
+    from app.models.keyword_performance_daily import KeywordPerformanceDaily
+    from app.models.ad_performance_daily import AdPerformanceDaily
+    from app.models.ad_group_performance_daily import AdGroupPerformanceDaily
+    from app.models.landing_page_performance import LandingPagePerformance
+    from app.models.google_recommendation import GoogleRecommendation
+    from app.models.auction_insight import AuctionInsight
+
+    tables = {
+        "campaigns": Campaign,
+        "ad_groups": AdGroup,
+        "keywords": Keyword,
+        "ads": Ad,
+        "performance_daily": PerformanceDaily,
+        "search_term_performance": SearchTermPerformance,
+        "keyword_performance_daily": KeywordPerformanceDaily,
+        "ad_performance_daily": AdPerformanceDaily,
+        "ad_group_performance_daily": AdGroupPerformanceDaily,
+        "landing_page_performance": LandingPagePerformance,
+        "google_recommendations": GoogleRecommendation,
+        "auction_insights": AuctionInsight,
+    }
+
+    counts = {}
+    for name, model in tables.items():
+        result = await db.execute(select(func.count()).select_from(model))
+        counts[name] = result.scalar() or 0
+
+    return counts
+
+
 # ── PARAMETERIZED ACCOUNT ROUTES ─────────────────────────────────────
 
 @router.post("/{account_id}/sync")
