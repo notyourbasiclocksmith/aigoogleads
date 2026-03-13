@@ -56,6 +56,7 @@ async def get_profile(
         "website_url": profile.website_url if profile else "",
         "description": profile.description if profile else "",
         "google_ads_customer_id": acct.customer_id if acct else None,
+        "notification_email": notifications.get("notification_email", ""),
         "email_alerts": notifications.get("email_alerts", True),
         "weekly_report": notifications.get("weekly_report", True),
         "recommendation_alerts": notifications.get("recommendation_alerts", True),
@@ -69,6 +70,7 @@ class UpdateProfileRequest(BaseModel):
     phone: Optional[str] = None
     website_url: Optional[str] = None
     description: Optional[str] = None
+    notification_email: Optional[str] = None
     email_alerts: Optional[bool] = None
     weekly_report: Optional[bool] = None
     recommendation_alerts: Optional[bool] = None
@@ -100,6 +102,8 @@ async def update_profile(
             profile.description = req.description
         # Persist notification preferences
         notifications = (profile.constraints_json or {}).get("notifications", {})
+        if req.notification_email is not None:
+            notifications["notification_email"] = req.notification_email
         if req.email_alerts is not None:
             notifications["email_alerts"] = req.email_alerts
         if req.weekly_report is not None:
@@ -108,7 +112,7 @@ async def update_profile(
             notifications["recommendation_alerts"] = req.recommendation_alerts
         if req.budget_alerts is not None:
             notifications["budget_alerts"] = req.budget_alerts
-        if any(v is not None for v in [req.email_alerts, req.weekly_report, req.recommendation_alerts, req.budget_alerts]):
+        if any(v is not None for v in [req.notification_email, req.email_alerts, req.weekly_report, req.recommendation_alerts, req.budget_alerts]):
             constraints = profile.constraints_json or {}
             constraints["notifications"] = notifications
             profile.constraints_json = constraints

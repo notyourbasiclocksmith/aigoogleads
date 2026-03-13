@@ -592,23 +592,47 @@ export default function SettingsPage() {
             </CardTitle>
             <CardDescription>Choose how you receive alerts and reports</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-3">
-            {[
-              { key: "email_alerts", label: "Email alerts for critical events" },
-              { key: "weekly_report", label: "Weekly performance digest" },
-              { key: "recommendation_alerts", label: "New recommendation notifications" },
-              { key: "budget_alerts", label: "Budget threshold alerts" },
-            ].map((n) => (
-              <label key={n.key} className="flex items-center justify-between p-3 rounded-lg border cursor-pointer hover:bg-slate-50">
-                <span className="text-sm font-medium">{n.label}</span>
-                <input
-                  type="checkbox"
-                  checked={profile[n.key] ?? true}
-                  onChange={(e) => setProfile({ ...profile, [n.key]: e.target.checked })}
-                  className="h-4 w-4 rounded border-gray-300"
-                />
-              </label>
-            ))}
+          <CardContent className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Notification Email</label>
+              <p className="text-xs text-muted-foreground mb-2">Where should we send email alerts and reports?</p>
+              <Input
+                type="email"
+                placeholder="you@example.com"
+                value={profile.notification_email || ""}
+                onChange={(e) => setProfile({ ...profile, notification_email: e.target.value })}
+              />
+              {!profile.notification_email && (
+                <p className="text-xs text-amber-600 mt-1 flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3" /> No email set — notifications won&apos;t be delivered
+                </p>
+              )}
+            </div>
+            <div className="border-t pt-3 space-y-2">
+              <p className="text-sm font-medium text-slate-700">Alert Types</p>
+              {[
+                { key: "email_alerts", label: "Email alerts for critical events", desc: "Budget overruns, campaign errors, account issues" },
+                { key: "weekly_report", label: "Weekly performance digest", desc: "Summary of all campaign performance every Monday" },
+                { key: "recommendation_alerts", label: "New recommendation notifications", desc: "When Google or AI suggests optimizations" },
+                { key: "budget_alerts", label: "Budget threshold alerts", desc: "When spend approaches or exceeds daily limits" },
+              ].map((n) => (
+                <label key={n.key} className="flex items-center justify-between p-3 rounded-lg border cursor-pointer hover:bg-slate-50">
+                  <div>
+                    <span className="text-sm font-medium">{n.label}</span>
+                    <p className="text-xs text-muted-foreground">{n.desc}</p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={profile[n.key] ?? true}
+                    onChange={(e) => setProfile({ ...profile, [n.key]: e.target.checked })}
+                    className="h-4 w-4 rounded border-gray-300 shrink-0 ml-3"
+                  />
+                </label>
+              ))}
+            </div>
+            <Button onClick={saveProfile} disabled={saving}>
+              <Save className="w-4 h-4 mr-2" /> {saving ? "Saving..." : "Save Notifications"}
+            </Button>
           </CardContent>
         </Card>
       </div>
