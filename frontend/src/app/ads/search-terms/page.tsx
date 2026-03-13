@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
-import { Search, AlertTriangle, Ban, Plus, DollarSign, Loader2, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+import { Search, AlertTriangle, AlertCircle, Ban, Plus, DollarSign, Loader2, ArrowUp, ArrowDown, ArrowUpDown, Info, ExternalLink } from "lucide-react";
 import { HelpTip, PageInfo } from "@/components/ui/help-tip";
 
 type SortKey = "impressions" | "clicks" | "cost" | "conversions" | "ctr" | "cpc" | "cpa";
@@ -94,6 +94,61 @@ export default function SearchTermsPage() {
 
         <PageInfo term="page_search_terms" />
 
+        {/* Conversion Tracking Warning */}
+        {waste?.conversion_tracking && waste.conversion_tracking.status !== "healthy" && (
+          <Card className={`${
+            waste.conversion_tracking.status === "not_setup" ? "border-orange-300 bg-orange-50" :
+            waste.conversion_tracking.status === "all_disabled" ? "border-orange-300 bg-orange-50" :
+            "border-yellow-300 bg-yellow-50"
+          }`}>
+            <CardContent className="p-4">
+              <div className="flex items-start gap-3">
+                <AlertCircle className={`w-5 h-5 mt-0.5 shrink-0 ${
+                  waste.conversion_tracking.status === "not_setup" ? "text-orange-600" :
+                  waste.conversion_tracking.status === "all_disabled" ? "text-orange-600" :
+                  "text-yellow-600"
+                }`} />
+                <div className="flex-1">
+                  <p className={`font-semibold ${
+                    waste.conversion_tracking.status === "not_setup" ? "text-orange-900" :
+                    waste.conversion_tracking.status === "all_disabled" ? "text-orange-900" :
+                    "text-yellow-900"
+                  }`}>
+                    {waste.conversion_tracking.status === "not_setup" && "Conversion Tracking Not Set Up"}
+                    {waste.conversion_tracking.status === "all_disabled" && "All Conversion Actions Disabled"}
+                    {waste.conversion_tracking.status === "no_data" && "No Conversions Recorded"}
+                  </p>
+                  <p className={`text-sm mt-1 ${
+                    waste.conversion_tracking.status === "not_setup" ? "text-orange-700" :
+                    waste.conversion_tracking.status === "all_disabled" ? "text-orange-700" :
+                    "text-yellow-700"
+                  }`}>
+                    {waste.conversion_tracking.message}
+                  </p>
+                  {waste.conversion_tracking.status !== "healthy" && (
+                    <p className="text-xs mt-2 text-slate-500">
+                      <Info className="w-3 h-3 inline mr-1" />
+                      The &quot;wasted spend&quot; numbers below may be inaccurate until conversion tracking is working correctly.
+                      Without proper tracking, all search terms appear to have zero conversions.
+                    </p>
+                  )}
+                  <div className="flex items-center gap-4 mt-2 text-xs">
+                    <span className="text-slate-500">
+                      Conversion actions: {waste.conversion_tracking.active_actions} active / {waste.conversion_tracking.total_actions} total
+                    </span>
+                    <span className="text-slate-500">
+                      Conversions in period: {waste.conversion_tracking.conversions_in_period}
+                    </span>
+                    <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => window.location.href = "/settings"}>
+                      <ExternalLink className="w-3 h-3 mr-1" /> Check Settings
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Waste Summary */}
         {waste && waste.total_waste > 0 && (
           <Card className="border-red-200 bg-red-50">
@@ -106,7 +161,9 @@ export default function SearchTermsPage() {
                     {waste.count} search terms with zero conversions
                   </p>
                   <p className="text-sm text-red-700">
-                    Add these as negative keywords to stop wasting budget
+                    {waste.conversion_tracking?.status === "healthy"
+                      ? "Add these as negative keywords to stop wasting budget"
+                      : "This may be due to missing conversion tracking \u2014 verify your setup before adding negative keywords"}
                   </p>
                 </div>
               </div>

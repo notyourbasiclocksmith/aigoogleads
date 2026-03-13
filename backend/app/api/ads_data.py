@@ -19,6 +19,7 @@ from app.models.ad_group_performance_daily import AdGroupPerformanceDaily
 from app.models.landing_page_performance import LandingPagePerformance
 from app.models.google_recommendation import GoogleRecommendation
 from app.models.change_log import ChangeLog
+from app.models.conversion import Conversion
 
 router = APIRouter()
 
@@ -148,9 +149,57 @@ async def get_wasted_search_terms(
     rows = result.all()
     total_waste = sum(float(r.cost_micros or 0) for r in rows)
 
+    # ── Conversion tracking verification ──
+    # Check if tenant has any conversion actions configured
+    conv_actions_result = await db.execute(
+        select(func.count()).select_from(Conversion).where(
+            Conversion.tenant_id == user.tenant_id
+        )
+    )
+    total_conv_actions = conv_actions_result.scalar() or 0
+
+    active_conv_result = await db.execute(
+        select(func.count()).select_from(Conversion).where(
+            Conversion.tenant_id == user.tenant_id,
+            Conversion.status == "ENABLED",
+        )
+    )
+    active_conv_actions = active_conv_result.scalar() or 0
+
+    # Check if ANY conversions were recorded across ALL search terms in the period
+    any_conv_result = await db.execute(
+        select(func.sum(SearchTermPerformance.conversions)).where(
+            SearchTermPerformance.tenant_id == user.tenant_id,
+            SearchTermPerformance.date >= start,
+            SearchTermPerformance.date <= end,
+        )
+    )
+    total_conversions_in_period = float(any_conv_result.scalar() or 0)
+
+    # Determine tracking health
+    if total_conv_actions == 0:
+        tracking_status = "not_setup"
+        tracking_message = "No conversion actions found in your Google Ads account. You need to set up conversion tracking before wasted spend data is meaningful."
+    elif active_conv_actions == 0:
+        tracking_status = "all_disabled"
+        tracking_message = f"You have {total_conv_actions} conversion action(s) but none are enabled. Enable at least one conversion action so Google can track results."
+    elif total_conversions_in_period == 0:
+        tracking_status = "no_data"
+        tracking_message = f"You have {active_conv_actions} active conversion action(s) but recorded 0 conversions in the last {days} days. Your tracking may not be firing correctly — verify your conversion tag is installed on your website or that call tracking is configured."
+    else:
+        tracking_status = "healthy"
+        tracking_message = None
+
     return {
         "total_waste": round(total_waste / 1_000_000, 2),
         "count": len(rows),
+        "conversion_tracking": {
+            "status": tracking_status,
+            "message": tracking_message,
+            "total_actions": total_conv_actions,
+            "active_actions": active_conv_actions,
+            "conversions_in_period": round(total_conversions_in_period, 1),
+        },
         "terms": [
             {
                 "search_term": r.search_term,
