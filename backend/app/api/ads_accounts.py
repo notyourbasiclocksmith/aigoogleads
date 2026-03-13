@@ -440,6 +440,37 @@ async def diag_trigger_sync(
     return {"triggered": len(triggered), "accounts": triggered}
 
 
+@router.get("/diag/sync-status")
+async def diag_sync_status(
+    key: str = Query(""),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin: check sync status for all active integrations."""
+    if key != "gads2026diag":
+        raise HTTPException(status_code=403, detail="Invalid key")
+
+    result = await db.execute(
+        select(IntegrationGoogleAds).where(
+            IntegrationGoogleAds.is_active == True,
+            IntegrationGoogleAds.customer_id != "pending",
+        )
+    )
+    integrations = result.scalars().all()
+    return [
+        {
+            "id": ig.id,
+            "customer_id": ig.customer_id,
+            "sync_status": ig.sync_status or "idle",
+            "sync_message": ig.sync_message,
+            "sync_progress": ig.sync_progress or 0,
+            "sync_error": ig.sync_error,
+            "campaigns_synced": ig.campaigns_synced or 0,
+            "last_sync_at": ig.last_sync_at.isoformat() if ig.last_sync_at else None,
+        }
+        for ig in integrations
+    ]
+
+
 @router.get("/diag/audit-credentials")
 async def audit_credentials(
     key: str = Query(""),
