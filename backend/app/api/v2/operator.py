@@ -59,13 +59,28 @@ async def start_scan(
     # Parse date range
     date_start, date_end = _parse_date_range(req.date_range)
 
+    # Auto-expire scans stuck for more than 10 minutes
+    stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+    active_statuses = ["queued", "collecting_data", "analyzing",
+                       "generating_recommendations", "building_projections",
+                       "running_creative_audit"]
+    stale_result = await db.execute(
+        select(OperatorScan).where(
+            OperatorScan.account_id == req.account_id,
+            OperatorScan.status.in_(active_statuses),
+            OperatorScan.created_at < stale_cutoff,
+        )
+    )
+    for stale_scan in stale_result.scalars().all():
+        stale_scan.status = "failed"
+        stale_scan.error_message = "Auto-expired: stuck for >10 minutes"
+    await db.commit()
+
     # Check for duplicate active scans
     existing = await db.execute(
         select(OperatorScan).where(
             OperatorScan.account_id == req.account_id,
-            OperatorScan.status.in_(["queued", "collecting_data", "analyzing",
-                                      "generating_recommendations", "building_projections",
-                                      "running_creative_audit"]),
+            OperatorScan.status.in_(active_statuses),
         )
     )
     if existing.scalar_one_or_none():
@@ -590,6 +605,32 @@ async def get_learnings(
         }
         for l in learnings
     ]
+
+
+# ── Diag: force-clear stuck scans ────────────────────────────────────────────
+
+@router.post("/diag/clear-stuck-scans")
+async def diag_clear_stuck_scans(
+    key: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Force-expire all active (non-terminal) scans. Requires admin key."""
+    if key != "gads2026diag":
+        raise HTTPException(403, "Invalid key")
+
+    active_statuses = ["queued", "collecting_data", "analyzing",
+                       "generating_recommendations", "building_projections",
+                       "running_creative_audit"]
+    result = await db.execute(
+        select(OperatorScan).where(OperatorScan.status.in_(active_statuses))
+    )
+    cleared = 0
+    for scan in result.scalars().all():
+        scan.status = "failed"
+        scan.error_message = "Force-cleared via diag endpoint"
+        cleared += 1
+    await db.commit()
+    return {"cleared": cleared}
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
