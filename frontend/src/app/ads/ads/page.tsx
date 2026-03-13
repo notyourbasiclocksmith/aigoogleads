@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import { Pause, Play, Trophy, AlertTriangle, Loader2, ExternalLink, Eye, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+import { HelpTip, PageInfo } from "@/components/ui/help-tip";
 
 type SortKey = "impressions" | "clicks" | "cost" | "conversions" | "ctr" | "cpc";
 type SortDir = "asc" | "desc";
@@ -64,6 +65,8 @@ export default function AdPerformancePage() {
           <h1 className="text-2xl font-bold text-slate-900">Ad Performance</h1>
           <p className="text-muted-foreground">Compare ad performance and identify winners and losers</p>
         </div>
+
+        <PageInfo term="page_ads" />
 
         <div className="flex items-center gap-3">
           <select className="border rounded-md px-3 py-2 text-sm" value={days} onChange={(e) => setDays(Number(e.target.value))}>

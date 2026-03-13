@@ -13,6 +13,7 @@ import {
   Lightbulb, Target, CheckCircle2, Brain, Shield, Play,
   Loader2, Banknote, XCircle, Flame, BarChart3, Star,
 } from "lucide-react";
+import { HelpTip, PageInfo } from "@/components/ui/help-tip";
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Legend,
@@ -213,14 +214,14 @@ export default function DashboardPage() {
 
   const kpiCards = kpis
     ? [
-        { label: "Spend", value: formatCurrency(kpis.cost), icon: DollarSign, color: "text-orange-600", bg: "bg-orange-50" },
-        { label: "Revenue", value: formatCurrency(kpis.conv_value || 0), icon: Banknote, color: "text-emerald-600", bg: "bg-emerald-50" },
-        { label: "Conversions", value: kpis.conversions.toFixed(1), icon: PhoneCall, color: "text-purple-600", bg: "bg-purple-50" },
-        { label: "ROAS", value: `${kpis.roas?.toFixed(1) || "0.0"}x`, icon: TrendingUp, color: "text-blue-600", bg: "bg-blue-50" },
-        { label: "CPA", value: formatCurrency(kpis.cpa), icon: Target, color: "text-red-600", bg: "bg-red-50" },
-        { label: "Clicks", value: formatNumber(kpis.clicks), icon: MousePointerClick, color: "text-green-600", bg: "bg-green-50" },
-        { label: "CTR", value: formatPercent(kpis.ctr), icon: BarChart3, color: "text-indigo-600", bg: "bg-indigo-50" },
-        { label: "CPC", value: formatCurrency(kpis.cpc), icon: DollarSign, color: "text-slate-600", bg: "bg-slate-50" },
+        { label: "Spend", value: formatCurrency(kpis.cost), icon: DollarSign, color: "text-orange-600", bg: "bg-orange-50", helpTerm: "cost" },
+        { label: "Revenue", value: formatCurrency(kpis.conv_value || 0), icon: Banknote, color: "text-emerald-600", bg: "bg-emerald-50", helpTerm: "revenue" },
+        { label: "Conversions", value: kpis.conversions.toFixed(1), icon: PhoneCall, color: "text-purple-600", bg: "bg-purple-50", helpTerm: "conversions" },
+        { label: "ROAS", value: `${kpis.roas?.toFixed(1) || "0.0"}x`, icon: TrendingUp, color: "text-blue-600", bg: "bg-blue-50", helpTerm: "roas" },
+        { label: "CPA", value: formatCurrency(kpis.cpa), icon: Target, color: "text-red-600", bg: "bg-red-50", helpTerm: "cpa" },
+        { label: "Clicks", value: formatNumber(kpis.clicks), icon: MousePointerClick, color: "text-green-600", bg: "bg-green-50", helpTerm: "clicks" },
+        { label: "CTR", value: formatPercent(kpis.ctr), icon: BarChart3, color: "text-indigo-600", bg: "bg-indigo-50", helpTerm: "ctr" },
+        { label: "CPC", value: formatCurrency(kpis.cpc), icon: DollarSign, color: "text-slate-600", bg: "bg-slate-50", helpTerm: "cpc" },
       ]
     : [];
 
@@ -445,7 +446,7 @@ export default function DashboardPage() {
                 <Card key={kpi.label} className="border-0 hover:premium-shadow-lg transition-all duration-300 group">
                   <CardContent className="p-6">
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-[13px] text-slate-400 font-medium">{kpi.label}</span>
+                      <span className="text-[13px] text-slate-400 font-medium flex items-center gap-1">{kpi.label} <HelpTip term={(kpi as any).helpTerm} /></span>
                       <div className={`w-9 h-9 rounded-xl ${kpi.bg} flex items-center justify-center transition-transform duration-200 group-hover:scale-110`}>
                         <Icon className={`w-[18px] h-[18px] ${kpi.color}`} />
                       </div>

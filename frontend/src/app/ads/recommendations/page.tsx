@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import { Lightbulb, Check, X, Loader2, TrendingUp, DollarSign, Target } from "lucide-react";
+import { HelpTip, PageInfo } from "@/components/ui/help-tip";
 
 const TYPE_LABELS: Record<string, { label: string; color: string; icon: string }> = {
   KEYWORD: { label: "Keyword", color: "bg-blue-100 text-blue-800", icon: "🔑" },
@@ -84,6 +85,8 @@ export default function GoogleRecommendationsPage() {
             </Badge>
           )}
         </div>
+
+        <PageInfo term="page_recommendations" />
 
         {/* Filters */}
         <div className="flex gap-2">

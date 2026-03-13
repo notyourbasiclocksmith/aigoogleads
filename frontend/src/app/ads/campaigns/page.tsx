@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import { formatCurrency, formatNumber, formatPercent } from "@/lib/utils";
 import { Pause, Play, ExternalLink, ArrowUp, ArrowDown } from "lucide-react";
+import { HelpTip, PageInfo } from "@/components/ui/help-tip";
 
 type SortKey = "impressions" | "clicks" | "ctr" | "conversions" | "cpa" | "budget_micros";
 type SortDir = "asc" | "desc";
@@ -48,6 +49,8 @@ export default function CampaignsPage() {
             + New Campaign
           </Button>
         </div>
+
+        <PageInfo term="page_campaigns" />
 
         <div className="flex items-center gap-3">
           <select className="border rounded-md px-3 py-2 text-sm" value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)}>

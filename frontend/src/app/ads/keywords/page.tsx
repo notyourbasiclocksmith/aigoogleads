@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import { Search, Pause, Play, TrendingUp, TrendingDown, Loader2, Star, Banknote, DollarSign, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+import { HelpTip, PageInfo } from "@/components/ui/help-tip";
 
 type SortKey = "quality_score" | "impressions" | "clicks" | "cost" | "conversion_value" | "roas" | "conversions" | "cpc";
 type SortDir = "asc" | "desc";
@@ -108,41 +109,43 @@ export default function KeywordPerformancePage() {
           <p className="text-[13px] text-slate-400 mt-0.5">Monitor and manage individual keyword performance</p>
         </div>
 
+        <PageInfo term="page_keywords" />
+
         {/* Summary Cards */}
         <div className="grid grid-cols-2 md:grid-cols-6 gap-5">
           <Card className="border-0">
             <CardContent className="p-5">
-              <p className="text-[12px] text-slate-400 font-medium">Keywords</p>
+              <p className="text-[12px] text-slate-400 font-medium flex items-center gap-1">Keywords <HelpTip term="keyword" /></p>
               <p className="text-[22px] font-semibold tracking-tight text-slate-900 mt-1">{filtered.length}</p>
             </CardContent>
           </Card>
           <Card className="border-0">
             <CardContent className="p-5">
-              <p className="text-[12px] text-slate-400 font-medium">Total Spend</p>
+              <p className="text-[12px] text-slate-400 font-medium flex items-center gap-1">Total Spend <HelpTip term="cost" /></p>
               <p className="text-[22px] font-semibold tracking-tight text-slate-900 mt-1">${totalCost.toLocaleString(undefined, {maximumFractionDigits: 0})}</p>
             </CardContent>
           </Card>
           <Card className="border-0 bg-emerald-50/50">
             <CardContent className="p-5">
-              <p className="text-[12px] text-emerald-600 font-medium">Revenue</p>
+              <p className="text-[12px] text-emerald-600 font-medium flex items-center gap-1">Revenue <HelpTip term="revenue" /></p>
               <p className="text-[22px] font-semibold tracking-tight text-emerald-700 mt-1">${totalRevenue.toLocaleString(undefined, {maximumFractionDigits: 0})}</p>
             </CardContent>
           </Card>
           <Card className={`border-0 ${overallRoas >= 2 ? "bg-emerald-50/50" : ""}`}>
             <CardContent className="p-5">
-              <p className="text-[12px] text-slate-400 font-medium">ROAS</p>
+              <p className="text-[12px] text-slate-400 font-medium flex items-center gap-1">ROAS <HelpTip term="roas" /></p>
               <p className={`text-[22px] font-semibold tracking-tight mt-1 ${overallRoas >= 3 ? "text-emerald-700" : overallRoas >= 1 ? "text-blue-700" : "text-red-600"}`}>{overallRoas.toFixed(1)}x</p>
             </CardContent>
           </Card>
           <Card className="border-0">
             <CardContent className="p-5">
-              <p className="text-[12px] text-slate-400 font-medium">Clicks</p>
+              <p className="text-[12px] text-slate-400 font-medium flex items-center gap-1">Clicks <HelpTip term="clicks" /></p>
               <p className="text-[22px] font-semibold tracking-tight text-slate-900 mt-1">{totalClicks.toLocaleString()}</p>
             </CardContent>
           </Card>
           <Card className="border-0">
             <CardContent className="p-5">
-              <p className="text-[12px] text-slate-400 font-medium">Conversions</p>
+              <p className="text-[12px] text-slate-400 font-medium flex items-center gap-1">Conversions <HelpTip term="conversions" /></p>
               <p className="text-[22px] font-semibold tracking-tight text-slate-900 mt-1">{totalConv.toFixed(1)}</p>
             </CardContent>
           </Card>

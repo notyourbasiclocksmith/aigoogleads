@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import { Search, AlertTriangle, Ban, Plus, DollarSign, Loader2, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+import { HelpTip, PageInfo } from "@/components/ui/help-tip";
 
 type SortKey = "impressions" | "clicks" | "cost" | "conversions" | "ctr" | "cpc" | "cpa";
 type SortDir = "asc" | "desc";
@@ -90,6 +91,8 @@ export default function SearchTermsPage() {
             Analyze what people are actually searching for when your ads show
           </p>
         </div>
+
+        <PageInfo term="page_search_terms" />
 
         {/* Waste Summary */}
         {waste && waste.total_waste > 0 && (

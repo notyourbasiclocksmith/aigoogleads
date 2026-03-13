@@ -12,6 +12,7 @@ import {
   Target, Shield, Clock, RotateCcw, Activity, Eye, RefreshCw,
   ArrowUpRight, ArrowDownRight, Minus, BookOpen, BarChart3,
 } from "lucide-react";
+import { HelpTip, PageInfo } from "@/components/ui/help-tip";
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -247,6 +248,8 @@ export default function OperatorLivePage() {
             </Button>
           </div>
         </div>
+
+        <PageInfo term="auto_optimizer" />
 
         {/* ── Error ────────────────────────────────────────────────────── */}
         {error && (

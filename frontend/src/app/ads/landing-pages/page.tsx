@@ -6,6 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { Globe, Gauge, Loader2, ExternalLink, Zap, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+import { HelpTip, PageInfo } from "@/components/ui/help-tip";
 
 interface PageSpeedResult {
   performance_score: number | null;
@@ -120,6 +121,8 @@ export default function LandingPagesPage() {
           <h1 className="text-2xl font-bold text-slate-900">Landing Pages</h1>
           <p className="text-muted-foreground">Analyze landing page performance and conversion rates</p>
         </div>
+
+        <PageInfo term="page_landing_pages" />
 
         <div className="flex items-center gap-3">
           <select className="border rounded-md px-3 py-2 text-sm" value={days} onChange={(e) => setDays(Number(e.target.value))}>

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import { Search, Globe, BarChart3, RefreshCw } from "lucide-react";
+import { HelpTip, PageInfo } from "@/components/ui/help-tip";
 
 export default function CompetitorsPage() {
   const [competitors, setCompetitors] = useState<any[]>([]);
@@ -42,6 +43,8 @@ export default function CompetitorsPage() {
             <RefreshCw className="w-4 h-4 mr-2" /> Run SERP Scan
           </Button>
         </div>
+
+        <PageInfo term="page_competitors" />
 
         {loading ? (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
