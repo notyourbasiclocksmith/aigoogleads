@@ -359,61 +359,7 @@ async def cleanup_pending(
     return {"removed": len(to_delete), "kept": 1, "kept_id": keep_id}
 
 
-@router.post("/{account_id}/sync")
-async def trigger_sync(
-    account_id: str,
-    req: Optional[SyncRequest] = None,
-    user: CurrentUser = Depends(require_tenant),
-    db: AsyncSession = Depends(get_db),
-):
-    result = await db.execute(
-        select(IntegrationGoogleAds).where(
-            IntegrationGoogleAds.id == account_id,
-            IntegrationGoogleAds.tenant_id == user.tenant_id,
-        )
-    )
-    account = result.scalar_one_or_none()
-    if not account:
-        raise HTTPException(status_code=404, detail="Account not found")
-
-    if req and req.login_customer_id:
-        account.login_customer_id = req.login_customer_id.replace("-", "").strip()
-        await db.commit()
-
-    from app.jobs.tasks import sync_ads_account_task
-    sync_ads_account_task.delay(user.tenant_id, account.id)
-
-    return {"status": "sync_triggered"}
-
-
-@router.get("/{account_id}/sync-status")
-async def get_sync_status(
-    account_id: str,
-    user: CurrentUser = Depends(require_tenant),
-    db: AsyncSession = Depends(get_db),
-):
-    """Poll sync progress for a Google Ads account."""
-    result = await db.execute(
-        select(IntegrationGoogleAds).where(
-            IntegrationGoogleAds.id == account_id,
-            IntegrationGoogleAds.tenant_id == user.tenant_id,
-        )
-    )
-    account = result.scalar_one_or_none()
-    if not account:
-        raise HTTPException(status_code=404, detail="Account not found")
-
-    return {
-        "sync_status": account.sync_status or "idle",
-        "sync_message": account.sync_message,
-        "sync_progress": account.sync_progress or 0,
-        "sync_started_at": account.sync_started_at.isoformat() if account.sync_started_at else None,
-        "sync_error": account.sync_error,
-        "campaigns_synced": account.campaigns_synced or 0,
-        "conversions_synced": account.conversions_synced or 0,
-        "last_sync_at": account.last_sync_at.isoformat() if account.last_sync_at else None,
-    }
-
+# ── DIAGNOSTIC ENDPOINTS (must be before /{account_id} routes) ────────
 
 @router.post("/diag/trigger-sync")
 async def diag_trigger_sync(
@@ -469,6 +415,64 @@ async def diag_sync_status(
         }
         for ig in integrations
     ]
+
+
+# ── PARAMETERIZED ACCOUNT ROUTES ─────────────────────────────────────
+
+@router.post("/{account_id}/sync")
+async def trigger_sync(
+    account_id: str,
+    req: Optional[SyncRequest] = None,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(IntegrationGoogleAds).where(
+            IntegrationGoogleAds.id == account_id,
+            IntegrationGoogleAds.tenant_id == user.tenant_id,
+        )
+    )
+    account = result.scalar_one_or_none()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    if req and req.login_customer_id:
+        account.login_customer_id = req.login_customer_id.replace("-", "").strip()
+        await db.commit()
+
+    from app.jobs.tasks import sync_ads_account_task
+    sync_ads_account_task.delay(user.tenant_id, account.id)
+
+    return {"status": "sync_triggered"}
+
+
+@router.get("/{account_id}/sync-status")
+async def get_sync_status(
+    account_id: str,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Poll sync progress for a Google Ads account."""
+    result = await db.execute(
+        select(IntegrationGoogleAds).where(
+            IntegrationGoogleAds.id == account_id,
+            IntegrationGoogleAds.tenant_id == user.tenant_id,
+        )
+    )
+    account = result.scalar_one_or_none()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    return {
+        "sync_status": account.sync_status or "idle",
+        "sync_message": account.sync_message,
+        "sync_progress": account.sync_progress or 0,
+        "sync_started_at": account.sync_started_at.isoformat() if account.sync_started_at else None,
+        "sync_error": account.sync_error,
+        "campaigns_synced": account.campaigns_synced or 0,
+        "conversions_synced": account.conversions_synced or 0,
+        "last_sync_at": account.last_sync_at.isoformat() if account.last_sync_at else None,
+    }
 
 
 @router.get("/diag/audit-credentials")
