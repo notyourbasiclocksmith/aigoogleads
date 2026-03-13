@@ -133,10 +133,12 @@ async def get_campaign_detail(
             "keywords": [
                 {
                     "id": k.id,
+                    "keyword_id": k.keyword_id,
                     "text": k.text,
                     "match_type": k.match_type,
                     "status": k.status,
                     "quality_score": k.quality_score,
+                    "cpc_bid_micros": k.cpc_bid_micros,
                 }
                 for k in kws
             ],

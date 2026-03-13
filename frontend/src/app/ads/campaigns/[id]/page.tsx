@@ -14,6 +14,7 @@ import {
   Hash, Star, ExternalLink, Save, Loader2, Settings,
   Globe, Calendar, Link, Search, Monitor, Users,
   BarChart3, Pencil, Check, X, ChevronDown, ChevronRight,
+  ArrowUpDown, MoreHorizontal,
 } from "lucide-react";
 import { HelpTip } from "@/components/ui/help-tip";
 
@@ -26,6 +27,12 @@ export default function CampaignDetailPage() {
   const [saveMsg, setSaveMsg] = useState("");
   const [editing, setEditing] = useState(false);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [kwSort, setKwSort] = useState<{ field: string; dir: "asc" | "desc" }>({ field: "text", dir: "asc" });
+  const [kwActionLoading, setKwActionLoading] = useState<string | null>(null);
+  const [editingKw, setEditingKw] = useState<string | null>(null);
+  const [editKwText, setEditKwText] = useState("");
+  const [editKwMatchType, setEditKwMatchType] = useState("");
+  const [kwMsg, setKwMsg] = useState("");
 
   // Editable fields
   const [editName, setEditName] = useState("");
@@ -132,6 +139,72 @@ export default function CampaignDetailPage() {
       if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
+  }
+
+  function toggleKwSort(field: string) {
+    setKwSort((prev) => ({
+      field,
+      dir: prev.field === field && prev.dir === "asc" ? "desc" : "asc",
+    }));
+  }
+
+  function sortKeywords(keywords: any[]) {
+    const { field, dir } = kwSort;
+    return [...keywords].sort((a, b) => {
+      let av: any, bv: any;
+      if (field === "text") {
+        av = (a.text || "").toLowerCase();
+        bv = (b.text || "").toLowerCase();
+      } else if (field === "match_type") {
+        av = a.match_type || "";
+        bv = b.match_type || "";
+      } else if (field === "status") {
+        av = a.status || "";
+        bv = b.status || "";
+      } else if (field === "quality_score") {
+        av = a.quality_score ?? -1;
+        bv = b.quality_score ?? -1;
+      } else {
+        av = a[field];
+        bv = b[field];
+      }
+      if (av < bv) return dir === "asc" ? -1 : 1;
+      if (av > bv) return dir === "asc" ? 1 : -1;
+      return 0;
+    });
+  }
+
+  async function toggleKwStatus(kw: any) {
+    if (!kw.keyword_id) {
+      setKwMsg("Cannot change status: keyword not synced to Google Ads");
+      setTimeout(() => setKwMsg(""), 3000);
+      return;
+    }
+    setKwActionLoading(kw.id);
+    try {
+      const newStatus = kw.status === "ENABLED" ? "PAUSED" : "ENABLED";
+      await api.patch(`/api/ads/keywords/${kw.keyword_id}/status`, { status: newStatus });
+      const updated = await api.get(`/api/campaigns/${campaignId}`);
+      setCampaign(updated);
+      populateEditFields(updated);
+    } catch (e: any) {
+      setKwMsg(`Error: ${e?.message || "Failed to update keyword"}`);
+      setTimeout(() => setKwMsg(""), 3000);
+    } finally {
+      setKwActionLoading(null);
+    }
+  }
+
+  function startEditKw(kw: any) {
+    setEditingKw(kw.id);
+    setEditKwText(kw.text);
+    setEditKwMatchType(kw.match_type);
+  }
+
+  function cancelEditKw() {
+    setEditingKw(null);
+    setEditKwText("");
+    setEditKwMatchType("");
   }
 
   if (loading) {
@@ -494,35 +567,69 @@ export default function CampaignDetailPage() {
                               <h4 className="text-sm font-semibold mb-2 flex items-center gap-1">
                                 <Hash className="w-3.5 h-3.5" /> Keywords ({ag.keywords.length})
                               </h4>
+                              {kwMsg && (
+                                <div className={`mb-2 px-3 py-1.5 rounded text-xs ${kwMsg.startsWith("Error") ? "bg-red-50 text-red-700 border border-red-200" : "bg-amber-50 text-amber-700 border border-amber-200"}`}>{kwMsg}</div>
+                              )}
                               <div className="overflow-x-auto">
                                 <table className="w-full text-sm">
                                   <thead>
                                     <tr className="border-b text-left text-muted-foreground">
-                                      <th className="pb-2 font-medium">Keyword</th>
-                                      <th className="pb-2 font-medium"><span className="flex items-center gap-1">Match Type <HelpTip term="match_type" /></span></th>
-                                      <th className="pb-2 font-medium">Status</th>
-                                      <th className="pb-2 font-medium text-right"><span className="flex items-center gap-1 justify-end">Quality Score <HelpTip term="quality_score" /></span></th>
+                                      <th className="pb-2 font-medium">
+                                        <button className="flex items-center gap-1 hover:text-slate-900 transition-colors" onClick={() => toggleKwSort("text")}>
+                                          Keyword <ArrowUpDown className={`w-3 h-3 ${kwSort.field === "text" ? "text-blue-600" : ""}`} />
+                                        </button>
+                                      </th>
+                                      <th className="pb-2 font-medium">
+                                        <button className="flex items-center gap-1 hover:text-slate-900 transition-colors" onClick={() => toggleKwSort("match_type")}>
+                                          Match Type <ArrowUpDown className={`w-3 h-3 ${kwSort.field === "match_type" ? "text-blue-600" : ""}`} />
+                                          <HelpTip term="match_type" />
+                                        </button>
+                                      </th>
+                                      <th className="pb-2 font-medium">
+                                        <button className="flex items-center gap-1 hover:text-slate-900 transition-colors" onClick={() => toggleKwSort("status")}>
+                                          Status <ArrowUpDown className={`w-3 h-3 ${kwSort.field === "status" ? "text-blue-600" : ""}`} />
+                                        </button>
+                                      </th>
+                                      <th className="pb-2 font-medium text-right">
+                                        <button className="flex items-center gap-1 justify-end hover:text-slate-900 transition-colors ml-auto" onClick={() => toggleKwSort("quality_score")}>
+                                          Quality Score <ArrowUpDown className={`w-3 h-3 ${kwSort.field === "quality_score" ? "text-blue-600" : ""}`} />
+                                          <HelpTip term="quality_score" />
+                                        </button>
+                                      </th>
+                                      <th className="pb-2 font-medium text-right">Actions</th>
                                     </tr>
                                   </thead>
                                   <tbody>
-                                    {ag.keywords.map((kw: any) => (
+                                    {sortKeywords(ag.keywords).map((kw: any) => (
                                       <tr key={kw.id} className="border-b last:border-0 hover:bg-white/60 transition-colors">
                                         <td className="py-2.5 font-medium">
-                                          {kw.match_type === "EXACT"
-                                            ? `[${kw.text}]`
-                                            : kw.match_type === "PHRASE"
-                                              ? `"${kw.text}"`
-                                              : kw.text}
+                                          {editingKw === kw.id ? (
+                                            <input type="text" className="border rounded px-2 py-1 text-sm w-full max-w-[200px]" value={editKwText} onChange={(e) => setEditKwText(e.target.value)} />
+                                          ) : (
+                                            kw.match_type === "EXACT"
+                                              ? `[${kw.text}]`
+                                              : kw.match_type === "PHRASE"
+                                                ? `"${kw.text}"`
+                                                : kw.text
+                                          )}
                                         </td>
                                         <td className="py-2.5">
-                                          <span className="inline-flex items-center gap-1">
-                                            <Badge variant="outline" className={`text-xs ${
-                                              kw.match_type === "EXACT" ? "bg-blue-50 text-blue-700 border-blue-200" :
-                                              kw.match_type === "PHRASE" ? "bg-purple-50 text-purple-700 border-purple-200" :
-                                              "bg-amber-50 text-amber-700 border-amber-200"
-                                            }`}>{kw.match_type}</Badge>
-                                            <HelpTip term={kw.match_type === "EXACT" ? "match_exact" : kw.match_type === "PHRASE" ? "match_phrase" : "match_broad"} />
-                                          </span>
+                                          {editingKw === kw.id ? (
+                                            <select className="border rounded px-2 py-1 text-xs" value={editKwMatchType} onChange={(e) => setEditKwMatchType(e.target.value)}>
+                                              <option value="BROAD">BROAD</option>
+                                              <option value="PHRASE">PHRASE</option>
+                                              <option value="EXACT">EXACT</option>
+                                            </select>
+                                          ) : (
+                                            <span className="inline-flex items-center gap-1">
+                                              <Badge variant="outline" className={`text-xs ${
+                                                kw.match_type === "EXACT" ? "bg-blue-50 text-blue-700 border-blue-200" :
+                                                kw.match_type === "PHRASE" ? "bg-purple-50 text-purple-700 border-purple-200" :
+                                                "bg-amber-50 text-amber-700 border-amber-200"
+                                              }`}>{kw.match_type}</Badge>
+                                              <HelpTip term={kw.match_type === "EXACT" ? "match_exact" : kw.match_type === "PHRASE" ? "match_phrase" : "match_broad"} />
+                                            </span>
+                                          )}
                                         </td>
                                         <td className="py-2.5">
                                           <Badge variant={kw.status === "ENABLED" ? "success" : "secondary"} className="text-xs">
@@ -544,6 +651,38 @@ export default function CampaignDetailPage() {
                                           ) : (
                                             <span className="text-xs text-slate-400 italic">Not available</span>
                                           )}
+                                        </td>
+                                        <td className="py-2.5 text-right">
+                                          <div className="flex items-center gap-1 justify-end">
+                                            {editingKw === kw.id ? (
+                                              <>
+                                                <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-green-600 hover:text-green-700 hover:bg-green-50" onClick={cancelEditKw}>
+                                                  <X className="w-3.5 h-3.5" />
+                                                </Button>
+                                              </>
+                                            ) : (
+                                              <>
+                                                <Button
+                                                  size="sm" variant="ghost"
+                                                  className={`h-7 w-7 p-0 ${kw.status === "ENABLED" ? "text-amber-600 hover:text-amber-700 hover:bg-amber-50" : "text-green-600 hover:text-green-700 hover:bg-green-50"}`}
+                                                  onClick={() => toggleKwStatus(kw)}
+                                                  disabled={kwActionLoading === kw.id}
+                                                  title={kw.status === "ENABLED" ? "Pause keyword" : "Enable keyword"}
+                                                >
+                                                  {kwActionLoading === kw.id ? (
+                                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                                  ) : kw.status === "ENABLED" ? (
+                                                    <Pause className="w-3.5 h-3.5" />
+                                                  ) : (
+                                                    <Play className="w-3.5 h-3.5" />
+                                                  )}
+                                                </Button>
+                                                <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-slate-500 hover:text-slate-700 hover:bg-slate-100" onClick={() => startEditKw(kw)} title="Edit keyword">
+                                                  <Pencil className="w-3.5 h-3.5" />
+                                                </Button>
+                                              </>
+                                            )}
+                                          </div>
                                         </td>
                                       </tr>
                                     ))}
