@@ -6,8 +6,9 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { Building2, RefreshCw, Link2, Unlink, BarChart3 } from "lucide-react";
+import { Building2, RefreshCw, Link2, Unlink, BarChart3, Info, HelpCircle } from "lucide-react";
 import { api } from "@/lib/api";
+import { HelpTip } from "@/components/ui/help-tip";
 
 interface AccessibleAccount {
   id: string;
@@ -98,13 +99,40 @@ export default function MCCPage() {
           </Button>
         </div>
 
+        {/* What is MCC? */}
+        <Card className="border-blue-200 bg-blue-50/50">
+          <CardContent className="p-4">
+            <div className="flex items-start gap-3">
+              <Info className="w-5 h-5 text-blue-600 mt-0.5 shrink-0" />
+              <div>
+                <p className="font-semibold text-blue-900">What is MCC / Agency Mode?</p>
+                <p className="text-sm text-blue-800 mt-1">
+                  <strong>MCC (My Client Center)</strong> is Google&apos;s tool for agencies and consultants who manage multiple Google Ads accounts.
+                  If you manage ads for several businesses (or have multiple ad accounts for your own business), MCC lets you control them all from one place.
+                </p>
+                <p className="text-sm text-blue-700 mt-2">
+                  <strong>How it works:</strong> Connect your MCC Manager account &rarr; Discover all child accounts underneath it &rarr; Bind the ones you want to manage &rarr; See combined performance across all accounts.
+                </p>
+                <p className="text-xs text-blue-600 mt-2">
+                  If you only manage one Google Ads account, you don&apos;t need this page &mdash; your account is already connected in Settings.
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+
         {/* Bound Accounts */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Link2 className="w-5 h-5" /> Bound Accounts ({bindings.length})
             </CardTitle>
-            <CardDescription>Accounts actively managed by this tenant</CardDescription>
+            <CardDescription>
+              These are the Google Ads accounts you&apos;ve chosen to actively manage through IgniteAds.
+              Bound accounts will have their data synced, campaigns monitored, and AI optimizations applied.
+              Think of binding as saying &quot;I want to manage this account.&quot;
+            </CardDescription>
           </CardHeader>
           <CardContent>
             {bindings.length === 0 ? (
@@ -138,7 +166,10 @@ export default function MCCPage() {
             <CardTitle className="flex items-center gap-2">
               <Building2 className="w-5 h-5" /> Accessible Accounts ({accounts.length})
             </CardTitle>
-            <CardDescription>Child accounts discovered from your MCC</CardDescription>
+            <CardDescription>
+              These are all the Google Ads accounts found under your MCC Manager account.
+              Click &quot;Bind&quot; on any account to start managing it. Accounts you don&apos;t bind will be ignored &mdash; no data will be pulled and no changes will be made.
+            </CardDescription>
           </CardHeader>
           <CardContent>
             {loading ? (
@@ -178,7 +209,10 @@ export default function MCCPage() {
             <CardTitle className="flex items-center gap-2">
               <BarChart3 className="w-5 h-5" /> Rollup KPIs
             </CardTitle>
-            <CardDescription>Aggregated metrics across all bound accounts</CardDescription>
+            <CardDescription>
+              Combined performance numbers across all your bound accounts in one view.
+              This gives you a bird&apos;s-eye view of total impressions, clicks, cost, and conversions across every account you manage &mdash; useful for agencies tracking overall client performance.
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
