@@ -499,37 +499,50 @@ export default function CampaignDetailPage() {
                                   <thead>
                                     <tr className="border-b text-left text-muted-foreground">
                                       <th className="pb-2 font-medium">Keyword</th>
-                                      <th className="pb-2 font-medium">Match Type</th>
+                                      <th className="pb-2 font-medium"><span className="flex items-center gap-1">Match Type <HelpTip term="match_type" /></span></th>
                                       <th className="pb-2 font-medium">Status</th>
-                                      <th className="pb-2 font-medium text-right">Quality Score</th>
+                                      <th className="pb-2 font-medium text-right"><span className="flex items-center gap-1 justify-end">Quality Score <HelpTip term="quality_score" /></span></th>
                                     </tr>
                                   </thead>
                                   <tbody>
                                     {ag.keywords.map((kw: any) => (
-                                      <tr key={kw.id} className="border-b last:border-0">
-                                        <td className="py-2 font-medium">
+                                      <tr key={kw.id} className="border-b last:border-0 hover:bg-white/60 transition-colors">
+                                        <td className="py-2.5 font-medium">
                                           {kw.match_type === "EXACT"
                                             ? `[${kw.text}]`
                                             : kw.match_type === "PHRASE"
                                               ? `"${kw.text}"`
                                               : kw.text}
                                         </td>
-                                        <td className="py-2">
-                                          <Badge variant="outline" className="text-xs">{kw.match_type}</Badge>
+                                        <td className="py-2.5">
+                                          <span className="inline-flex items-center gap-1">
+                                            <Badge variant="outline" className={`text-xs ${
+                                              kw.match_type === "EXACT" ? "bg-blue-50 text-blue-700 border-blue-200" :
+                                              kw.match_type === "PHRASE" ? "bg-purple-50 text-purple-700 border-purple-200" :
+                                              "bg-amber-50 text-amber-700 border-amber-200"
+                                            }`}>{kw.match_type}</Badge>
+                                            <HelpTip term={kw.match_type === "EXACT" ? "match_exact" : kw.match_type === "PHRASE" ? "match_phrase" : "match_broad"} />
+                                          </span>
                                         </td>
-                                        <td className="py-2">
+                                        <td className="py-2.5">
                                           <Badge variant={kw.status === "ENABLED" ? "success" : "secondary"} className="text-xs">
                                             {kw.status}
                                           </Badge>
                                         </td>
-                                        <td className="py-2 text-right">
+                                        <td className="py-2.5 text-right">
                                           {kw.quality_score ? (
-                                            <span className="flex items-center justify-end gap-1">
-                                              <Star className={`w-3 h-3 ${kw.quality_score >= 7 ? "text-green-500" : kw.quality_score >= 4 ? "text-yellow-500" : "text-red-500"}`} />
-                                              {kw.quality_score}/10
+                                            <span className="inline-flex items-center gap-1 justify-end">
+                                              <span className={`inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full text-xs font-semibold ${
+                                                kw.quality_score >= 7 ? "bg-green-50 text-green-700" :
+                                                kw.quality_score >= 4 ? "bg-yellow-50 text-yellow-700" :
+                                                "bg-red-50 text-red-700"
+                                              }`}>
+                                                <Star className={`w-3 h-3 ${kw.quality_score >= 7 ? "text-green-500" : kw.quality_score >= 4 ? "text-yellow-500" : "text-red-500"}`} />
+                                                {kw.quality_score}/10
+                                              </span>
                                             </span>
                                           ) : (
-                                            <span className="text-muted-foreground">—</span>
+                                            <span className="text-xs text-slate-400 italic">Not available</span>
                                           )}
                                         </td>
                                       </tr>

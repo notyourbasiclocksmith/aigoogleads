@@ -81,6 +81,18 @@ export const GLOSSARY: Record<string, { label: string; tip: string }> = {
     label: "Match Type",
     tip: "Controls how closely a search must match your keyword. 'Exact' = only that phrase. 'Phrase' = includes that phrase. 'Broad' = related searches too. Broad gets more traffic but less precise.",
   },
+  match_broad: {
+    label: "Broad Match",
+    tip: "Your ad shows for searches related to your keyword, including synonyms, misspellings, and related topics. Example: keyword 'locksmith' could match 'key maker near me'. Gets the most traffic but least precise. Best for: discovery and reaching new customers. Recommended for campaigns using Smart Bidding.",
+  },
+  match_phrase: {
+    label: "Phrase Match",
+    tip: "Your ad shows when someone searches for your keyword phrase or close variations of it, in the same order. Example: keyword 'car locksmith' matches 'car locksmith near me' but NOT 'locksmith for house'. Best for: balanced reach with moderate control. Recommended for most campaigns.",
+  },
+  match_exact: {
+    label: "Exact Match",
+    tip: "Your ad shows only when someone searches for your exact keyword or very close variations (same meaning). Example: keyword [car locksmith] matches 'car locksmith' and 'auto locksmith' but NOT 'car locksmith reviews'. Best for: tight control and highest relevance. Recommended for high-value keywords where you want precision.",
+  },
   negative_keyword: {
     label: "Negative Keyword",
     tip: "A word or phrase that PREVENTS your ad from showing. Example: Adding 'free' as a negative keyword means your ad won't show for 'free locksmith'. This saves money by blocking irrelevant searches.",

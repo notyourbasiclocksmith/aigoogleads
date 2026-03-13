@@ -96,7 +96,7 @@ export default function CampaignsPage() {
               const av = a[sortKey] || 0, bv = b[sortKey] || 0;
               return sortDir === "desc" ? bv - av : av - bv;
             }).map((c: any) => (
-              <Card key={c.id || c.campaign_id}>
+              <Card key={c.id || c.campaign_id} className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => (window.location.href = `/ads/campaigns/${c.id}`)}>
                 <CardContent className="p-5">
                   <div className="flex items-start justify-between">
                     <div className="flex-1">
@@ -138,7 +138,7 @@ export default function CampaignsPage() {
                       <Button
                         variant="ghost"
                         size="icon"
-                        onClick={() => togglePause(c.id, c.status)}
+                        onClick={(e: any) => { e.stopPropagation(); togglePause(c.id, c.status); }}
                         title={c.status === "ENABLED" ? "Pause" : "Enable"}
                       >
                         {c.status === "ENABLED" ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
@@ -146,7 +146,7 @@ export default function CampaignsPage() {
                       <Button
                         variant="ghost"
                         size="icon"
-                        onClick={() => (window.location.href = `/ads/campaigns/${c.id}`)}
+                        onClick={(e: any) => { e.stopPropagation(); window.location.href = `/ads/campaigns/${c.id}`; }}
                       >
                         <ExternalLink className="w-4 h-4" />
                       </Button>
