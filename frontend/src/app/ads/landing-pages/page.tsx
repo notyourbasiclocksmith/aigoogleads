@@ -5,7 +5,8 @@ import { AppLayout } from "@/components/layout/sidebar";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
-import { Globe, Gauge, Loader2, ExternalLink, Zap, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+import { Globe, Gauge, Loader2, ExternalLink, Zap, ArrowUp, ArrowDown, ArrowUpDown, Brain, AlertTriangle, CheckCircle2, Lightbulb, Target, Shield, Smartphone, FileText, X } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { HelpTip, PageInfo } from "@/components/ui/help-tip";
 
 interface PageSpeedResult {
@@ -50,6 +51,9 @@ export default function LandingPagesPage() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>("clicks");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [audits, setAudits] = useState<Record<string, any>>({});
+  const [auditing, setAuditing] = useState<Record<string, boolean>>({});
+  const [auditExpanded, setAuditExpanded] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -85,6 +89,36 @@ export default function LandingPagesPage() {
       }
     }
   }, [pages]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function runAiAudit(url: string) {
+    if (auditing[url]) return;
+    setAuditing((prev) => ({ ...prev, [url]: true }));
+    try {
+      const result = await api.post("/api/ads/landing-pages/audit", { url });
+      setAudits((prev) => ({ ...prev, [url]: result }));
+      setAuditExpanded(url);
+      setExpanded(null);
+    } catch (e: any) {
+      setAudits((prev) => ({ ...prev, [url]: { status: "error", error: e?.message || "Audit failed" } }));
+      setAuditExpanded(url);
+    } finally {
+      setAuditing((prev) => ({ ...prev, [url]: false }));
+    }
+  }
+
+  function auditScoreColor(score: number | null | undefined): string {
+    if (score == null) return "text-slate-400";
+    if (score >= 80) return "text-green-600";
+    if (score >= 50) return "text-orange-500";
+    return "text-red-600";
+  }
+
+  function auditScoreBg(score: number | null | undefined): string {
+    if (score == null) return "bg-slate-100 border-slate-200";
+    if (score >= 80) return "bg-green-50 border-green-200";
+    if (score >= 50) return "bg-orange-50 border-orange-200";
+    return "bg-red-50 border-red-200";
+  }
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) {
@@ -170,6 +204,11 @@ export default function LandingPagesPage() {
                           <Gauge className="w-3.5 h-3.5" /> PageSpeed <SortIcon col="pagespeed" />
                         </button>
                       </th>
+                      <th className="text-center p-3 font-medium">
+                        <span className="inline-flex items-center gap-1">
+                          <Brain className="w-3.5 h-3.5" /> AI Audit
+                        </span>
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -215,7 +254,7 @@ export default function LandingPagesPage() {
                                 <Loader2 className="w-4 h-4 animate-spin mx-auto text-blue-500" />
                               ) : speed ? (
                                 <button
-                                  onClick={() => setExpanded(isExpanded ? null : p.landing_page_url)}
+                                  onClick={() => { setExpanded(isExpanded ? null : p.landing_page_url); setAuditExpanded(null); }}
                                   className={`inline-flex items-center gap-1 px-2 py-1 rounded border text-xs font-bold cursor-pointer ${scoreBg(speed.performance_score)} ${scoreColor(speed.performance_score)}`}
                                 >
                                   <Gauge className="w-3 h-3" />
@@ -232,11 +271,36 @@ export default function LandingPagesPage() {
                                 </Button>
                               )}
                             </td>
+                            <td className="p-3 text-center">
+                              {auditing[p.landing_page_url] ? (
+                                <div className="flex flex-col items-center gap-1">
+                                  <Loader2 className="w-4 h-4 animate-spin text-purple-500" />
+                                  <span className="text-[10px] text-purple-600">Scanning...</span>
+                                </div>
+                              ) : audits[p.landing_page_url]?.ai_audit ? (
+                                <button
+                                  onClick={() => { setAuditExpanded(auditExpanded === p.landing_page_url ? null : p.landing_page_url); setExpanded(null); }}
+                                  className={`inline-flex items-center gap-1 px-2 py-1 rounded border text-xs font-bold cursor-pointer ${auditScoreBg(audits[p.landing_page_url].ai_audit.overall_score)} ${auditScoreColor(audits[p.landing_page_url].ai_audit.overall_score)}`}
+                                >
+                                  <Brain className="w-3 h-3" />
+                                  {audits[p.landing_page_url].ai_audit.overall_score}/100
+                                </button>
+                              ) : (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="text-xs h-7 px-2 text-purple-600 hover:text-purple-700 hover:bg-purple-50"
+                                  onClick={() => runAiAudit(p.landing_page_url)}
+                                >
+                                  <Brain className="w-3 h-3 mr-1" /> Audit
+                                </Button>
+                              )}
+                            </td>
                           </tr>
                           {/* Expanded PageSpeed Details */}
                           {isExpanded && speed && (
                             <tr key={`${i}-details`} className="bg-slate-50/80">
-                              <td colSpan={7} className="p-4">
+                              <td colSpan={8} className="p-4">
                                 <div className="grid grid-cols-2 md:grid-cols-5 gap-4 text-center">
                                   <div>
                                     <div className="text-xs text-muted-foreground mb-1">Performance</div>
@@ -280,6 +344,184 @@ export default function LandingPagesPage() {
                               </td>
                             </tr>
                           )}
+
+                          {/* AI Audit Report */}
+                          {auditExpanded === p.landing_page_url && audits[p.landing_page_url] && (() => {
+                            const audit = audits[p.landing_page_url];
+                            const ai = audit.ai_audit;
+                            const pd = audit.page_data;
+                            if (audit.status === "error") {
+                              return (
+                                <tr key={`${i}-audit`} className="bg-red-50/50">
+                                  <td colSpan={8} className="p-4">
+                                    <div className="flex items-center gap-2 text-red-700">
+                                      <AlertTriangle className="w-4 h-4" />
+                                      <span className="text-sm font-medium">Audit failed: {audit.error}</span>
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            }
+                            return (
+                              <tr key={`${i}-audit`} className="bg-purple-50/30">
+                                <td colSpan={8} className="p-0">
+                                  <div className="p-5 space-y-5">
+                                    {/* Header */}
+                                    <div className="flex items-start justify-between">
+                                      <div className="flex items-center gap-3">
+                                        <div className={`w-16 h-16 rounded-xl border-2 flex flex-col items-center justify-center ${auditScoreBg(ai?.overall_score)}`}>
+                                          <span className={`text-2xl font-bold ${auditScoreColor(ai?.overall_score)}`}>{ai?.overall_score ?? "?"}</span>
+                                          <span className="text-[9px] text-slate-500 -mt-0.5">/ 100</span>
+                                        </div>
+                                        <div>
+                                          <h3 className="text-base font-bold text-slate-900">AI Landing Page Audit</h3>
+                                          <p className="text-xs text-slate-500 mt-0.5 max-w-xl">{ai?.summary}</p>
+                                        </div>
+                                      </div>
+                                      <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => setAuditExpanded(null)}>
+                                        <X className="w-4 h-4" />
+                                      </Button>
+                                    </div>
+
+                                    {/* Score Cards */}
+                                    {ai?.scores && (
+                                      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                                        {[
+                                          { key: "message_match", label: "Message Match", icon: Target },
+                                          { key: "keyword_relevance", label: "Keyword Relevance", icon: FileText },
+                                          { key: "conversion_optimization", label: "Conversion", icon: CheckCircle2 },
+                                          { key: "trust_credibility", label: "Trust", icon: Shield },
+                                          { key: "page_structure", label: "Structure", icon: FileText },
+                                          { key: "mobile_readiness", label: "Mobile", icon: Smartphone },
+                                        ].map(({ key, label, icon: Icon }) => {
+                                          const s = ai.scores[key];
+                                          if (!s) return null;
+                                          return (
+                                            <div key={key} className={`rounded-lg border p-3 ${auditScoreBg(s.score)}`}>
+                                              <div className="flex items-center gap-1.5 mb-1">
+                                                <Icon className="w-3.5 h-3.5 text-slate-500" />
+                                                <span className="text-[11px] font-medium text-slate-600">{label}</span>
+                                              </div>
+                                              <div className={`text-xl font-bold ${auditScoreColor(s.score)}`}>{s.score}</div>
+                                              <p className="text-[10px] text-slate-500 mt-1 line-clamp-2">{s.explanation}</p>
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+
+                                    {/* Page Data Summary */}
+                                    {pd && (
+                                      <div className="bg-white rounded-lg border p-4">
+                                        <h4 className="text-sm font-semibold text-slate-700 mb-2">Page Scan Results</h4>
+                                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                                          <div><span className="text-slate-500">Title:</span> <span className="font-medium">{pd.title || "(none)"}</span></div>
+                                          <div><span className="text-slate-500">Words:</span> <span className="font-medium">{pd.word_count?.toLocaleString()}</span></div>
+                                          <div><span className="text-slate-500">Forms:</span> <span className="font-medium">{pd.form_count}</span></div>
+                                          <div><span className="text-slate-500">Images:</span> <span className="font-medium">{pd.image_count} ({pd.images_with_alt} with alt)</span></div>
+                                          <div><span className="text-slate-500">CTAs:</span> <span className="font-medium">{pd.ctas?.join(", ") || "None found"}</span></div>
+                                          <div><span className="text-slate-500">Phone:</span> <span className="font-medium">{pd.phone_numbers?.length > 0 ? pd.phone_numbers.join(", ") : "Not visible"}</span></div>
+                                          <div><span className="text-slate-500">Trust:</span> <span className="font-medium">{pd.trust_signals?.join(", ") || "None detected"}</span></div>
+                                          <div><span className="text-slate-500">H1:</span> <span className="font-medium">{pd.h1_headings?.join(", ") || "(none)"}</span></div>
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    {/* Critical Issues */}
+                                    {ai?.critical_issues && ai.critical_issues.length > 0 && (
+                                      <div className="bg-white rounded-lg border border-red-200 p-4">
+                                        <h4 className="text-sm font-semibold text-red-700 mb-2 flex items-center gap-1.5">
+                                          <AlertTriangle className="w-4 h-4" /> Critical Issues ({ai.critical_issues.length})
+                                        </h4>
+                                        <div className="space-y-2">
+                                          {ai.critical_issues.map((issue: any, idx: number) => (
+                                            <div key={idx} className="flex items-start gap-2 text-xs">
+                                              <Badge className={`text-[10px] shrink-0 ${issue.impact === "high" ? "bg-red-100 text-red-700" : issue.impact === "medium" ? "bg-orange-100 text-orange-700" : "bg-yellow-100 text-yellow-700"}`}>
+                                                {issue.impact}
+                                              </Badge>
+                                              <div>
+                                                <span className="font-medium text-slate-800">{issue.issue}</span>
+                                                <p className="text-slate-500 mt-0.5">{issue.fix}</p>
+                                              </div>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    {/* Ad ↔ Landing Page Gaps */}
+                                    {ai?.ad_landing_page_gaps && ai.ad_landing_page_gaps.length > 0 && (
+                                      <div className="bg-white rounded-lg border border-orange-200 p-4">
+                                        <h4 className="text-sm font-semibold text-orange-700 mb-2 flex items-center gap-1.5">
+                                          <Target className="w-4 h-4" /> Ad ↔ Landing Page Gaps
+                                        </h4>
+                                        <ul className="space-y-1">
+                                          {ai.ad_landing_page_gaps.map((gap: string, idx: number) => (
+                                            <li key={idx} className="text-xs text-slate-700 flex items-start gap-1.5">
+                                              <span className="text-orange-400 mt-0.5">•</span> {gap}
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    )}
+
+                                    {/* Quick Wins */}
+                                    {ai?.quick_wins && ai.quick_wins.length > 0 && (
+                                      <div className="bg-white rounded-lg border border-green-200 p-4">
+                                        <h4 className="text-sm font-semibold text-green-700 mb-2 flex items-center gap-1.5">
+                                          <Zap className="w-4 h-4" /> Quick Wins — Do These Today
+                                        </h4>
+                                        <ul className="space-y-1">
+                                          {ai.quick_wins.map((win: string, idx: number) => (
+                                            <li key={idx} className="text-xs text-slate-700 flex items-start gap-1.5">
+                                              <CheckCircle2 className="w-3 h-3 text-green-500 mt-0.5 shrink-0" /> {win}
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    )}
+
+                                    {/* Full Recommendations */}
+                                    {ai?.recommendations && ai.recommendations.length > 0 && (
+                                      <div className="bg-white rounded-lg border p-4">
+                                        <h4 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-1.5">
+                                          <Lightbulb className="w-4 h-4 text-amber-500" /> All Recommendations ({ai.recommendations.length})
+                                        </h4>
+                                        <div className="space-y-3">
+                                          {ai.recommendations.map((rec: any, idx: number) => (
+                                            <div key={idx} className="border-l-2 pl-3 py-1" style={{ borderColor: rec.priority === "high" ? "#ef4444" : rec.priority === "medium" ? "#f59e0b" : "#3b82f6" }}>
+                                              <div className="flex items-center gap-2 mb-0.5">
+                                                <Badge className={`text-[10px] ${rec.priority === "high" ? "bg-red-100 text-red-700" : rec.priority === "medium" ? "bg-amber-100 text-amber-700" : "bg-blue-100 text-blue-700"}`}>
+                                                  {rec.priority}
+                                                </Badge>
+                                                <Badge className="text-[10px] bg-slate-100 text-slate-600">{rec.category}</Badge>
+                                                <span className="text-xs font-semibold text-slate-800">{rec.title}</span>
+                                              </div>
+                                              <p className="text-[11px] text-slate-600">{rec.description}</p>
+                                              {rec.expected_impact && <p className="text-[10px] text-green-600 mt-0.5 font-medium">Expected impact: {rec.expected_impact}</p>}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    {/* Missing Elements */}
+                                    {ai?.missing_elements && ai.missing_elements.length > 0 && (
+                                      <div className="bg-white rounded-lg border p-4">
+                                        <h4 className="text-sm font-semibold text-slate-700 mb-2">Missing Elements</h4>
+                                        <div className="flex flex-wrap gap-1.5">
+                                          {ai.missing_elements.map((el: string, idx: number) => (
+                                            <Badge key={idx} className="text-[10px] bg-slate-100 text-slate-700 border border-slate-200">{el}</Badge>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
+
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })()}
                         </>
                       );
                     })}

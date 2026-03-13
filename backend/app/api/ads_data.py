@@ -554,6 +554,244 @@ async def get_pagespeed(
         raise HTTPException(502, f"PageSpeed error: {str(e)}")
 
 
+# ── LANDING PAGE AI AUDIT ────────────────────────────────────────
+
+class LandingPageAuditRequest(BaseModel):
+    url: str
+    ad_headlines: Optional[List[str]] = None
+    ad_descriptions: Optional[List[str]] = None
+    keywords: Optional[List[str]] = None
+    ad_id: Optional[str] = None
+
+
+@router.post("/landing-pages/audit")
+async def audit_landing_page(
+    req: LandingPageAuditRequest,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    AI-powered landing page audit: fetches the page, extracts content,
+    compares to ad copy/keywords, and returns a full report with scores
+    and actionable recommendations.
+    """
+    import httpx
+    import json as _json
+    from bs4 import BeautifulSoup
+    from openai import AsyncOpenAI
+    from app.core.config import settings
+    import structlog
+    _audit_logger = structlog.get_logger()
+
+    # ── 1. If ad_id provided, look up ad details automatically ──
+    headlines = req.ad_headlines or []
+    descriptions = req.ad_descriptions or []
+    kw_list = req.keywords or []
+
+    if req.ad_id and (not headlines or not descriptions):
+        from app.models.ad import Ad
+        ad_result = await db.execute(
+            select(Ad).where(Ad.ad_id == req.ad_id, Ad.tenant_id == user.tenant_id)
+        )
+        ad_obj = ad_result.scalar_one_or_none()
+        if ad_obj:
+            if not headlines:
+                headlines = ad_obj.headlines_json or []
+            if not descriptions:
+                descriptions = ad_obj.descriptions_json or []
+
+    # ── 2. Fetch the landing page HTML ──
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            resp = await client.get(req.url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            })
+            if resp.status_code != 200:
+                raise HTTPException(502, f"Landing page returned HTTP {resp.status_code}")
+            html = resp.text
+    except httpx.TimeoutException:
+        raise HTTPException(504, "Landing page timed out")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"Failed to fetch landing page: {str(e)}")
+
+    # ── 3. Parse and extract page content ──
+    soup = BeautifulSoup(html, "html.parser")
+    # Remove scripts/styles
+    for tag in soup(["script", "style", "noscript", "svg", "iframe"]):
+        tag.decompose()
+
+    page_title = soup.title.string.strip() if soup.title and soup.title.string else ""
+    meta_desc = ""
+    meta_tag = soup.find("meta", attrs={"name": "description"})
+    if meta_tag and meta_tag.get("content"):
+        meta_desc = meta_tag["content"]
+
+    # H1/H2 headings
+    h1s = [h.get_text(strip=True) for h in soup.find_all("h1")][:5]
+    h2s = [h.get_text(strip=True) for h in soup.find_all("h2")][:10]
+
+    # CTAs (buttons and CTA-like links)
+    ctas = []
+    for btn in soup.find_all(["button", "a"], limit=50):
+        classes = " ".join(btn.get("class", []))
+        text = btn.get_text(strip=True)
+        if text and 2 < len(text) < 60 and any(
+            k in classes.lower() for k in ("btn", "button", "cta", "action")
+        ):
+            ctas.append(text)
+        elif btn.name == "button" and text and 2 < len(text) < 60:
+            ctas.append(text)
+    ctas = list(dict.fromkeys(ctas))[:10]  # dedupe
+
+    # Forms
+    forms = soup.find_all("form")
+    form_count = len(forms)
+    form_fields = []
+    for f in forms[:3]:
+        for inp in f.find_all(["input", "select", "textarea"]):
+            name = inp.get("name") or inp.get("placeholder") or inp.get("type", "")
+            if name and name not in ("hidden", "submit", "csrf"):
+                form_fields.append(name)
+    form_fields = list(dict.fromkeys(form_fields))[:15]
+
+    # Phone numbers
+    import re
+    page_text = soup.get_text(separator=" ", strip=True)
+    phones = re.findall(r'[\(]?\d{3}[\)]?[-.\s]?\d{3}[-.\s]?\d{4}', page_text)
+
+    # Trust signals
+    trust_patterns = [
+        r'licens', r'insured', r'certifi', r'bbb', r'guarante',
+        r'\d+\+?\s*years?\s+(?:of\s+)?experience', r'rated',
+        r'review', r'testimonial', r'five.?star', r'5.?star',
+    ]
+    trust_signals = []
+    lower_text = page_text.lower()
+    for p in trust_patterns:
+        if re.search(p, lower_text):
+            trust_signals.append(re.sub(r'\\', '', p.replace(r'\d+\+?\s*', 'N+ ').replace(r'\s+(?:of\s+)?', ' ')))
+
+    # Images count
+    images = soup.find_all("img")
+    img_count = len(images)
+    imgs_with_alt = sum(1 for i in images if i.get("alt"))
+
+    # Truncated visible text for AI (first ~6000 chars)
+    visible_text = page_text[:6000]
+
+    # ── 4. Build structured page data ──
+    page_data = {
+        "url": req.url,
+        "title": page_title,
+        "meta_description": meta_desc,
+        "h1_headings": h1s,
+        "h2_headings": h2s,
+        "ctas": ctas,
+        "form_count": form_count,
+        "form_fields": form_fields,
+        "phone_numbers": phones[:3],
+        "trust_signals": trust_signals,
+        "image_count": img_count,
+        "images_with_alt": imgs_with_alt,
+        "word_count": len(page_text.split()),
+    }
+
+    # ── 5. Call GPT for the full audit ──
+    if not settings.OPENAI_API_KEY:
+        return {
+            "status": "ok",
+            "page_data": page_data,
+            "ai_audit": None,
+            "error": "OpenAI API key not configured — page data extracted but AI audit skipped",
+        }
+
+    system_prompt = """You are an expert Google Ads landing page auditor. You analyze landing pages
+to determine how well they align with the ads driving traffic to them and how effectively
+they convert visitors. You provide specific, actionable recommendations.
+
+You MUST respond with valid JSON only."""
+
+    user_prompt = f"""Audit this landing page for Google Ads effectiveness.
+
+AD COPY:
+- Headlines: {_json.dumps(headlines)}
+- Descriptions: {_json.dumps(descriptions)}
+- Target keywords: {_json.dumps(kw_list)}
+
+LANDING PAGE DATA:
+- URL: {req.url}
+- Page title: {page_title}
+- Meta description: {meta_desc}
+- H1 headings: {_json.dumps(h1s)}
+- H2 headings: {_json.dumps(h2s)}
+- CTAs found: {_json.dumps(ctas)}
+- Forms: {form_count} (fields: {_json.dumps(form_fields)})
+- Phone numbers visible: {_json.dumps(phones[:3])}
+- Trust signals detected: {_json.dumps(trust_signals)}
+- Images: {img_count} total, {imgs_with_alt} with alt text
+- Word count: {len(page_text.split())}
+
+PAGE CONTENT (first 4000 chars):
+{visible_text[:4000]}
+
+ANALYSIS INSTRUCTIONS:
+1. **Message Match**: Does the landing page headline/content match the ad headlines and descriptions? Score 0-100.
+2. **Keyword Relevance**: Are the target keywords naturally present in the page content? Score 0-100.
+3. **Conversion Optimization**: Rate the page's ability to convert (CTAs, forms, phone, urgency). Score 0-100.
+4. **Trust & Credibility**: Reviews, certifications, guarantees, social proof. Score 0-100.
+5. **Page Structure**: Proper heading hierarchy, content flow, readability. Score 0-100.
+6. **Mobile Readiness**: Based on content structure (forms, CTA placement, content length). Score 0-100.
+
+Return JSON:
+{{
+  "overall_score": 0-100,
+  "scores": {{
+    "message_match": {{"score": 0-100, "explanation": "..."}},
+    "keyword_relevance": {{"score": 0-100, "explanation": "..."}},
+    "conversion_optimization": {{"score": 0-100, "explanation": "..."}},
+    "trust_credibility": {{"score": 0-100, "explanation": "..."}},
+    "page_structure": {{"score": 0-100, "explanation": "..."}},
+    "mobile_readiness": {{"score": 0-100, "explanation": "..."}}
+  }},
+  "critical_issues": [
+    {{"issue": "...", "impact": "high|medium|low", "fix": "Specific action to take"}}
+  ],
+  "recommendations": [
+    {{"category": "message_match|conversion|trust|seo|speed|ux", "priority": "high|medium|low", "title": "...", "description": "Detailed recommendation", "expected_impact": "..."}}
+  ],
+  "missing_elements": ["List of elements the page is missing that top-converting pages have"],
+  "ad_landing_page_gaps": ["Specific mismatches between the ad copy and the landing page"],
+  "quick_wins": ["3-5 changes that can be made TODAY for immediate improvement"],
+  "summary": "2-3 sentence executive summary of the landing page's effectiveness"
+}}"""
+
+    try:
+        oai = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        chat_resp = await oai.chat.completions.create(
+            model=getattr(settings, "OPENAI_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.3,
+            max_tokens=3000,
+        )
+        content = chat_resp.choices[0].message.content
+        ai_audit = _json.loads(content) if content else None
+    except Exception as e:
+        _audit_logger.error("Landing page AI audit failed", error=str(e))
+        ai_audit = None
+
+    return {
+        "status": "ok",
+        "page_data": page_data,
+        "ai_audit": ai_audit,
+    }
+
+
 # ── GOOGLE RECOMMENDATIONS ───────────────────────────────────────
 
 @router.get("/google-recommendations")
