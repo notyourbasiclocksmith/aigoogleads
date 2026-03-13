@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import { Search, AlertTriangle, AlertCircle, Ban, Plus, DollarSign, Loader2, ArrowUp, ArrowDown, ArrowUpDown, Info, ExternalLink } from "lucide-react";
 import { HelpTip, PageInfo } from "@/components/ui/help-tip";
+import { CSVExportButton } from "@/components/ui/csv-export-button";
 
 type SortKey = "impressions" | "clicks" | "cost" | "conversions" | "ctr" | "cpc" | "cpa";
 type SortDir = "asc" | "desc";
@@ -85,11 +86,14 @@ export default function SearchTermsPage() {
   return (
     <AppLayout>
       <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900">Search Terms</h1>
-          <p className="text-muted-foreground">
-            Analyze what people are actually searching for when your ads show
-          </p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900">Search Terms</h1>
+            <p className="text-muted-foreground">
+              Analyze what people are actually searching for when your ads show
+            </p>
+          </div>
+          <CSVExportButton entityType="search_terms" days={days} />
         </div>
 
         <PageInfo term="page_search_terms" />

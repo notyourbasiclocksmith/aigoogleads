@@ -1023,11 +1023,46 @@ def generate_report_task(tenant_id: str, report_type: str, period_days: int):
 async def _generate_report_async(tenant_id: str, report_type: str, period_days: int):
     from app.core.database import async_session_factory
     from app.services.report_service import ReportService
+    from app.services.email_service import send_tenant_weekly_report
+    from app.models.tenant import Tenant
 
     async with async_session_factory() as db:
         svc = ReportService(db, tenant_id)
         report = await svc.generate_weekly_report(period_days)
         logger.info("Report generated", tenant_id=tenant_id, type=report_type)
+
+        # Send email if weekly report
+        if report_type == "weekly":
+            tenant = await db.get(Tenant, tenant_id)
+            biz_name = tenant.name if tenant else "Your Business"
+            period_str = report.get("period", {}).get("start", "") + " — " + report.get("period", {}).get("end", "")
+            kpis = report.get("kpis", {}).get("current", {})
+            changes = report.get("kpis", {}).get("changes", {})
+            metrics = {}
+            if kpis.get("cost"):
+                cost_delta = f" ({changes.get('cost', 0):+.1f}%)" if changes.get("cost") else ""
+                metrics["Spend"] = f"${kpis['cost']:,.2f}{cost_delta}"
+            if kpis.get("conversions"):
+                conv_delta = f" ({changes.get('conversions', 0):+.1f}%)" if changes.get("conversions") else ""
+                metrics["Conversions"] = f"{kpis['conversions']:.0f}{conv_delta}"
+            if kpis.get("conv_value"):
+                metrics["Revenue"] = f"${kpis['conv_value']:,.2f}"
+            if kpis.get("cpa"):
+                cpa_delta = f" ({changes.get('cpa', 0):+.1f}%)" if changes.get("cpa") else ""
+                metrics["Cost per Lead"] = f"${kpis['cpa']:,.2f}{cpa_delta}"
+            if kpis.get("clicks"):
+                metrics["Clicks"] = f"{kpis['clicks']:,}"
+            if kpis.get("ctr"):
+                metrics["CTR"] = f"{kpis['ctr']:.2f}%"
+
+            highlights = report.get("wins", []) + report.get("next_week_focus", [])
+
+            result = await send_tenant_weekly_report(
+                db=db, tenant_id=tenant_id,
+                business_name=biz_name, period=period_str,
+                metrics=metrics, highlights=highlights[:5],
+            )
+            logger.info("Weekly email result", tenant_id=tenant_id, result=result)
 
 
 @celery_app.task(name="app.jobs.tasks.start_experiment_task")

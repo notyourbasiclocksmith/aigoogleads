@@ -9,6 +9,7 @@ import { api } from "@/lib/api";
 import { formatCurrency, formatNumber, formatPercent } from "@/lib/utils";
 import { Pause, Play, ExternalLink, ArrowUp, ArrowDown } from "lucide-react";
 import { HelpTip, PageInfo } from "@/components/ui/help-tip";
+import { CSVExportButton } from "@/components/ui/csv-export-button";
 
 type SortKey = "impressions" | "clicks" | "ctr" | "conversions" | "cpa" | "budget_micros";
 type SortDir = "asc" | "desc";
@@ -45,9 +46,12 @@ export default function CampaignsPage() {
             <h1 className="text-2xl font-bold text-slate-900">Campaigns</h1>
             <p className="text-muted-foreground">Manage and monitor your Google Ads campaigns</p>
           </div>
-          <Button onClick={() => (window.location.href = "/ads/prompt")}>
-            + New Campaign
-          </Button>
+          <div className="flex items-center gap-2">
+            <CSVExportButton entityType="campaigns" days={30} />
+            <Button onClick={() => (window.location.href = "/ads/prompt")}>
+              + New Campaign
+            </Button>
+          </div>
         </div>
 
         <PageInfo term="page_campaigns" />

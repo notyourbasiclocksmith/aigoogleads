@@ -67,6 +67,133 @@ async def get_kpis(
     }
 
 
+@router.get("/kpis-comparison")
+async def get_kpis_comparison(
+    days: int = Query(30, ge=1, le=180),
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return current period KPIs vs previous period for comparison."""
+    end_date = date.today()
+    start_current = end_date - timedelta(days=days)
+    start_prev = start_current - timedelta(days=days)
+
+    async def _sum_period(start: date, end: date):
+        r = await db.execute(
+            select(
+                func.sum(PerformanceDaily.impressions).label("impressions"),
+                func.sum(PerformanceDaily.clicks).label("clicks"),
+                func.sum(PerformanceDaily.cost_micros).label("cost_micros"),
+                func.sum(PerformanceDaily.conversions).label("conversions"),
+                func.sum(PerformanceDaily.conv_value).label("conv_value"),
+            ).where(
+                PerformanceDaily.tenant_id == user.tenant_id,
+                PerformanceDaily.entity_type == "campaign",
+                PerformanceDaily.date >= start,
+                PerformanceDaily.date < end,
+            )
+        )
+        row = r.one_or_none()
+        impressions = int(row.impressions or 0) if row else 0
+        clicks = int(row.clicks or 0) if row else 0
+        cost_micros = float(row.cost_micros or 0) if row else 0.0
+        conversions = float(row.conversions or 0) if row else 0.0
+        conv_value = float(row.conv_value or 0) if row else 0.0
+        cost = cost_micros / 1_000_000
+        return {
+            "impressions": impressions,
+            "clicks": clicks,
+            "cost": round(cost, 2),
+            "conversions": round(conversions, 1),
+            "conv_value": round(conv_value, 2),
+            "ctr": round((clicks / impressions * 100) if impressions > 0 else 0, 2),
+            "cpc": round((cost / clicks) if clicks > 0 else 0, 2),
+            "cpa": round((cost / conversions) if conversions > 0 else 0, 2),
+            "roas": round((conv_value / cost) if cost > 0 else 0, 2),
+        }
+
+    current = await _sum_period(start_current, end_date + timedelta(days=1))
+    previous = await _sum_period(start_prev, start_current)
+
+    def _pct_change(curr: float, prev: float) -> Optional[float]:
+        if prev == 0:
+            return None
+        return round((curr - prev) / prev * 100, 1)
+
+    changes = {}
+    for key in current:
+        changes[key] = _pct_change(current[key], previous[key])
+
+    return {
+        "period_days": days,
+        "current": current,
+        "previous": previous,
+        "changes": changes,
+    }
+
+
+@router.get("/onboarding-status")
+async def get_onboarding_status(
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Check what onboarding steps are completed for the getting-started guide."""
+    from app.models.integration_google_ads import IntegrationGoogleAds
+    from app.models.v2.operator_scan import OperatorScan
+
+    tid = user.tenant_id
+
+    # 1. Google Ads connected?
+    acct_result = await db.execute(
+        select(IntegrationGoogleAds).where(
+            IntegrationGoogleAds.tenant_id == tid,
+            IntegrationGoogleAds.is_active == True,
+        )
+    )
+    integration = acct_result.scalar_one_or_none()
+    ads_connected = bool(integration and integration.customer_id and integration.customer_id != "pending")
+    has_synced = bool(integration and integration.last_sync_at)
+
+    # 2. Has any campaigns?
+    camp_count = await db.execute(
+        select(func.count()).select_from(Campaign).where(Campaign.tenant_id == tid)
+    )
+    has_campaigns = (camp_count.scalar() or 0) > 0
+
+    # 3. Has run first scan?
+    scan_result = await db.execute(
+        select(func.count()).select_from(OperatorScan).where(
+            OperatorScan.tenant_id == tid,
+            OperatorScan.status == "ready",
+        )
+    )
+    has_scan = (scan_result.scalar() or 0) > 0
+
+    # 4. Has performance data?
+    perf_count = await db.execute(
+        select(func.count()).select_from(PerformanceDaily).where(
+            PerformanceDaily.tenant_id == tid,
+        )
+    )
+    has_data = (perf_count.scalar() or 0) > 0
+
+    steps = [
+        {"key": "connect_ads", "label": "Connect Google Ads", "done": ads_connected, "href": "/settings"},
+        {"key": "sync_data", "label": "Sync your account data", "done": has_synced, "href": "/settings"},
+        {"key": "first_scan", "label": "Run your first AI scan", "done": has_scan, "href": "/operator"},
+        {"key": "review", "label": "Review AI recommendations", "done": has_scan, "href": "/operator"},
+    ]
+    completed = sum(1 for s in steps if s["done"])
+    return {
+        "steps": steps,
+        "completed": completed,
+        "total": len(steps),
+        "all_done": completed == len(steps),
+        "has_data": has_data,
+        "has_campaigns": has_campaigns,
+    }
+
+
 @router.get("/trends")
 async def get_trends(
     days: int = Query(30, ge=7, le=90),

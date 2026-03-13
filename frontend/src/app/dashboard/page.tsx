@@ -12,7 +12,8 @@ import {
   Eye, PhoneCall, AlertTriangle, Zap, ArrowRight, Calendar,
   Lightbulb, Target, CheckCircle2, Brain, Shield, Play,
   Loader2, Banknote, XCircle, Flame, BarChart3, Star,
-  ArrowUp, ArrowDown, ArrowUpDown,
+  ArrowUp, ArrowDown, ArrowUpDown, Rocket, CircleDot,
+  Link2, RefreshCw, Search as SearchIcon,
 } from "lucide-react";
 import { HelpTip, PageInfo } from "@/components/ui/help-tip";
 import {
@@ -94,6 +95,8 @@ export default function DashboardPage() {
   const [scanStatus, setScanStatus] = useState("");
   const [campSortKey, setCampSortKey] = useState<CampSortKey>("clicks");
   const [campSortDir, setCampSortDir] = useState<CampSortDir>("desc");
+  const [onboarding, setOnboarding] = useState<any>(null);
+  const [comparison, setComparison] = useState<any>(null);
 
   useEffect(() => {
     loadData();
@@ -102,7 +105,7 @@ export default function DashboardPage() {
   async function loadData() {
     setLoading(true);
     try {
-      const [kpiData, healthData, alertData, campData, trendData, summaryData, recsData] = await Promise.all([
+      const [kpiData, healthData, alertData, campData, trendData, summaryData, recsData, onboardData, compData] = await Promise.all([
         api.get(`/api/dashboard/kpis?days=${days}`).catch(() => null),
         api.get(`/api/dashboard/health-check?days=${days}`).catch(() => null),
         api.get("/api/dashboard/alerts").catch(() => []),
@@ -110,6 +113,8 @@ export default function DashboardPage() {
         api.get(`/api/dashboard/trends?days=${days}`).catch(() => []),
         api.get("/api/dashboard/campaign-summary").catch(() => null),
         api.get("/api/ads/google-recommendations?status=pending").catch(() => []),
+        api.get("/api/dashboard/onboarding-status").catch(() => null),
+        api.get(`/api/dashboard/kpis-comparison?days=${days}`).catch(() => null),
       ]);
       setKpis(kpiData);
       setHealth(healthData);
@@ -118,6 +123,8 @@ export default function DashboardPage() {
       setTrends(Array.isArray(trendData) ? trendData : []);
       setCampaignSummary(summaryData);
       setRecCount(Array.isArray(recsData) ? recsData.length : 0);
+      setOnboarding(onboardData);
+      setComparison(compData);
     } catch (e) {
       console.error(e);
     } finally {
@@ -219,16 +226,17 @@ export default function DashboardPage() {
     }
   }, [days]);
 
+  const changes = comparison?.changes || {};
   const kpiCards = kpis
     ? [
-        { label: "Spend", value: formatCurrency(kpis.cost), icon: DollarSign, color: "text-orange-600", bg: "bg-orange-50", helpTerm: "cost" },
-        { label: "Revenue", value: formatCurrency(kpis.conv_value || 0), icon: Banknote, color: "text-emerald-600", bg: "bg-emerald-50", helpTerm: "revenue" },
-        { label: "Conversions", value: kpis.conversions.toFixed(1), icon: PhoneCall, color: "text-purple-600", bg: "bg-purple-50", helpTerm: "conversions" },
-        { label: "ROAS", value: `${kpis.roas?.toFixed(1) || "0.0"}x`, icon: TrendingUp, color: "text-blue-600", bg: "bg-blue-50", helpTerm: "roas" },
-        { label: "CPA", value: formatCurrency(kpis.cpa), icon: Target, color: "text-red-600", bg: "bg-red-50", helpTerm: "cpa" },
-        { label: "Clicks", value: formatNumber(kpis.clicks), icon: MousePointerClick, color: "text-green-600", bg: "bg-green-50", helpTerm: "clicks" },
-        { label: "CTR", value: formatPercent(kpis.ctr), icon: BarChart3, color: "text-indigo-600", bg: "bg-indigo-50", helpTerm: "ctr" },
-        { label: "CPC", value: formatCurrency(kpis.cpc), icon: DollarSign, color: "text-slate-600", bg: "bg-slate-50", helpTerm: "cpc" },
+        { label: "Spend", value: formatCurrency(kpis.cost), icon: DollarSign, color: "text-orange-600", bg: "bg-orange-50", helpTerm: "cost", change: changes.cost, invert: true },
+        { label: "Revenue", value: formatCurrency(kpis.conv_value || 0), icon: Banknote, color: "text-emerald-600", bg: "bg-emerald-50", helpTerm: "revenue", change: changes.conv_value },
+        { label: "Conversions", value: kpis.conversions.toFixed(1), icon: PhoneCall, color: "text-purple-600", bg: "bg-purple-50", helpTerm: "conversions", change: changes.conversions },
+        { label: "ROAS", value: `${kpis.roas?.toFixed(1) || "0.0"}x`, icon: TrendingUp, color: "text-blue-600", bg: "bg-blue-50", helpTerm: "roas", change: changes.roas },
+        { label: "CPA", value: formatCurrency(kpis.cpa), icon: Target, color: "text-red-600", bg: "bg-red-50", helpTerm: "cpa", change: changes.cpa, invert: true },
+        { label: "Clicks", value: formatNumber(kpis.clicks), icon: MousePointerClick, color: "text-green-600", bg: "bg-green-50", helpTerm: "clicks", change: changes.clicks },
+        { label: "CTR", value: formatPercent(kpis.ctr), icon: BarChart3, color: "text-indigo-600", bg: "bg-indigo-50", helpTerm: "ctr", change: changes.ctr },
+        { label: "CPC", value: formatCurrency(kpis.cpc), icon: DollarSign, color: "text-slate-600", bg: "bg-slate-50", helpTerm: "cpc", change: changes.cpc, invert: true },
       ]
     : [];
 
@@ -243,6 +251,56 @@ export default function DashboardPage() {
   return (
     <AppLayout>
       <div className="space-y-8">
+
+        {/* ── GETTING STARTED GUIDE ─────────────────────────────────── */}
+        {!loading && onboarding && !onboarding.all_done && (
+          <Card className="border-0 bg-gradient-to-br from-indigo-50/80 to-blue-50/40 overflow-hidden">
+            <CardContent className="p-7">
+              <div className="flex items-center gap-3 mb-5">
+                <div className="w-10 h-10 rounded-2xl bg-indigo-100 flex items-center justify-center">
+                  <Rocket className="w-5 h-5 text-indigo-600" />
+                </div>
+                <div>
+                  <h2 className="text-[16px] font-semibold text-slate-900 tracking-tight">Get Started with IgniteAds</h2>
+                  <p className="text-[12px] text-slate-400">{onboarding.completed} of {onboarding.total} steps complete</p>
+                </div>
+              </div>
+              <div className="w-full bg-slate-200/50 rounded-full h-2 mb-6">
+                <div
+                  className="bg-gradient-to-r from-indigo-500 to-blue-500 h-2 rounded-full transition-all duration-500"
+                  style={{ width: `${(onboarding.completed / onboarding.total) * 100}%` }}
+                />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                {onboarding.steps.map((step: any, i: number) => (
+                  <div
+                    key={step.key}
+                    onClick={() => !step.done && (window.location.href = step.href)}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${
+                      step.done
+                        ? "bg-emerald-50/80 border border-emerald-100/60"
+                        : "bg-white border border-slate-200/60 cursor-pointer hover:border-indigo-200 hover:bg-indigo-50/30"
+                    }`}
+                  >
+                    {step.done ? (
+                      <CheckCircle2 className="w-5 h-5 text-emerald-500 flex-shrink-0" />
+                    ) : (
+                      <CircleDot className="w-5 h-5 text-slate-300 flex-shrink-0" />
+                    )}
+                    <div>
+                      <p className={`text-[13px] font-medium ${step.done ? "text-emerald-700" : "text-slate-700"}`}>
+                        {step.label}
+                      </p>
+                      {!step.done && (
+                        <p className="text-[11px] text-indigo-500 mt-0.5">Click to start</p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* ── STATUS HERO ─────────────────────────────────────────────── */}
         {!loading && kpis && (
@@ -459,6 +517,16 @@ export default function DashboardPage() {
                       </div>
                     </div>
                     <div className="text-[24px] font-semibold tracking-tight text-slate-900">{kpi.value}</div>
+                    {kpi.change != null && (
+                      <div className={`flex items-center gap-1 mt-1.5 text-[11px] font-semibold ${
+                        (kpi as any).invert
+                          ? (kpi.change > 0 ? "text-red-500" : kpi.change < 0 ? "text-emerald-500" : "text-slate-400")
+                          : (kpi.change > 0 ? "text-emerald-500" : kpi.change < 0 ? "text-red-500" : "text-slate-400")
+                      }`}>
+                        {kpi.change > 0 ? <ArrowUp className="w-3 h-3" /> : kpi.change < 0 ? <ArrowDown className="w-3 h-3" /> : null}
+                        {kpi.change !== null ? `${Math.abs(kpi.change)}% vs prev ${days}d` : ""}
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               );

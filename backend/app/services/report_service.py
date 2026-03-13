@@ -155,6 +155,22 @@ class ReportService:
 
     async def export_csv(self, entity_type: str, days: int) -> str:
         start = date.today() - timedelta(days=days)
+
+        if entity_type == "campaigns":
+            return await self._export_campaigns(start)
+        elif entity_type == "keywords":
+            return await self._export_keywords(start)
+        elif entity_type == "search_terms":
+            return await self._export_search_terms(start)
+        elif entity_type == "ads":
+            return await self._export_ads(start)
+        elif entity_type == "auction_insights":
+            return await self._export_auction_insights(start)
+        else:
+            # Fallback: raw performance_daily
+            return await self._export_performance_daily(entity_type, start)
+
+    async def _export_performance_daily(self, entity_type: str, start: date) -> str:
         result = await self.db.execute(
             select(PerformanceDaily)
             .where(and_(
@@ -165,14 +181,186 @@ class ReportService:
             .order_by(PerformanceDaily.date)
         )
         rows = result.scalars().all()
-
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerow(["date", "entity_id", "impressions", "clicks", "cost", "conversions", "ctr", "cpc", "cpa"])
         for r in rows:
+            imp = r.impressions or 0
+            clicks = r.clicks or 0
+            cost = (r.cost_micros or 0) / 1_000_000
+            conv = r.conversions or 0
             writer.writerow([
-                str(r.date), r.entity_id, r.impressions, r.clicks,
-                round(r.cost_micros / 1_000_000, 2), round(r.conversions, 1),
-                round(r.ctr, 2), round(r.cpc_micros / 1_000_000, 2), round(r.cpa_micros / 1_000_000, 2),
+                str(r.date), r.entity_id, imp, clicks,
+                round(cost, 2), round(conv, 1),
+                round(r.ctr or 0, 2),
+                round((r.cpc_micros or 0) / 1_000_000, 2),
+                round((r.cpa_micros or 0) / 1_000_000, 2),
+            ])
+        return output.getvalue()
+
+    async def _export_campaigns(self, start: date) -> str:
+        result = await self.db.execute(
+            select(
+                Campaign.name,
+                Campaign.campaign_id,
+                Campaign.status,
+                Campaign.type,
+                func.sum(PerformanceDaily.impressions).label("impressions"),
+                func.sum(PerformanceDaily.clicks).label("clicks"),
+                func.sum(PerformanceDaily.cost_micros).label("cost_micros"),
+                func.sum(PerformanceDaily.conversions).label("conversions"),
+                func.sum(PerformanceDaily.conv_value).label("conv_value"),
+            )
+            .join(PerformanceDaily, and_(
+                PerformanceDaily.entity_id == Campaign.campaign_id,
+                PerformanceDaily.tenant_id == Campaign.tenant_id,
+                PerformanceDaily.entity_type == "campaign",
+            ))
+            .where(Campaign.tenant_id == self.tenant_id, PerformanceDaily.date >= start)
+            .group_by(Campaign.name, Campaign.campaign_id, Campaign.status, Campaign.type)
+            .order_by(desc(func.sum(PerformanceDaily.cost_micros)))
+        )
+        rows = result.all()
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["campaign_name", "campaign_id", "status", "type", "impressions", "clicks", "cost", "conversions", "revenue", "ctr", "cpc", "cpa", "roas"])
+        for r in rows:
+            imp = int(r.impressions or 0)
+            clicks = int(r.clicks or 0)
+            cost = float(r.cost_micros or 0) / 1_000_000
+            conv = float(r.conversions or 0)
+            val = float(r.conv_value or 0)
+            writer.writerow([
+                r.name, r.campaign_id, r.status, r.type, imp, clicks,
+                round(cost, 2), round(conv, 1), round(val, 2),
+                round((clicks / imp * 100) if imp > 0 else 0, 2),
+                round((cost / clicks) if clicks > 0 else 0, 2),
+                round((cost / conv) if conv > 0 else 0, 2),
+                round((val / cost) if cost > 0 else 0, 2),
+            ])
+        return output.getvalue()
+
+    async def _export_keywords(self, start: date) -> str:
+        from app.models.keyword_performance_daily import KeywordPerformanceDaily
+        result = await self.db.execute(
+            select(
+                KeywordPerformanceDaily.keyword_text,
+                KeywordPerformanceDaily.keyword_id,
+                KeywordPerformanceDaily.match_type,
+                KeywordPerformanceDaily.campaign_id,
+                func.sum(KeywordPerformanceDaily.impressions).label("impressions"),
+                func.sum(KeywordPerformanceDaily.clicks).label("clicks"),
+                func.sum(KeywordPerformanceDaily.cost_micros).label("cost_micros"),
+                func.sum(KeywordPerformanceDaily.conversions).label("conversions"),
+                func.sum(KeywordPerformanceDaily.conversion_value).label("conversion_value"),
+                func.max(KeywordPerformanceDaily.quality_score).label("quality_score"),
+            )
+            .where(KeywordPerformanceDaily.tenant_id == self.tenant_id, KeywordPerformanceDaily.date >= start)
+            .group_by(
+                KeywordPerformanceDaily.keyword_text, KeywordPerformanceDaily.keyword_id,
+                KeywordPerformanceDaily.match_type, KeywordPerformanceDaily.campaign_id,
+            )
+            .order_by(desc(func.sum(KeywordPerformanceDaily.cost_micros)))
+        )
+        rows = result.all()
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["keyword", "keyword_id", "match_type", "campaign_id", "impressions", "clicks", "cost", "conversions", "revenue", "ctr", "cpc", "quality_score"])
+        for r in rows:
+            imp = int(r.impressions or 0)
+            clicks = int(r.clicks or 0)
+            cost = float(r.cost_micros or 0) / 1_000_000
+            writer.writerow([
+                r.keyword_text, r.keyword_id, r.match_type, r.campaign_id, imp, clicks,
+                round(cost, 2), round(float(r.conversions or 0), 1), round(float(r.conversion_value or 0), 2),
+                round((clicks / imp * 100) if imp > 0 else 0, 2),
+                round((cost / clicks) if clicks > 0 else 0, 2),
+                r.quality_score,
+            ])
+        return output.getvalue()
+
+    async def _export_search_terms(self, start: date) -> str:
+        from app.models.search_term_performance import SearchTermPerformance
+        result = await self.db.execute(
+            select(
+                SearchTermPerformance.search_term,
+                SearchTermPerformance.keyword_text,
+                SearchTermPerformance.campaign_id,
+                func.sum(SearchTermPerformance.impressions).label("impressions"),
+                func.sum(SearchTermPerformance.clicks).label("clicks"),
+                func.sum(SearchTermPerformance.cost_micros).label("cost_micros"),
+                func.sum(SearchTermPerformance.conversions).label("conversions"),
+                func.sum(SearchTermPerformance.conversion_value).label("conversion_value"),
+            )
+            .where(SearchTermPerformance.tenant_id == self.tenant_id, SearchTermPerformance.date >= start)
+            .group_by(SearchTermPerformance.search_term, SearchTermPerformance.keyword_text, SearchTermPerformance.campaign_id)
+            .order_by(desc(func.sum(SearchTermPerformance.cost_micros)))
+        )
+        rows = result.all()
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["search_term", "keyword", "campaign_id", "impressions", "clicks", "cost", "conversions", "revenue", "ctr", "cpc"])
+        for r in rows:
+            imp = int(r.impressions or 0)
+            clicks = int(r.clicks or 0)
+            cost = float(r.cost_micros or 0) / 1_000_000
+            writer.writerow([
+                r.search_term, r.keyword_text, r.campaign_id, imp, clicks,
+                round(cost, 2), round(float(r.conversions or 0), 1), round(float(r.conversion_value or 0), 2),
+                round((clicks / imp * 100) if imp > 0 else 0, 2),
+                round((cost / clicks) if clicks > 0 else 0, 2),
+            ])
+        return output.getvalue()
+
+    async def _export_ads(self, start: date) -> str:
+        from app.models.ad_performance_daily import AdPerformanceDaily
+        result = await self.db.execute(
+            select(
+                AdPerformanceDaily.ad_id,
+                AdPerformanceDaily.campaign_id,
+                AdPerformanceDaily.ad_group_id,
+                func.sum(AdPerformanceDaily.impressions).label("impressions"),
+                func.sum(AdPerformanceDaily.clicks).label("clicks"),
+                func.sum(AdPerformanceDaily.cost_micros).label("cost_micros"),
+                func.sum(AdPerformanceDaily.conversions).label("conversions"),
+                func.sum(AdPerformanceDaily.conversion_value).label("conversion_value"),
+            )
+            .where(AdPerformanceDaily.tenant_id == self.tenant_id, AdPerformanceDaily.date >= start)
+            .group_by(AdPerformanceDaily.ad_id, AdPerformanceDaily.campaign_id, AdPerformanceDaily.ad_group_id)
+            .order_by(desc(func.sum(AdPerformanceDaily.cost_micros)))
+        )
+        rows = result.all()
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["ad_id", "campaign_id", "ad_group_id", "impressions", "clicks", "cost", "conversions", "revenue", "ctr", "cpc"])
+        for r in rows:
+            imp = int(r.impressions or 0)
+            clicks = int(r.clicks or 0)
+            cost = float(r.cost_micros or 0) / 1_000_000
+            writer.writerow([
+                r.ad_id, r.campaign_id, r.ad_group_id, imp, clicks,
+                round(cost, 2), round(float(r.conversions or 0), 1), round(float(r.conversion_value or 0), 2),
+                round((clicks / imp * 100) if imp > 0 else 0, 2),
+                round((cost / clicks) if clicks > 0 else 0, 2),
+            ])
+        return output.getvalue()
+
+    async def _export_auction_insights(self, start: date) -> str:
+        from app.models.auction_insight import AuctionInsight
+        result = await self.db.execute(
+            select(AuctionInsight)
+            .where(AuctionInsight.tenant_id == self.tenant_id, AuctionInsight.date >= start)
+            .order_by(desc(AuctionInsight.impression_share))
+        )
+        rows = result.scalars().all()
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["date", "campaign_id", "competitor_domain", "impression_share", "overlap_rate", "outranking_share", "top_of_page_rate", "abs_top_rate", "position_above_rate"])
+        for r in rows:
+            writer.writerow([
+                str(r.date), r.campaign_id, r.competitor_domain,
+                round(r.impression_share or 0, 4), round(r.overlap_rate or 0, 4),
+                round(r.outranking_share or 0, 4), round(r.top_of_page_rate or 0, 4),
+                round(r.abs_top_rate or 0, 4), round(r.position_above_rate or 0, 4),
             ])
         return output.getvalue()

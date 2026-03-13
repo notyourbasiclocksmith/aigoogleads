@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import { Search, Pause, Play, TrendingUp, TrendingDown, Loader2, Star, Banknote, DollarSign, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
 import { HelpTip, PageInfo } from "@/components/ui/help-tip";
+import { CSVExportButton } from "@/components/ui/csv-export-button";
 
 type SortKey = "quality_score" | "impressions" | "clicks" | "cost" | "conversion_value" | "roas" | "conversions" | "cpc";
 type SortDir = "asc" | "desc";
@@ -105,8 +106,13 @@ export default function KeywordPerformancePage() {
     <AppLayout>
       <div className="space-y-8">
         <div>
-          <h1 className="text-[22px] font-semibold tracking-tight text-slate-900">Keyword Performance</h1>
-          <p className="text-[13px] text-slate-400 mt-0.5">Monitor and manage individual keyword performance</p>
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-[22px] font-semibold tracking-tight text-slate-900">Keyword Performance</h1>
+              <p className="text-[13px] text-slate-400 mt-0.5">Monitor and manage individual keyword performance</p>
+            </div>
+            <CSVExportButton entityType="keywords" days={days} />
+          </div>
         </div>
 
         <PageInfo term="page_keywords" />

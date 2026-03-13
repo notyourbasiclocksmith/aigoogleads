@@ -61,7 +61,7 @@ async def list_reports(
 
 @router.get("/export/csv")
 async def export_csv(
-    entity_type: str = "campaigns",
+    entity_type: str = Query("campaigns", regex="^(campaigns|keywords|search_terms|ads|auction_insights|campaign|ad_group|ad|keyword)$"),
     days: int = Query(30, ge=1, le=365),
     user: CurrentUser = Depends(require_tenant),
     db: AsyncSession = Depends(get_db),

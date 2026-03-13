@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
@@ -57,12 +57,14 @@ async def onboarding_step1(
         if tu:
             tenant_id = tu.tenant_id
         else:
-            # Create new tenant + membership
+            # Create new tenant + membership + settings
+            from app.models.tenant_settings import TenantSettings
             tenant_id = str(uuid.uuid4())
             tenant = Tenant(id=tenant_id, name=biz_name, industry=req.industry)
             db.add(tenant)
             tu = TenantUser(tenant_id=tenant_id, user_id=user.user_id, role="owner")
             db.add(tu)
+            db.add(TenantSettings(tenant_id=tenant_id))
             await db.flush()
 
     # Update tenant info
@@ -79,11 +81,17 @@ async def onboarding_step1(
         profile = BusinessProfile(tenant_id=tenant_id)
         db.add(profile)
 
-    profile.website_url = req.website_url
+    # Only set website_url if explicitly provided (step2 owns this field)
+    if req.website_url:
+        profile.website_url = req.website_url
     profile.industry_classification = req.industry
-    profile.phone = req.phone
-    profile.primary_conversion_goal = req.primary_conversion_goal
-    profile.locations_json = req.service_area or {}
+    if req.phone:
+        profile.phone = req.phone
+    # Don't overwrite conversion goal if already set (step4 owns this field)
+    if not profile.primary_conversion_goal:
+        profile.primary_conversion_goal = req.primary_conversion_goal
+    if req.service_area:
+        profile.locations_json = req.service_area
 
     await db.flush()
 
@@ -127,6 +135,14 @@ async def onboarding_step2(
     links = req.social_links
     if isinstance(links, dict):
         links = [{"platform": k, "url": v} for k, v in links.items() if v]
+
+    # Remove old social profiles to prevent duplicates on re-submission
+    if links:
+        from sqlalchemy import delete as sa_delete
+        await db.execute(
+            sa_delete(SocialProfile).where(SocialProfile.tenant_id == user.tenant_id)
+        )
+
     for link in links:
         platform = link.get("platform", "other")
         url = link.get("url", "")
@@ -215,11 +231,11 @@ async def onboarding_data(
         select(IntegrationGoogleAds).where(
             IntegrationGoogleAds.tenant_id == user.tenant_id,
             IntegrationGoogleAds.is_active == True,
+            IntegrationGoogleAds.customer_id != "pending",
         ).limit(1)
     )
     acct = acct_result.scalar_one_or_none()
 
-    from app.models.social_profile import SocialProfile
     social_result = await db.execute(
         select(SocialProfile).where(SocialProfile.tenant_id == user.tenant_id)
     )
@@ -257,18 +273,28 @@ async def onboarding_status(
     result2 = await db.execute(select(Tenant).where(Tenant.id == user.tenant_id))
     tenant = result2.scalar_one_or_none()
 
+    # Check if social profiles exist (step2 creates them)
+    social_count_result = await db.execute(
+        select(func.count()).select_from(SocialProfile).where(SocialProfile.tenant_id == user.tenant_id)
+    )
+    has_socials = (social_count_result.scalar() or 0) > 0
+
+    constraints = (profile.constraints_json or {}) if profile else {}
+
     steps = {
         "step1": profile is not None and profile.industry_classification is not None,
-        "step2": profile is not None and (profile.gbp_link is not None or bool(profile.locations_json)),
+        "step2": profile is not None and (bool(profile.website_url) or bool(profile.gbp_link) or has_socials),
         "step3": False,
-        "step4": True,
-        "step5": tenant is not None and tenant.autonomy_mode != "suggest",
+        "step4": profile is not None and bool(constraints.get("monthly_budget")),
+        "step5": tenant is not None and tenant.autonomy_mode is not None,
     }
 
-    from sqlalchemy import func
     from app.models.integration_google_ads import IntegrationGoogleAds
     count_result = await db.execute(
-        select(func.count()).select_from(IntegrationGoogleAds).where(IntegrationGoogleAds.tenant_id == user.tenant_id)
+        select(func.count()).select_from(IntegrationGoogleAds).where(
+            IntegrationGoogleAds.tenant_id == user.tenant_id,
+            IntegrationGoogleAds.customer_id != "pending",
+        )
     )
     steps["step3"] = (count_result.scalar() or 0) > 0
 
