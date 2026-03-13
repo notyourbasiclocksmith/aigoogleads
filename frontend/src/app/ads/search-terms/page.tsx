@@ -7,7 +7,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
-import { Search, AlertTriangle, Ban, Plus, DollarSign, Loader2 } from "lucide-react";
+import { Search, AlertTriangle, Ban, Plus, DollarSign, Loader2, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+
+type SortKey = "impressions" | "clicks" | "cost" | "conversions" | "ctr" | "cpc" | "cpa";
+type SortDir = "asc" | "desc";
 
 export default function SearchTermsPage() {
   const [terms, setTerms] = useState<any[]>([]);
@@ -17,6 +20,8 @@ export default function SearchTermsPage() {
   const [showWaste, setShowWaste] = useState(false);
   const [days, setDays] = useState(30);
   const [adding, setAdding] = useState<string | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey>("cost");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   useEffect(() => {
     loadData();
@@ -58,9 +63,23 @@ export default function SearchTermsPage() {
       !filter || t.search_term.toLowerCase().includes(filter.toLowerCase())
   );
 
-  const displayed = showWaste
+  const afterWaste = showWaste
     ? filtered.filter((t) => t.conversions === 0 && t.cost > 5)
     : filtered;
+
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) setSortDir(sortDir === "desc" ? "asc" : "desc");
+    else { setSortKey(key); setSortDir("desc"); }
+  }
+  function SortIcon({ col }: { col: SortKey }) {
+    if (sortKey !== col) return <ArrowUpDown className="w-3 h-3 text-slate-300" />;
+    return sortDir === "desc" ? <ArrowDown className="w-3 h-3 text-blue-600" /> : <ArrowUp className="w-3 h-3 text-blue-600" />;
+  }
+
+  const displayed = [...afterWaste].sort((a, b) => {
+    const av = a[sortKey] || 0, bv = b[sortKey] || 0;
+    return sortDir === "desc" ? bv - av : av - bv;
+  });
 
   return (
     <AppLayout>
@@ -140,13 +159,21 @@ export default function SearchTermsPage() {
                     <tr className="border-b bg-slate-50">
                       <th className="text-left p-3 font-medium">Search Term</th>
                       <th className="text-left p-3 font-medium">Keyword</th>
-                      <th className="text-right p-3 font-medium">Impr.</th>
-                      <th className="text-right p-3 font-medium">Clicks</th>
-                      <th className="text-right p-3 font-medium">Cost</th>
-                      <th className="text-right p-3 font-medium">Conv.</th>
-                      <th className="text-right p-3 font-medium">CTR</th>
-                      <th className="text-right p-3 font-medium">CPC</th>
-                      <th className="text-right p-3 font-medium">CPA</th>
+                      {([
+                        { key: "impressions" as SortKey, label: "Impr." },
+                        { key: "clicks" as SortKey, label: "Clicks" },
+                        { key: "cost" as SortKey, label: "Cost" },
+                        { key: "conversions" as SortKey, label: "Conv." },
+                        { key: "ctr" as SortKey, label: "CTR" },
+                        { key: "cpc" as SortKey, label: "CPC" },
+                        { key: "cpa" as SortKey, label: "CPA" },
+                      ] as const).map(({ key, label }) => (
+                        <th key={key} className="text-right p-3 font-medium">
+                          <button onClick={() => toggleSort(key)} className="inline-flex items-center gap-1 hover:text-blue-600 transition-colors">
+                            {label} <SortIcon col={key} />
+                          </button>
+                        </th>
+                      ))}
                       <th className="p-3"></th>
                     </tr>
                   </thead>

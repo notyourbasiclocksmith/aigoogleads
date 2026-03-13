@@ -7,7 +7,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
-import { Search, Pause, Play, TrendingUp, TrendingDown, Loader2, Star, Banknote, DollarSign } from "lucide-react";
+import { Search, Pause, Play, TrendingUp, TrendingDown, Loader2, Star, Banknote, DollarSign, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+
+type SortKey = "quality_score" | "impressions" | "clicks" | "cost" | "conversion_value" | "roas" | "conversions" | "cpc";
+type SortDir = "asc" | "desc";
 
 export default function KeywordPerformancePage() {
   const [keywords, setKeywords] = useState<any[]>([]);
@@ -16,6 +19,8 @@ export default function KeywordPerformancePage() {
   const [days, setDays] = useState(30);
   const [sortBy, setSortBy] = useState("cost");
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey>("cost");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   useEffect(() => {
     loadData();
@@ -64,9 +69,30 @@ export default function KeywordPerformancePage() {
     }
   }
 
-  const filtered = keywords.filter(
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) setSortDir(sortDir === "desc" ? "asc" : "desc");
+    else { setSortKey(key); setSortDir("desc"); }
+  }
+  function SortIcon({ col }: { col: SortKey }) {
+    if (sortKey !== col) return <ArrowUpDown className="w-3 h-3 text-slate-300" />;
+    return sortDir === "desc" ? <ArrowDown className="w-3 h-3 text-blue-600" /> : <ArrowUp className="w-3 h-3 text-blue-600" />;
+  }
+
+  const preFiltered = keywords.filter(
     (k) => !filter || k.keyword_text?.toLowerCase().includes(filter.toLowerCase())
   );
+
+  const filtered = [...preFiltered].sort((a, b) => {
+    let av: number, bv: number;
+    if (sortKey === "roas") {
+      av = a.cost > 0 ? (a.conversion_value || 0) / a.cost : 0;
+      bv = b.cost > 0 ? (b.conversion_value || 0) / b.cost : 0;
+    } else {
+      av = a[sortKey] || 0;
+      bv = b[sortKey] || 0;
+    }
+    return sortDir === "desc" ? bv - av : av - bv;
+  });
 
   const totalCost = filtered.reduce((s: number, k: any) => s + (k.cost || 0), 0);
   const totalConv = filtered.reduce((s: number, k: any) => s + (k.conversions || 0), 0);
@@ -156,14 +182,22 @@ export default function KeywordPerformancePage() {
                     <tr className="border-b border-slate-100">
                       <th className="text-left px-4 py-3 font-medium text-slate-400">Keyword</th>
                       <th className="text-left px-3 py-3 font-medium text-slate-400">Match</th>
-                      <th className="text-center px-3 py-3 font-medium text-slate-400">QS</th>
-                      <th className="text-right px-3 py-3 font-medium text-slate-400">Impr.</th>
-                      <th className="text-right px-3 py-3 font-medium text-slate-400">Clicks</th>
-                      <th className="text-right px-3 py-3 font-medium text-slate-400">Cost</th>
-                      <th className="text-right px-3 py-3 font-medium text-emerald-500">Revenue</th>
-                      <th className="text-right px-3 py-3 font-medium text-emerald-500">ROAS</th>
-                      <th className="text-right px-3 py-3 font-medium text-slate-400">Conv.</th>
-                      <th className="text-right px-3 py-3 font-medium text-slate-400">CPC</th>
+                      {([
+                        { key: "quality_score" as SortKey, label: "QS", align: "text-center" },
+                        { key: "impressions" as SortKey, label: "Impr.", align: "text-right" },
+                        { key: "clicks" as SortKey, label: "Clicks", align: "text-right" },
+                        { key: "cost" as SortKey, label: "Cost", align: "text-right" },
+                        { key: "conversion_value" as SortKey, label: "Revenue", align: "text-right", color: "text-emerald-500" },
+                        { key: "roas" as SortKey, label: "ROAS", align: "text-right", color: "text-emerald-500" },
+                        { key: "conversions" as SortKey, label: "Conv.", align: "text-right" },
+                        { key: "cpc" as SortKey, label: "CPC", align: "text-right" },
+                      ] as const).map(({ key, label, align, color }) => (
+                        <th key={key} className={`${align} px-3 py-3 font-medium ${color || "text-slate-400"}`}>
+                          <button onClick={() => toggleSort(key)} className="inline-flex items-center gap-1 hover:text-blue-600 transition-colors">
+                            {label} <SortIcon col={key} />
+                          </button>
+                        </th>
+                      ))}
                       <th className="px-3 py-3 font-medium text-slate-400">Actions</th>
                     </tr>
                   </thead>

@@ -6,13 +6,18 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
-import { Pause, Play, Trophy, AlertTriangle, Loader2, ExternalLink, Eye } from "lucide-react";
+import { Pause, Play, Trophy, AlertTriangle, Loader2, ExternalLink, Eye, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+
+type SortKey = "impressions" | "clicks" | "cost" | "conversions" | "ctr" | "cpc";
+type SortDir = "asc" | "desc";
 
 export default function AdPerformancePage() {
   const [ads, setAds] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [days, setDays] = useState(30);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey>("cost");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   useEffect(() => {
     loadData();
@@ -44,9 +49,13 @@ export default function AdPerformancePage() {
   }
 
   // Determine best and worst ads
-  const sorted = [...ads].sort((a, b) => (b.conversions || 0) - (a.conversions || 0));
-  const bestAdId = sorted.length > 0 ? sorted[0].ad_id : null;
-  const worstAdId = sorted.length > 1 ? sorted[sorted.length - 1].ad_id : null;
+  const bySortKey = [...ads].sort((a, b) => {
+    const av = a[sortKey] || 0, bv = b[sortKey] || 0;
+    return sortDir === "desc" ? bv - av : av - bv;
+  });
+  const byConv = [...ads].sort((a, b) => (b.conversions || 0) - (a.conversions || 0));
+  const bestAdId = byConv.length > 0 ? byConv[0].ad_id : null;
+  const worstAdId = byConv.length > 1 ? byConv[byConv.length - 1].ad_id : null;
 
   return (
     <AppLayout>
@@ -64,6 +73,21 @@ export default function AdPerformancePage() {
             <option value={60}>Last 60 days</option>
             <option value={90}>Last 90 days</option>
           </select>
+          <select className="border rounded-md px-3 py-2 text-sm" value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)}>
+            <option value="cost">Sort: Cost</option>
+            <option value="impressions">Sort: Impressions</option>
+            <option value="clicks">Sort: Clicks</option>
+            <option value="conversions">Sort: Conversions</option>
+            <option value="ctr">Sort: CTR</option>
+            <option value="cpc">Sort: CPC</option>
+          </select>
+          <button
+            onClick={() => setSortDir(sortDir === "desc" ? "asc" : "desc")}
+            className="inline-flex items-center gap-1 border rounded-md px-3 py-2 text-sm hover:bg-slate-50 transition-colors"
+          >
+            {sortDir === "desc" ? <ArrowDown className="w-3.5 h-3.5 text-blue-600" /> : <ArrowUp className="w-3.5 h-3.5 text-blue-600" />}
+            {sortDir === "desc" ? "High → Low" : "Low → High"}
+          </button>
         </div>
 
         {loading ? (
@@ -72,7 +96,7 @@ export default function AdPerformancePage() {
           <Card><CardContent className="p-12 text-center"><p className="text-muted-foreground">No ad performance data. Sync your account first.</p></CardContent></Card>
         ) : (
           <div className="space-y-4">
-            {ads.map((ad: any) => (
+            {bySortKey.map((ad: any) => (
               <Card key={ad.ad_id} className={`${ad.ad_id === bestAdId ? "border-green-300 bg-green-50/30" : ad.ad_id === worstAdId ? "border-red-200 bg-red-50/30" : ""}`}>
                 <CardContent className="p-5">
                   <div className="flex items-start justify-between">

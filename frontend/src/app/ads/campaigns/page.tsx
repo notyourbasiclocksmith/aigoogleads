@@ -7,11 +7,16 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import { formatCurrency, formatNumber, formatPercent } from "@/lib/utils";
-import { Pause, Play, ExternalLink } from "lucide-react";
+import { Pause, Play, ExternalLink, ArrowUp, ArrowDown } from "lucide-react";
+
+type SortKey = "impressions" | "clicks" | "ctr" | "conversions" | "cpa" | "budget_micros";
+type SortDir = "asc" | "desc";
 
 export default function CampaignsPage() {
   const [campaigns, setCampaigns] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [sortKey, setSortKey] = useState<SortKey>("clicks");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   useEffect(() => {
     api.get("/api/campaigns").then(setCampaigns).catch(console.error).finally(() => setLoading(false));
@@ -44,6 +49,24 @@ export default function CampaignsPage() {
           </Button>
         </div>
 
+        <div className="flex items-center gap-3">
+          <select className="border rounded-md px-3 py-2 text-sm" value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)}>
+            <option value="clicks">Sort: Clicks</option>
+            <option value="impressions">Sort: Impressions</option>
+            <option value="conversions">Sort: Conversions</option>
+            <option value="ctr">Sort: CTR</option>
+            <option value="cpa">Sort: CPA</option>
+            <option value="budget_micros">Sort: Budget</option>
+          </select>
+          <button
+            onClick={() => setSortDir(sortDir === "desc" ? "asc" : "desc")}
+            className="inline-flex items-center gap-1 border rounded-md px-3 py-2 text-sm hover:bg-slate-50 transition-colors"
+          >
+            {sortDir === "desc" ? <ArrowDown className="w-3.5 h-3.5 text-blue-600" /> : <ArrowUp className="w-3.5 h-3.5 text-blue-600" />}
+            {sortDir === "desc" ? "High \u2192 Low" : "Low \u2192 High"}
+          </button>
+        </div>
+
         {loading ? (
           <div className="space-y-4">
             {[1, 2, 3].map((i) => (
@@ -66,7 +89,10 @@ export default function CampaignsPage() {
           </Card>
         ) : (
           <div className="space-y-4">
-            {campaigns.map((c: any) => (
+            {[...campaigns].sort((a, b) => {
+              const av = a[sortKey] || 0, bv = b[sortKey] || 0;
+              return sortDir === "desc" ? bv - av : av - bv;
+            }).map((c: any) => (
               <Card key={c.id || c.campaign_id}>
                 <CardContent className="p-5">
                   <div className="flex items-start justify-between">
