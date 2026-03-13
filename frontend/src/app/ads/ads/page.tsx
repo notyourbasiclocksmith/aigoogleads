@@ -6,7 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
-import { Pause, Play, Trophy, AlertTriangle, Loader2 } from "lucide-react";
+import { Pause, Play, Trophy, AlertTriangle, Loader2, ExternalLink, Eye } from "lucide-react";
 
 export default function AdPerformancePage() {
   const [ads, setAds] = useState<any[]>([]);
@@ -98,22 +98,63 @@ export default function AdPerformancePage() {
 
                       {/* Headlines */}
                       {ad.headlines && ad.headlines.length > 0 && (
-                        <div className="mb-2">
-                          <p className="text-sm font-medium text-blue-700">
-                            {ad.headlines.slice(0, 3).join(" | ")}
-                          </p>
+                        <div className="mb-1">
+                          {ad.final_urls && ad.final_urls.length > 0 ? (
+                            <a
+                              href={ad.final_urls[0]}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-sm font-medium text-blue-700 hover:underline hover:text-blue-900"
+                            >
+                              {ad.headlines.slice(0, 3).join(" | ")}
+                            </a>
+                          ) : (
+                            <p className="text-sm font-medium text-blue-700">
+                              {ad.headlines.slice(0, 3).join(" | ")}
+                            </p>
+                          )}
                         </div>
                       )}
 
                       {/* Descriptions */}
                       {ad.descriptions && ad.descriptions.length > 0 && (
-                        <p className="text-sm text-slate-600 mb-3">{ad.descriptions[0]}</p>
+                        <p className="text-sm text-slate-600 mb-1">{ad.descriptions[0]}</p>
                       )}
 
                       {/* Final URL */}
                       {ad.final_urls && ad.final_urls.length > 0 && (
-                        <p className="text-xs text-green-700 mb-3">{ad.final_urls[0]}</p>
+                        <a
+                          href={ad.final_urls[0]}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-green-700 hover:text-green-900 hover:underline inline-flex items-center gap-1 mb-3"
+                        >
+                          {ad.final_urls[0]}
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
                       )}
+
+                      {/* Action links */}
+                      <div className="flex items-center gap-3 mb-3">
+                        {ad.final_urls && ad.final_urls.length > 0 && (
+                          <a
+                            href={ad.final_urls[0]}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-800 hover:underline"
+                          >
+                            <Eye className="w-3 h-3" /> Preview Landing Page
+                          </a>
+                        )}
+                        <a
+                          href={`https://ads.google.com/aw/ads/versions?adId=${ad.ad_id}&adGroupId=${ad.ad_group_id}&campaignId=${ad.campaign_id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-xs font-medium text-slate-600 hover:text-slate-800 hover:underline"
+                        >
+                          <ExternalLink className="w-3 h-3" /> View in Google Ads
+                        </a>
+                      </div>
 
                       {/* Metrics */}
                       <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
