@@ -12,6 +12,7 @@ import {
   Eye, PhoneCall, AlertTriangle, Zap, ArrowRight, Calendar,
   Lightbulb, Target, CheckCircle2, Brain, Shield, Play,
   Loader2, Banknote, XCircle, Flame, BarChart3, Star,
+  ArrowUp, ArrowDown, ArrowUpDown,
 } from "lucide-react";
 import { HelpTip, PageInfo } from "@/components/ui/help-tip";
 import {
@@ -64,9 +65,13 @@ const DATE_RANGES = [
   { label: "7d", value: 7 },
   { label: "14d", value: 14 },
   { label: "30d", value: 30 },
-  { label: "60d", value: 60 },
-  { label: "90d", value: 90 },
+  { label: "3mo", value: 90 },
+  { label: "6mo", value: 180 },
+  { label: "All", value: 0 },
 ];
+
+type CampSortKey = "clicks" | "cost" | "conversions" | "cpa";
+type CampSortDir = "asc" | "desc";
 
 const MODE_LABELS: Record<string, { label: string; color: string; bg: string }> = {
   suggest: { label: "Suggest Only", color: "text-slate-600", bg: "bg-slate-100" },
@@ -87,6 +92,8 @@ export default function DashboardPage() {
   const [chartMetric, setChartMetric] = useState<"clicks" | "cost" | "conversions">("clicks");
   const [scanning, setScanning] = useState(false);
   const [scanStatus, setScanStatus] = useState("");
+  const [campSortKey, setCampSortKey] = useState<CampSortKey>("clicks");
+  const [campSortDir, setCampSortDir] = useState<CampSortDir>("desc");
 
   useEffect(() => {
     loadData();
@@ -99,7 +106,7 @@ export default function DashboardPage() {
         api.get(`/api/dashboard/kpis?days=${days}`).catch(() => null),
         api.get(`/api/dashboard/health-check?days=${days}`).catch(() => null),
         api.get("/api/dashboard/alerts").catch(() => []),
-        api.get("/api/dashboard/campaigns").catch(() => []),
+        api.get(`/api/dashboard/campaigns?days=${days}`).catch(() => []),
         api.get(`/api/dashboard/trends?days=${days}`).catch(() => []),
         api.get("/api/dashboard/campaign-summary").catch(() => null),
         api.get("/api/ads/google-recommendations?status=pending").catch(() => []),
@@ -665,14 +672,42 @@ export default function DashboardPage() {
                     <tr className="border-b border-slate-100">
                       <th className="pb-3 text-left font-medium text-slate-400">Campaign</th>
                       <th className="pb-3 text-left font-medium text-slate-400">Status</th>
-                      <th className="pb-3 text-right font-medium text-slate-400">Clicks</th>
-                      <th className="pb-3 text-right font-medium text-slate-400">Cost</th>
-                      <th className="pb-3 text-right font-medium text-slate-400">Conv.</th>
-                      <th className="pb-3 text-right font-medium text-slate-400">CPA</th>
+                      {([
+                        { key: "clicks" as CampSortKey, label: "Clicks" },
+                        { key: "cost" as CampSortKey, label: "Cost" },
+                        { key: "conversions" as CampSortKey, label: "Conv." },
+                        { key: "cpa" as CampSortKey, label: "CPA" },
+                      ]).map((col) => (
+                        <th
+                          key={col.key}
+                          className="pb-3 text-right font-medium text-slate-400 cursor-pointer hover:text-slate-600 select-none"
+                          onClick={() => {
+                            if (campSortKey === col.key) {
+                              setCampSortDir(campSortDir === "desc" ? "asc" : "desc");
+                            } else {
+                              setCampSortKey(col.key);
+                              setCampSortDir("desc");
+                            }
+                          }}
+                        >
+                          <span className="inline-flex items-center gap-1 justify-end">
+                            {col.label}
+                            {campSortKey === col.key ? (
+                              campSortDir === "desc" ? <ArrowDown className="w-3 h-3" /> : <ArrowUp className="w-3 h-3" />
+                            ) : (
+                              <ArrowUpDown className="w-3 h-3 opacity-30" />
+                            )}
+                          </span>
+                        </th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {campaigns.map((c: any) => (
+                    {[...campaigns].sort((a: any, b: any) => {
+                      const av = a[campSortKey] || 0;
+                      const bv = b[campSortKey] || 0;
+                      return campSortDir === "desc" ? bv - av : av - bv;
+                    }).map((c: any) => (
                       <tr key={c.campaign_id || c.name} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/50 cursor-pointer transition-colors"
                         onClick={() => c.id && (window.location.href = `/ads/campaigns/${c.id}`)}>
                         <td className="py-3 font-medium text-slate-800">{c.name}</td>

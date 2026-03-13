@@ -360,10 +360,11 @@ async def get_health_check(
 
 @router.get("/campaigns")
 async def get_dashboard_campaigns(
+    days: int = 30,
     user: CurrentUser = Depends(require_tenant),
     db: AsyncSession = Depends(get_db),
 ):
-    start_date = date.today() - timedelta(days=30)
+    start_date = date.today() - timedelta(days=days) if days > 0 else None
     result = await db.execute(
         select(Campaign).where(Campaign.tenant_id == user.tenant_id).limit(20)
     )
@@ -371,20 +372,20 @@ async def get_dashboard_campaigns(
 
     campaign_data = []
     for c in campaigns:
+        filters = [
+            PerformanceDaily.tenant_id == user.tenant_id,
+            PerformanceDaily.entity_type == "campaign",
+            PerformanceDaily.entity_id == (c.campaign_id or c.id),
+        ]
+        if start_date:
+            filters.append(PerformanceDaily.date >= start_date)
         perf = await db.execute(
             select(
                 func.sum(PerformanceDaily.impressions).label("impressions"),
                 func.sum(PerformanceDaily.clicks).label("clicks"),
                 func.sum(PerformanceDaily.cost_micros).label("cost_micros"),
                 func.sum(PerformanceDaily.conversions).label("conversions"),
-            ).where(
-                and_(
-                    PerformanceDaily.tenant_id == user.tenant_id,
-                    PerformanceDaily.entity_type == "campaign",
-                    PerformanceDaily.entity_id == (c.campaign_id or c.id),
-                    PerformanceDaily.date >= start_date,
-                )
-            )
+            ).where(and_(*filters))
         )
         row = perf.one_or_none()
         impressions = int(row.impressions or 0) if row else 0
