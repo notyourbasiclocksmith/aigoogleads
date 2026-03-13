@@ -194,7 +194,7 @@ export default function KeywordPerformancePage() {
                         { key: "roas" as SortKey, label: "ROAS", align: "text-right", color: "text-emerald-500" },
                         { key: "conversions" as SortKey, label: "Conv.", align: "text-right" },
                         { key: "cpc" as SortKey, label: "CPC", align: "text-right" },
-                      ] as const).map(({ key, label, align, color }) => (
+                      ] as Array<{key: SortKey; label: string; align: string; color?: string}>).map(({ key, label, align, color }) => (
                         <th key={key} className={`${align} px-3 py-3 font-medium ${color || "text-slate-400"}`}>
                           <button onClick={() => toggleSort(key)} className="inline-flex items-center gap-1 hover:text-blue-600 transition-colors">
                             {label} <SortIcon col={key} />
