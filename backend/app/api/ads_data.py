@@ -422,6 +422,64 @@ async def get_landing_pages(
     ]
 
 
+# ── PAGESPEED INSIGHTS ──────────────────────────────────────────
+
+@router.get("/landing-pages/pagespeed")
+async def get_pagespeed(
+    url: str = Query(...),
+    strategy: str = Query("mobile", regex="^(mobile|desktop)$"),
+    user: CurrentUser = Depends(require_tenant),
+):
+    """Fetch Google PageSpeed Insights scores for a landing page URL."""
+    import httpx
+
+    psi_url = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
+    params = {"url": url, "strategy": strategy, "category": "performance"}
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.get(psi_url, params=params)
+            if resp.status_code != 200:
+                raise HTTPException(502, f"PageSpeed API returned {resp.status_code}")
+            data = resp.json()
+
+        lighthouse = data.get("lighthouseResult", {})
+        categories = lighthouse.get("categories", {})
+        audits = lighthouse.get("audits", {})
+
+        perf_score = categories.get("performance", {}).get("score")
+        perf_score = round(perf_score * 100) if perf_score is not None else None
+
+        # Core Web Vitals
+        fcp = audits.get("first-contentful-paint", {}).get("numericValue")
+        lcp = audits.get("largest-contentful-paint", {}).get("numericValue")
+        cls_val = audits.get("cumulative-layout-shift", {}).get("numericValue")
+        tbt = audits.get("total-blocking-time", {}).get("numericValue")
+        si = audits.get("speed-index", {}).get("numericValue")
+
+        # Mobile friendly check from the loading experience
+        loading_exp = data.get("loadingExperience", {})
+        overall_category = loading_exp.get("overall_category", "NONE")
+
+        return {
+            "url": url,
+            "strategy": strategy,
+            "performance_score": perf_score,
+            "fcp_ms": round(fcp) if fcp else None,
+            "lcp_ms": round(lcp) if lcp else None,
+            "cls": round(cls_val, 3) if cls_val is not None else None,
+            "tbt_ms": round(tbt) if tbt else None,
+            "speed_index_ms": round(si) if si else None,
+            "overall_category": overall_category,
+        }
+    except httpx.TimeoutException:
+        raise HTTPException(504, "PageSpeed Insights timed out — try again")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"PageSpeed error: {str(e)}")
+
+
 # ── GOOGLE RECOMMENDATIONS ───────────────────────────────────────
 
 @router.get("/google-recommendations")
