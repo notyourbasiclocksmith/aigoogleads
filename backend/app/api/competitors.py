@@ -92,10 +92,10 @@ async def get_auction_insights(
                 "data_points": 0,
             }
         c = competitors[i.competitor_domain]
-        c["avg_impression_share"] += i.impression_share
-        c["avg_overlap_rate"] += i.overlap_rate
-        c["avg_outranking_share"] += i.outranking_share
-        c["avg_top_of_page_rate"] += i.top_of_page_rate
+        c["avg_impression_share"] += float(i.impression_share or 0)
+        c["avg_overlap_rate"] += float(i.overlap_rate or 0)
+        c["avg_outranking_share"] += float(i.outranking_share or 0)
+        c["avg_top_of_page_rate"] += float(i.top_of_page_rate or 0)
         c["data_points"] += 1
 
     for c in competitors.values():

@@ -41,11 +41,11 @@ async def get_kpis(
         )
     )
     row = result.one_or_none()
-    impressions = row.impressions or 0 if row else 0
-    clicks = row.clicks or 0 if row else 0
-    cost_micros = row.cost_micros or 0 if row else 0
-    conversions = row.conversions or 0.0 if row else 0.0
-    conv_value = row.conv_value or 0.0 if row else 0.0
+    impressions = int(row.impressions or 0) if row else 0
+    clicks = int(row.clicks or 0) if row else 0
+    cost_micros = float(row.cost_micros or 0) if row else 0.0
+    conversions = float(row.conversions or 0) if row else 0.0
+    conv_value = float(row.conv_value or 0) if row else 0.0
 
     ctr = (clicks / impressions * 100) if impressions > 0 else 0
     cpc = (cost_micros / clicks) if clicks > 0 else 0
@@ -56,7 +56,7 @@ async def get_kpis(
         "period_days": days,
         "impressions": impressions,
         "clicks": clicks,
-        "cost": cost_micros / 1_000_000,
+        "cost": round(cost_micros / 1_000_000, 2),
         "cost_micros": cost_micros,
         "conversions": round(conversions, 1),
         "conv_value": round(conv_value, 2),
@@ -96,10 +96,10 @@ async def get_trends(
     return [
         {
             "date": str(r.date),
-            "impressions": r.impressions or 0,
-            "clicks": r.clicks or 0,
-            "cost": (r.cost_micros or 0) / 1_000_000,
-            "conversions": round(r.conversions or 0, 1),
+            "impressions": int(r.impressions or 0),
+            "clicks": int(r.clicks or 0),
+            "cost": round(float(r.cost_micros or 0) / 1_000_000, 2),
+            "conversions": round(float(r.conversions or 0), 1),
         }
         for r in rows
     ]
@@ -189,8 +189,8 @@ async def get_health_check(
         )
     )
     wk = wasted_kw.one_or_none()
-    wasted_keyword_cost = round((wk.cost or 0) / 1_000_000, 2) if wk else 0
-    wasted_keyword_count = wk.count or 0 if wk else 0
+    wasted_keyword_cost = round(float(wk.cost or 0) / 1_000_000, 2) if wk else 0
+    wasted_keyword_count = int(wk.count or 0) if wk else 0
 
     # ── 2. Wasted search terms: cost > $5, 0 conversions ─────────────────
     st_sub = (
@@ -216,8 +216,8 @@ async def get_health_check(
         )
     )
     ws = wasted_st.one_or_none()
-    wasted_search_term_cost = round((ws.cost or 0) / 1_000_000, 2) if ws else 0
-    wasted_search_term_count = ws.count or 0 if ws else 0
+    wasted_search_term_cost = round(float(ws.cost or 0) / 1_000_000, 2) if ws else 0
+    wasted_search_term_count = int(ws.count or 0) if ws else 0
 
     # ── 3. Low-CTR ads: CTR < 2%, 100+ impressions ───────────────────────
     ad_sub = (
@@ -244,8 +244,8 @@ async def get_health_check(
         )
     )
     wa = wasted_ads.one_or_none()
-    wasted_ad_cost = round((wa.cost or 0) / 1_000_000, 2) if wa else 0
-    wasted_ad_count = wa.count or 0 if wa else 0
+    wasted_ad_cost = round(float(wa.cost or 0) / 1_000_000, 2) if wa else 0
+    wasted_ad_count = int(wa.count or 0) if wa else 0
 
     # ── 4. Top money keywords (by conversion_value) ──────────────────────
     money_kw = await db.execute(
@@ -270,11 +270,11 @@ async def get_health_check(
         {
             "keyword": r.keyword_text,
             "keyword_id": r.keyword_id,
-            "spend": round(r.cost / 1_000_000, 2),
-            "revenue": round(r.revenue, 2),
-            "conversions": round(r.conversions, 1),
-            "clicks": r.clicks,
-            "roas": round(r.revenue / (r.cost / 1_000_000), 2) if r.cost > 0 else 0,
+            "spend": round(float(r.cost) / 1_000_000, 2),
+            "revenue": round(float(r.revenue), 2),
+            "conversions": round(float(r.conversions), 1),
+            "clicks": int(r.clicks),
+            "roas": round(float(r.revenue) / (float(r.cost) / 1_000_000), 2) if r.cost > 0 else 0,
         }
         for r in money_kw.all()
     ]
@@ -387,10 +387,10 @@ async def get_dashboard_campaigns(
             )
         )
         row = perf.one_or_none()
-        impressions = (row.impressions or 0) if row else 0
-        clicks = (row.clicks or 0) if row else 0
-        cost_micros = (row.cost_micros or 0) if row else 0
-        conversions = (row.conversions or 0) if row else 0
+        impressions = int(row.impressions or 0) if row else 0
+        clicks = int(row.clicks or 0) if row else 0
+        cost_micros = float(row.cost_micros or 0) if row else 0.0
+        conversions = float(row.conversions or 0) if row else 0.0
 
         campaign_data.append({
             "campaign_id": c.id,

@@ -102,15 +102,15 @@ async def get_search_terms(
             "campaign_id": r.campaign_id,
             "ad_group_id": r.ad_group_id,
             "keyword_text": r.keyword_text,
-            "impressions": r.impressions,
-            "clicks": r.clicks,
-            "cost": round(r.cost_micros / 1_000_000, 2),
-            "cost_micros": r.cost_micros,
-            "conversions": round(r.conversions, 2),
-            "conversion_value": round(r.conversion_value, 2),
-            "ctr": round(r.clicks / max(r.impressions, 1) * 100, 2),
-            "cpc": round(r.cost_micros / max(r.clicks, 1) / 1_000_000, 2),
-            "cpa": round(r.cost_micros / max(r.conversions, 0.01) / 1_000_000, 2) if r.conversions > 0 else None,
+            "impressions": int(r.impressions or 0),
+            "clicks": int(r.clicks or 0),
+            "cost": round(float(r.cost_micros or 0) / 1_000_000, 2),
+            "cost_micros": int(r.cost_micros or 0),
+            "conversions": round(float(r.conversions or 0), 2),
+            "conversion_value": round(float(r.conversion_value or 0), 2),
+            "ctr": round(int(r.clicks or 0) / max(int(r.impressions or 0), 1) * 100, 2),
+            "cpc": round(float(r.cost_micros or 0) / max(int(r.clicks or 0), 1) / 1_000_000, 2),
+            "cpa": round(float(r.cost_micros or 0) / max(float(r.conversions or 0), 0.01) / 1_000_000, 2) if (r.conversions or 0) > 0 else None,
         }
         for r in rows
     ]
@@ -146,7 +146,7 @@ async def get_wasted_search_terms(
 
     result = await db.execute(query)
     rows = result.all()
-    total_waste = sum(r.cost_micros for r in rows)
+    total_waste = sum(float(r.cost_micros or 0) for r in rows)
 
     return {
         "total_waste": round(total_waste / 1_000_000, 2),
@@ -155,7 +155,7 @@ async def get_wasted_search_terms(
             {
                 "search_term": r.search_term,
                 "campaign_id": r.campaign_id,
-                "cost": round(r.cost_micros / 1_000_000, 2),
+                "cost": round(float(r.cost_micros or 0) / 1_000_000, 2),
                 "clicks": r.clicks,
             }
             for r in rows
@@ -224,13 +224,13 @@ async def get_keyword_performance(
             "match_type": r.match_type,
             "campaign_id": r.campaign_id,
             "ad_group_id": r.ad_group_id,
-            "impressions": r.impressions,
-            "clicks": r.clicks,
-            "cost": round(r.cost_micros / 1_000_000, 2),
-            "conversions": round(r.conversions, 2),
-            "conversion_value": round(r.conversion_value, 2),
-            "ctr": round(r.clicks / max(r.impressions, 1) * 100, 2),
-            "cpc": round(r.cost_micros / max(r.clicks, 1) / 1_000_000, 2),
+            "impressions": int(r.impressions or 0),
+            "clicks": int(r.clicks or 0),
+            "cost": round(float(r.cost_micros or 0) / 1_000_000, 2),
+            "conversions": round(float(r.conversions or 0), 2),
+            "conversion_value": round(float(r.conversion_value or 0), 2),
+            "ctr": round(int(r.clicks or 0) / max(int(r.impressions or 0), 1) * 100, 2),
+            "cpc": round(float(r.cost_micros or 0) / max(int(r.clicks or 0), 1) / 1_000_000, 2),
             "quality_score": r.quality_score,
         }
         for r in rows
@@ -296,13 +296,13 @@ async def get_ad_performance(
             "ad_id": r.ad_id,
             "campaign_id": r.campaign_id,
             "ad_group_id": r.ad_group_id,
-            "impressions": r.impressions,
-            "clicks": r.clicks,
-            "cost": round(r.cost_micros / 1_000_000, 2),
-            "conversions": round(r.conversions, 2),
-            "conversion_value": round(r.conversion_value, 2),
-            "ctr": round(r.clicks / max(r.impressions, 1) * 100, 2),
-            "cpc": round(r.cost_micros / max(r.clicks, 1) / 1_000_000, 2),
+            "impressions": int(r.impressions or 0),
+            "clicks": int(r.clicks or 0),
+            "cost": round(float(r.cost_micros or 0) / 1_000_000, 2),
+            "conversions": round(float(r.conversions or 0), 2),
+            "conversion_value": round(float(r.conversion_value or 0), 2),
+            "ctr": round(int(r.clicks or 0) / max(int(r.impressions or 0), 1) * 100, 2),
+            "cpc": round(float(r.cost_micros or 0) / max(int(r.clicks or 0), 1) / 1_000_000, 2),
             **(ad_details.get(r.ad_id, {})),
         }
         for r in rows
@@ -362,13 +362,13 @@ async def get_ad_group_performance(
             "ad_group_id": r.ad_group_id,
             "ad_group_name": ag_names.get(r.ad_group_id, ""),
             "campaign_id": r.campaign_id,
-            "impressions": r.impressions,
-            "clicks": r.clicks,
-            "cost": round(r.cost_micros / 1_000_000, 2),
-            "conversions": round(r.conversions, 2),
-            "conversion_value": round(r.conversion_value, 2),
-            "ctr": round(r.clicks / max(r.impressions, 1) * 100, 2),
-            "cpc": round(r.cost_micros / max(r.clicks, 1) / 1_000_000, 2),
+            "impressions": int(r.impressions or 0),
+            "clicks": int(r.clicks or 0),
+            "cost": round(float(r.cost_micros or 0) / 1_000_000, 2),
+            "conversions": round(float(r.conversions or 0), 2),
+            "conversion_value": round(float(r.conversion_value or 0), 2),
+            "ctr": round(int(r.clicks or 0) / max(int(r.impressions or 0), 1) * 100, 2),
+            "cpc": round(float(r.cost_micros or 0) / max(int(r.clicks or 0), 1) / 1_000_000, 2),
         }
         for r in rows
     ]
@@ -408,15 +408,15 @@ async def get_landing_pages(
     return [
         {
             "landing_page_url": r.landing_page_url,
-            "impressions": r.impressions,
-            "clicks": r.clicks,
-            "cost": round(r.cost_micros / 1_000_000, 2),
-            "conversions": round(r.conversions, 2),
-            "conversion_value": round(r.conversion_value, 2),
-            "ctr": round(r.clicks / max(r.impressions, 1) * 100, 2),
-            "conversion_rate": round(r.conversions / max(r.clicks, 1) * 100, 2),
-            "mobile_friendly_click_rate": round(r.mobile_friendly_click_rate, 2) if r.mobile_friendly_click_rate else None,
-            "speed_score": round(r.speed_score, 1) if r.speed_score else None,
+            "impressions": int(r.impressions or 0),
+            "clicks": int(r.clicks or 0),
+            "cost": round(float(r.cost_micros or 0) / 1_000_000, 2),
+            "conversions": round(float(r.conversions or 0), 2),
+            "conversion_value": round(float(r.conversion_value or 0), 2),
+            "ctr": round(int(r.clicks or 0) / max(int(r.impressions or 0), 1) * 100, 2),
+            "conversion_rate": round(float(r.conversions or 0) / max(int(r.clicks or 0), 1) * 100, 2),
+            "mobile_friendly_click_rate": round(float(r.mobile_friendly_click_rate), 2) if r.mobile_friendly_click_rate else None,
+            "speed_score": round(float(r.speed_score), 1) if r.speed_score else None,
         }
         for r in rows
     ]

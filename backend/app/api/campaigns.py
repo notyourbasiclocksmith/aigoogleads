@@ -57,10 +57,10 @@ async def list_campaigns(
             )
         )
         row = perf.one_or_none()
-        impressions = (row.impressions or 0) if row else 0
-        clicks = (row.clicks or 0) if row else 0
-        cost_micros = (row.cost_micros or 0) if row else 0
-        conversions = (row.conversions or 0) if row else 0
+        impressions = int(row.impressions or 0) if row else 0
+        clicks = int(row.clicks or 0) if row else 0
+        cost_micros = float(row.cost_micros or 0) if row else 0.0
+        conversions = float(row.conversions or 0) if row else 0.0
 
         campaign_data.append({
             "id": c.id,
@@ -68,7 +68,7 @@ async def list_campaigns(
             "type": c.type,
             "status": c.status,
             "objective": c.objective,
-            "budget": c.budget_micros / 1_000_000 if c.budget_micros else 0,
+            "budget": float(c.budget_micros) / 1_000_000 if c.budget_micros else 0,
             "budget_micros": c.budget_micros,
             "bidding_strategy": c.bidding_strategy,
             "is_draft": c.is_draft,
