@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
-import { Save, Shield, Bell, Users, Link2, RefreshCw, CheckCircle2, XCircle, Loader2, BarChart3, Zap, AlertTriangle, Target, ExternalLink } from "lucide-react";
+import { Save, Shield, Bell, Users, Link2, RefreshCw, CheckCircle2, XCircle, Loader2, BarChart3, Zap, AlertTriangle, Target, ExternalLink, Send } from "lucide-react";
 
 export default function SettingsPage() {
   const [profile, setProfile] = useState<any>({});
@@ -15,6 +15,7 @@ export default function SettingsPage() {
   const [accounts, setAccounts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [testEmailStatus, setTestEmailStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
   const [syncStatus, setSyncStatus] = useState<any>(null);
   const pollRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -135,6 +136,19 @@ export default function SettingsPage() {
       alert("Guardrails saved!");
     } catch (e) { console.error(e); }
     finally { setSaving(false); }
+  }
+
+  async function sendTestEmail() {
+    setTestEmailStatus("sending");
+    try {
+      await api.post("/api/settings/notifications/test");
+      setTestEmailStatus("sent");
+      setTimeout(() => setTestEmailStatus("idle"), 4000);
+    } catch (e: any) {
+      setTestEmailStatus("error");
+      alert(e?.response?.data?.detail || "Failed to send test email");
+      setTimeout(() => setTestEmailStatus("idle"), 3000);
+    }
   }
 
   if (loading) {
@@ -630,9 +644,26 @@ export default function SettingsPage() {
                 </label>
               ))}
             </div>
-            <Button onClick={saveProfile} disabled={saving}>
-              <Save className="w-4 h-4 mr-2" /> {saving ? "Saving..." : "Save Notifications"}
-            </Button>
+            <div className="flex items-center gap-3">
+              <Button onClick={saveProfile} disabled={saving}>
+                <Save className="w-4 h-4 mr-2" /> {saving ? "Saving..." : "Save Notifications"}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={sendTestEmail}
+                disabled={testEmailStatus === "sending" || !profile.notification_email}
+              >
+                {testEmailStatus === "sending" ? (
+                  <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Sending...</>
+                ) : testEmailStatus === "sent" ? (
+                  <><CheckCircle2 className="w-4 h-4 mr-2 text-green-500" /> Sent!</>
+                ) : testEmailStatus === "error" ? (
+                  <><XCircle className="w-4 h-4 mr-2 text-red-500" /> Failed</>
+                ) : (
+                  <><Send className="w-4 h-4 mr-2" /> Send Test Email</>
+                )}
+              </Button>
+            </div>
           </CardContent>
         </Card>
       </div>
