@@ -652,6 +652,64 @@ async def dismiss_recommendation(
         raise HTTPException(500, api_result.get("error", "Failed to dismiss"))
 
 
+# ── SYNC GOOGLE RECOMMENDATIONS MANUALLY ─────────────────────────
+
+@router.post("/google-recommendations/sync")
+async def sync_google_recommendations(
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually fetch Google recommendations from the API and upsert into DB."""
+    from datetime import datetime, timezone
+    import structlog
+    logger = structlog.get_logger()
+
+    client, integration = await _get_client(db, user.tenant_id)
+
+    try:
+        g_recs = await client.get_google_recommendations()
+    except Exception as e:
+        logger.error("Google recommendations fetch failed", error=str(e))
+        return {"status": "error", "error": str(e), "synced": 0}
+
+    synced = 0
+    for gr in g_recs:
+        existing_gr = await db.execute(
+            select(GoogleRecommendation).where(
+                GoogleRecommendation.recommendation_resource_name == gr["resource_name"]
+            )
+        )
+        grobj = existing_gr.scalar_one_or_none()
+        if not grobj:
+            grobj = GoogleRecommendation(
+                tenant_id=user.tenant_id,
+                google_customer_id=integration.customer_id,
+                recommendation_resource_name=gr["resource_name"],
+                type=gr["type"],
+                campaign_id=gr.get("campaign_id"),
+                campaign_name=gr.get("campaign_name", ""),
+                ad_group_id=gr.get("ad_group_id"),
+                impact_base_metrics=gr.get("impact_base", {}),
+                impact_potential_metrics=gr.get("impact_potential", {}),
+                details=gr.get("details", {}),
+            )
+            db.add(grobj)
+        else:
+            grobj.impact_base_metrics = gr.get("impact_base", {})
+            grobj.impact_potential_metrics = gr.get("impact_potential", {})
+            grobj.details = gr.get("details", {})
+            grobj.synced_at = datetime.now(timezone.utc)
+        synced += 1
+
+    await db.flush()
+    return {
+        "status": "ok",
+        "synced": synced,
+        "total_from_google": len(g_recs),
+        "types": list(set(gr["type"] for gr in g_recs)) if g_recs else [],
+    }
+
+
 # ── KEYWORD RESEARCH ─────────────────────────────────────────────
 
 class KeywordIdeasRequest(BaseModel):

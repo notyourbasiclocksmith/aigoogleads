@@ -6,7 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
-import { Lightbulb, Check, X, Loader2, TrendingUp, DollarSign, Target } from "lucide-react";
+import { Lightbulb, Check, X, Loader2, TrendingUp, DollarSign, Target, RefreshCw } from "lucide-react";
 import { HelpTip, PageInfo } from "@/components/ui/help-tip";
 
 const TYPE_LABELS: Record<string, { label: string; color: string; icon: string }> = {
@@ -25,6 +25,8 @@ export default function GoogleRecommendationsPage() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("pending");
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<any>(null);
 
   useEffect(() => {
     loadData();
@@ -40,6 +42,20 @@ export default function GoogleRecommendationsPage() {
       console.error(e);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function syncFromGoogle() {
+    setSyncing(true);
+    setSyncResult(null);
+    try {
+      const result = await api.post("/api/ads/google-recommendations/sync");
+      setSyncResult(result);
+      await loadData();
+    } catch (e: any) {
+      setSyncResult({ status: "error", error: e?.message || "Sync failed" });
+    } finally {
+      setSyncing(false);
     }
   }
 
@@ -79,14 +95,32 @@ export default function GoogleRecommendationsPage() {
               Recommendations from Google to improve your account performance
             </p>
           </div>
-          {pendingCount > 0 && (
-            <Badge className="bg-blue-100 text-blue-800 text-sm px-3 py-1">
-              {pendingCount} pending
-            </Badge>
-          )}
+          <div className="flex items-center gap-3">
+            {pendingCount > 0 && (
+              <Badge className="bg-blue-100 text-blue-800 text-sm px-3 py-1">
+                {pendingCount} pending
+              </Badge>
+            )}
+            <Button variant="outline" size="sm" onClick={syncFromGoogle} disabled={syncing}>
+              <RefreshCw className={`w-4 h-4 mr-1 ${syncing ? "animate-spin" : ""}`} />
+              {syncing ? "Syncing..." : "Sync from Google"}
+            </Button>
+          </div>
         </div>
 
         <PageInfo term="page_recommendations" />
+
+        {syncResult && (
+          <div className={`p-3 rounded-lg text-sm ${
+            syncResult.status === "error" ? "bg-red-50 text-red-800 border border-red-200" : "bg-green-50 text-green-800 border border-green-200"
+          }`}>
+            {syncResult.status === "error" ? (
+              <p><strong>Sync error:</strong> {syncResult.error}</p>
+            ) : (
+              <p><strong>Synced {syncResult.synced} recommendations</strong> from Google Ads{syncResult.types?.length > 0 && ` (${syncResult.types.join(", ")})`}</p>
+            )}
+          </div>
+        )}
 
         {/* Filters */}
         <div className="flex gap-2">
