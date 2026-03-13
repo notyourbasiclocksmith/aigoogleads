@@ -174,9 +174,9 @@ async def _analyze_business_async(tenant_id: str):
 
 
 @celery_app.task(name="app.jobs.tasks.sync_ads_account_task")
-def sync_ads_account_task(tenant_id: str, integration_id: str):
+def sync_ads_account_task(tenant_id: str, integration_id: str, full_sync: bool = True):
     import asyncio
-    asyncio.run(_sync_ads_account_async(tenant_id, integration_id))
+    asyncio.run(_sync_ads_account_async(tenant_id, integration_id, full_sync=full_sync))
 
 
 async def _update_sync_progress(db, integration, status: str, message: str, progress: int, **kwargs):
@@ -190,7 +190,7 @@ async def _update_sync_progress(db, integration, status: str, message: str, prog
     await db.commit()
 
 
-async def _sync_ads_account_async(tenant_id: str, integration_id: str):
+async def _sync_ads_account_async(tenant_id: str, integration_id: str, full_sync: bool = True):
     from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
     from app.models.integration_google_ads import IntegrationGoogleAds
     from app.models.campaign import Campaign
@@ -282,8 +282,13 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
             except Exception as mcc_err:
                 logger.warning("Could not auto-detect manager account", error=str(mcc_err))
 
+            # Determine sync mode and date range
+            sync_mode = "full" if full_sync else "light"
+            date_range = "LAST_30_DAYS" if full_sync else "LAST_7_DAYS"
+            logger.info("Sync mode", mode=sync_mode, date_range=date_range, tenant_id=tenant_id)
+
             # Step 2: Account info
-            await _update_sync_progress(db, integration, "syncing", "Fetching account info...", 10)
+            await _update_sync_progress(db, integration, "syncing", f"Fetching account info ({sync_mode} sync)...", 10)
             account_info = await client.get_account_info()
             if account_info.get("name"):
                 integration.account_name = account_info["name"]
@@ -330,10 +335,13 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
             )
 
             # Step 4: Ad groups, keywords, and ads for each campaign
+            # (skipped during lightweight hourly sync — structure rarely changes)
             total_ag = 0
             total_kw = 0
             total_ad = 0
-            for idx, c in enumerate(campaigns):
+            if not full_sync:
+                await _update_sync_progress(db, integration, "syncing", "Lightweight sync — skipping structure pull", 50)
+            for idx, c in enumerate(campaigns if full_sync else []):
                 camp_uuid = google_id_to_uuid.get(c["campaign_id"])
                 if not camp_uuid:
                     continue
@@ -435,10 +443,14 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
                 55,
             )
 
-            # Step 5: Conversion actions
-            await _update_sync_progress(db, integration, "syncing", "Pulling conversion actions...", 60)
-            conv_actions = await client.get_conversion_actions()
+            # Step 5: Conversion actions (skipped during lightweight sync)
             conv_count = 0
+            if full_sync:
+                await _update_sync_progress(db, integration, "syncing", "Pulling conversion actions...", 60)
+                conv_actions = await client.get_conversion_actions()
+            else:
+                await _update_sync_progress(db, integration, "syncing", "Lightweight sync — skipping conversion actions", 60)
+                conv_actions = []
             for ca in conv_actions:
                 existing = await db.execute(
                     select(Conversion).where(
@@ -467,8 +479,8 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
             )
 
             # Step 6: Performance metrics — upsert by (tenant, campaign_id, date)
-            await _update_sync_progress(db, integration, "syncing", "Pulling 30-day performance data...", 75)
-            metrics = await client.get_performance_metrics("LAST_30_DAYS")
+            await _update_sync_progress(db, integration, "syncing", f"Pulling {date_range} performance data...", 75)
+            metrics = await client.get_performance_metrics(date_range)
             metrics_count = 0
             for m in metrics:
                 # Use google campaign_id as entity_id so dashboard joins work
@@ -503,7 +515,7 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
             await _update_sync_progress(db, integration, "syncing", "Pulling keyword performance...", 78)
             kw_perf_count = 0
             try:
-                kw_metrics = await client.get_keyword_performance("LAST_30_DAYS")
+                kw_metrics = await client.get_keyword_performance(date_range)
                 for km in kw_metrics:
                     existing_kp = await db.execute(
                         select(KeywordPerformanceDaily).where(
@@ -542,7 +554,7 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
             await _update_sync_progress(db, integration, "syncing", "Pulling ad performance...", 82)
             ad_perf_count = 0
             try:
-                ad_metrics = await client.get_ad_performance("LAST_30_DAYS")
+                ad_metrics = await client.get_ad_performance(date_range)
                 for am in ad_metrics:
                     existing_ap = await db.execute(
                         select(AdPerformanceDaily).where(
@@ -578,7 +590,7 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
             await _update_sync_progress(db, integration, "syncing", "Pulling ad group performance...", 85)
             ag_perf_count = 0
             try:
-                ag_metrics = await client.get_ad_group_performance("LAST_30_DAYS")
+                ag_metrics = await client.get_ad_group_performance(date_range)
                 for agm in ag_metrics:
                     existing_agp = await db.execute(
                         select(AdGroupPerformanceDaily).where(
@@ -613,7 +625,7 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
             await _update_sync_progress(db, integration, "syncing", "Pulling search terms...", 88)
             st_count = 0
             try:
-                search_terms = await client.get_search_terms("LAST_30_DAYS")
+                search_terms = await client.get_search_terms(date_range)
                 for st in search_terms:
                     existing_st = await db.execute(
                         select(SearchTermPerformance).where(
@@ -652,7 +664,7 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
             await _update_sync_progress(db, integration, "syncing", "Pulling landing page data...", 91)
             lp_count = 0
             try:
-                landing_pages = await client.get_landing_page_performance("LAST_30_DAYS")
+                landing_pages = await client.get_landing_page_performance(date_range)
                 for lp in landing_pages:
                     existing_lp = await db.execute(
                         select(LandingPagePerformance).where(
@@ -685,11 +697,14 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
             except Exception as lp_err:
                 logger.warning("Landing page sync failed", error=str(lp_err))
 
-            # Step 12: Auction insights
-            await _update_sync_progress(db, integration, "syncing", "Pulling auction insights...", 94)
+            # Step 12: Auction insights (skipped during lightweight sync — heavy + changes daily)
             ai_count = 0
+            if full_sync:
+                await _update_sync_progress(db, integration, "syncing", "Pulling auction insights...", 94)
+            else:
+                await _update_sync_progress(db, integration, "syncing", "Lightweight sync — skipping auction insights", 94)
             try:
-                for c in campaigns:
+                for c in (campaigns if full_sync else []):
                     insights = await client.get_auction_insights(c["campaign_id"])
                     camp_uuid = google_id_to_uuid.get(c["campaign_id"])
                     for ins in insights:
@@ -725,11 +740,19 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
             except Exception as ai_err:
                 logger.warning("Auction insights sync failed", error=str(ai_err))
 
-            # Step 13: Google recommendations
-            await _update_sync_progress(db, integration, "syncing", "Pulling Google recommendations...", 97)
+            # Step 13: Google recommendations (skipped during lightweight sync)
             rec_count = 0
+            if full_sync:
+                await _update_sync_progress(db, integration, "syncing", "Pulling Google recommendations...", 97)
+                try:
+                    g_recs = await client.get_google_recommendations()
+                except Exception as rec_err:
+                    g_recs = []
+                    logger.warning("Google recommendations sync failed", error=str(rec_err))
+            else:
+                await _update_sync_progress(db, integration, "syncing", "Lightweight sync — skipping recommendations", 97)
+                g_recs = []
             try:
-                g_recs = await client.get_google_recommendations()
                 for gr in g_recs:
                     existing_gr = await db.execute(
                         select(GoogleRecommendation).where(
@@ -757,8 +780,8 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
                         grobj.synced_at = datetime.now(timezone.utc)
                     rec_count += 1
                 await db.flush()
-            except Exception as rec_err:
-                logger.warning("Google recommendations sync failed", error=str(rec_err))
+            except Exception as rec_upsert_err:
+                logger.warning("Google recommendations upsert failed", error=str(rec_upsert_err))
 
             # Step 14: LSA leads + conversations
             await _update_sync_progress(db, integration, "syncing", "Pulling Local Services leads...", 98)
@@ -1357,13 +1380,28 @@ async def _sync_all_hourly():
         )
         integrations = result.scalars().all()
         for integration in integrations:
-            sync_ads_account_task.delay(integration.tenant_id, integration.id)
-        logger.info("Hourly sync dispatched", count=len(integrations))
+            sync_ads_account_task.delay(integration.tenant_id, integration.id, full_sync=False)
+        logger.info("Hourly lightweight sync dispatched", count=len(integrations))
 
 
 @celery_app.task(name="app.jobs.tasks.sync_all_ads_daily")
 def sync_all_ads_daily():
-    sync_all_ads_hourly()
+    import asyncio
+    asyncio.run(_sync_all_daily())
+
+
+async def _sync_all_daily():
+    from app.core.database import async_session_factory
+    from app.models.integration_google_ads import IntegrationGoogleAds
+
+    async with async_session_factory() as db:
+        result = await db.execute(
+            select(IntegrationGoogleAds).where(IntegrationGoogleAds.is_active == True)
+        )
+        integrations = result.scalars().all()
+        for integration in integrations:
+            sync_ads_account_task.delay(integration.tenant_id, integration.id, full_sync=True)
+        logger.info("Daily full sync dispatched", count=len(integrations))
 
 
 @celery_app.task(name="app.jobs.tasks.run_all_diagnostics")
