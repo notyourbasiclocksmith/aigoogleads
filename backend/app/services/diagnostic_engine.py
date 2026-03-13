@@ -11,19 +11,24 @@ Daily diagnosis tasks:
 - Time-of-day/day-of-week inefficiency
 - Landing page mismatch
 - Conversion tracking health
+- AI-powered root cause correlation
 """
+import json
 from datetime import date, timedelta
 from typing import Dict, Any, List, Optional
+from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_
 import structlog
 
+from app.core.config import settings
 from app.models.performance_daily import PerformanceDaily
 from app.models.campaign import Campaign
 from app.models.conversion import Conversion
 from app.models.tenant import Tenant
 from app.models.alert import Alert
 from app.models.recommendation import Recommendation
+from app.models.business_profile import BusinessProfile
 
 logger = structlog.get_logger()
 
@@ -33,6 +38,7 @@ class DiagnosticReport:
         self.issues: List[Dict[str, Any]] = []
         self.alerts: List[Dict[str, Any]] = []
         self.recommendations: List[Dict[str, Any]] = []
+        self.ai_correlation: Optional[Dict[str, Any]] = None
 
     def add_issue(self, category: str, severity: str, title: str, description: str, root_cause: str, confidence: float):
         self.issues.append({
@@ -78,6 +84,9 @@ class DiagnosticEngine:
         await self._check_cpa_spike(report)
         await self._check_conversion_tracking_health(report)
         await self._check_low_performers(report)
+
+        # AI correlation pass — GPT analyzes all issues together for root cause
+        await self._ai_correlate_issues(report)
 
         await self._persist_alerts(report)
         await self._persist_recommendations(report)
@@ -256,6 +265,154 @@ class DiagnosticEngine:
                 risk="low",
                 diff={"action": "pause_keywords", "keyword_ids": [kw.entity_id for kw in waste_keywords[:20]]},
             )
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  AI-Powered Root Cause Correlation
+    # ══════════════════════════════════════════════════════════════════════
+
+    async def _call_openai_json(self, system: str, user_prompt: str, temperature: float = 0.4, max_tokens: int = 2000) -> Optional[Dict]:
+        """Call OpenAI and parse JSON response. Returns None on any failure."""
+        if not settings.OPENAI_API_KEY:
+            return None
+        try:
+            client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+            resp = await client.chat.completions.create(
+                model=getattr(settings, "OPENAI_MODEL", "gpt-4o-mini"),
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            content = resp.choices[0].message.content
+            if not content:
+                return None
+            return json.loads(content)
+        except Exception as e:
+            logger.error("OpenAI call failed in diagnostic_engine", error=str(e))
+            return None
+
+    async def _get_business_context(self) -> Dict[str, Any]:
+        """Get business profile context for AI diagnostics."""
+        result = await self.db.execute(
+            select(BusinessProfile).where(BusinessProfile.tenant_id == self.tenant_id)
+        )
+        profile = result.scalar_one_or_none()
+        if not profile:
+            return {}
+        return {
+            "business_name": getattr(profile, "business_name", ""),
+            "industry": (profile.industry_classification or "general").lower(),
+            "conversion_goal": profile.primary_conversion_goal or "calls",
+        }
+
+    async def _ai_correlate_issues(self, report: DiagnosticReport):
+        """
+        Use GPT to correlate all detected issues, identify the root cause chain,
+        and add AI-enhanced insights to the report.
+        """
+        if not report.issues and not report.alerts and not report.recommendations:
+            return  # Nothing to analyze
+
+        biz = await self._get_business_context()
+        baseline = await self._get_period_metrics(self.BASELINE_WINDOW_DAYS)
+        recent = await self._get_period_metrics(self.RECENT_WINDOW_DAYS)
+
+        system = """You are a senior Google Ads performance diagnostician. You specialize in
+correlating multiple performance signals to identify the TRUE root cause of account problems.
+
+Business owners see symptoms (CPA up, CTR down) but YOU find the underlying cause:
+- Is the CPA spike caused by a CTR drop, or by search term leakage, or by a competitor entering the auction?
+- Is the CTR drop caused by ad fatigue, seasonal changes, or irrelevant traffic?
+- Are multiple issues actually ONE root cause manifesting in different metrics?
+
+You think in cause-and-effect chains and prioritize by business impact.
+You respond ONLY with valid JSON."""
+
+        user_msg = f"""Analyze these diagnostic findings for a {biz.get('industry', 'local service')} business
+(primary goal: {biz.get('conversion_goal', 'calls')}).
+
+PERFORMANCE CONTEXT:
+- Baseline (30d): {json.dumps(baseline)}
+- Recent (7d): {json.dumps(recent)}
+
+ISSUES DETECTED ({len(report.issues)}):
+{json.dumps(report.issues[:15], indent=2)}
+
+ALERTS FIRED ({len(report.alerts)}):
+{json.dumps(report.alerts[:10], indent=2)}
+
+RECOMMENDATIONS GENERATED ({len(report.recommendations)}):
+{json.dumps(report.recommendations[:10], indent=2)}
+
+INSTRUCTIONS:
+1. Correlate all the signals above. Are multiple issues connected to ONE root cause?
+2. Identify the root cause chain (e.g., "Search term leakage → higher CPC → higher CPA → budget exhaustion")
+3. Rank issues by actual business impact (lost revenue, wasted spend)
+4. For each root cause, provide a specific, actionable fix — not a vague suggestion
+5. Estimate the financial impact of fixing each root cause
+
+Return JSON:
+{{
+  "root_causes": [
+    {{
+      "cause": "The primary root cause in plain English",
+      "evidence": "What data points support this diagnosis",
+      "connected_issues": ["issue title 1", "issue title 2"],
+      "business_impact": "Estimated dollar impact per month",
+      "fix": "Specific action to take — be precise",
+      "fix_urgency": "immediate" | "this_week" | "this_month",
+      "confidence": 0.0-1.0
+    }}
+  ],
+  "correlation_narrative": "2-3 sentence plain-English explanation of what's happening in this account and why",
+  "priority_action": "The single most important thing to do RIGHT NOW",
+  "account_health": "healthy" | "needs_attention" | "underperforming" | "critical",
+  "hidden_patterns": ["Any patterns the rules might have missed — things that aren't obvious from individual metrics"]
+}}"""
+
+        result = await self._call_openai_json(system, user_msg, temperature=0.3, max_tokens=2000)
+        if not result:
+            logger.warning("AI diagnostic correlation failed — skipping")
+            return
+
+        # Inject AI correlation into report
+        report.ai_correlation = result
+        report.ai_correlation["_ai_generated"] = True
+
+        # Add AI-discovered root causes as high-priority issues
+        for rc in result.get("root_causes", []):
+            if rc.get("confidence", 0) >= 0.6:
+                report.add_issue(
+                    category="ai_root_cause",
+                    severity="high" if rc.get("fix_urgency") == "immediate" else "medium",
+                    title=f"[AI] Root cause: {rc['cause'][:100]}",
+                    description=rc.get("evidence", ""),
+                    root_cause=rc.get("fix", ""),
+                    confidence=rc.get("confidence", 0.5),
+                )
+
+        # Add AI priority action as a recommendation if not already covered
+        priority = result.get("priority_action")
+        if priority:
+            report.add_recommendation(
+                category="ai_priority",
+                severity="high",
+                title=f"[AI Priority] {priority[:120]}",
+                rationale=result.get("correlation_narrative", "AI-identified priority action based on cross-signal analysis."),
+                expected_impact={"source": "ai_correlation", "confidence": "high"},
+                risk="low",
+                diff={"action": "ai_recommended", "description": priority},
+            )
+
+        logger.info(
+            "AI diagnostic correlation complete",
+            tenant_id=self.tenant_id,
+            root_causes=len(result.get("root_causes", [])),
+            health=result.get("account_health"),
+        )
 
     async def _persist_alerts(self, report: DiagnosticReport):
         for alert_data in report.alerts:

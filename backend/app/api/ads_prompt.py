@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+import json as json_lib
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
@@ -48,6 +50,51 @@ async def generate_campaign(
     )
 
     return draft
+
+
+@router.post("/generate-stream")
+async def generate_campaign_stream(
+    req: PromptRequest,
+    user: CurrentUser = Depends(require_analyst),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    SSE endpoint that streams step-by-step progress events during campaign generation.
+    Each event is a JSON object with: step, status, message, and optional detail.
+    The final event has step="complete" with the full draft in detail.
+    """
+    result = await db.execute(
+        select(BusinessProfile).where(BusinessProfile.tenant_id == user.tenant_id)
+    )
+    profile = result.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=400, detail="Complete business profile setup first")
+
+    from app.services.campaign_generator import CampaignGeneratorService
+    generator = CampaignGeneratorService(db, user.tenant_id)
+
+    async def event_stream():
+        try:
+            async for event in generator.generate_from_prompt_streaming(
+                prompt=req.prompt,
+                business_profile=profile,
+                google_customer_id=req.google_customer_id,
+            ):
+                data = json_lib.dumps(event, default=str)
+                yield f"data: {data}\n\n"
+        except Exception as e:
+            error_event = json_lib.dumps({"step": "error", "status": "error", "message": str(e)})
+            yield f"data: {error_event}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/context")

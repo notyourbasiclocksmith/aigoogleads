@@ -49,7 +49,7 @@ async def generate_copy(
 
     from app.services.creative_service import CreativeService
     svc = CreativeService(profile)
-    variants = svc.generate_ad_copy(
+    variants = await svc.generate_ad_copy(
         service=req.service,
         location=req.location,
         offer=req.offer,

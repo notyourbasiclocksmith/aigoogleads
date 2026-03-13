@@ -8,21 +8,28 @@ Pipeline:
 4) Pull performance learnings from same-industry tenants
 5) Determine best campaign type + bidding strategy with reasoning
 6) Build TIGHTLY themed ad groups (SKAGs / close variants) — NOT one big ad group
-7) Write psychology-driven ad copy per ad group: urgency, social proof, value props, CTAs
+7) Use OpenAI to write psychology-driven ad copy per ad group
 8) Generate expert-level extensions: sitelinks, callouts, structured snippets, call, location, price
 9) Set smart budget, bid strategy, scheduling, device bids, location bid adjustments
 10) Return full preview with expert reasoning for every decision
 """
 import uuid
+import json
+import structlog
 from typing import Optional, Dict, Any, List
+from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.models.business_profile import BusinessProfile
 from app.models.campaign import Campaign
 from app.models.playbook import Playbook
 from app.models.learning import Learning
 from app.models.competitor_profile import CompetitorProfile
+from app.models.tenant import Tenant
+
+logger = structlog.get_logger()
 
 
 class CampaignGeneratorService:
@@ -38,23 +45,39 @@ class CampaignGeneratorService:
     ) -> Dict[str, Any]:
         industry = (business_profile.industry_classification or "general").lower()
 
-        # --- Research Phase ---
-        intent = self._parse_intent(prompt, business_profile)
-        campaign_type = self._determine_campaign_type(intent, business_profile)
+        # --- Step 1: AI Intent Parsing ---
+        intent = await self._parse_intent_ai(prompt, business_profile)
+        campaign_type = intent.get("campaign_type") or self._determine_campaign_type(intent, business_profile)
+
+        # --- Step 2: AI Overlap Analysis ---
         existing = await self._get_existing_campaigns()
+        overlap_analysis = await self._analyze_overlap_ai(existing, intent)
+
+        # --- Step 3: AI Strategy Synthesis ---
         playbook = await self._get_playbook(industry, intent.get("goal"))
         learnings = await self._get_relevant_learnings(industry)
+        strategy_insights = await self._synthesize_strategy_ai(industry, intent, playbook, learnings, business_profile)
+
+        # --- Step 4: AI Competitor Intelligence ---
         competitors = await self._get_competitor_intelligence()
+        competitor_insights = await self._analyze_competitors_ai(competitors, intent, industry, business_profile)
 
-        # --- Strategy Phase ---
-        keyword_strategy = self._build_keyword_strategy(intent, industry, learnings, playbook)
-        bid_strategy = self._determine_bid_strategy(campaign_type, intent, business_profile)
-        budget = self._calculate_budget(business_profile, playbook, intent)
-        scheduling = self._build_schedule(industry, intent)
-        device_bids = self._build_device_bids(industry, intent)
-        competitor_insights = self._extract_competitor_insights(competitors, intent)
+        # --- Step 5: AI Keyword Strategy ---
+        keyword_strategy = await self._build_keyword_strategy_ai(intent, industry, learnings, playbook, business_profile)
 
-        draft = self._build_campaign_draft(
+        # --- Step 6: AI Budget, Bidding & Schedule ---
+        bbs = await self._recommend_budget_bidding_schedule_ai(
+            industry=industry, intent=intent, profile=business_profile,
+            campaign_type=campaign_type, competitor_insights=competitor_insights,
+            strategy_insights=strategy_insights,
+        )
+        budget = bbs.get("budget", {})
+        bid_strategy = bbs.get("bidding", {})
+        scheduling = bbs.get("schedule", {})
+        device_bids = bbs.get("device_bids", {})
+
+        # --- Step 7: Build Campaign Draft (AI Ad Copy) ---
+        draft = await self._build_campaign_draft(
             intent=intent,
             campaign_type=campaign_type,
             business_profile=business_profile,
@@ -69,7 +92,213 @@ class CampaignGeneratorService:
             competitor_insights=competitor_insights,
             google_customer_id=google_customer_id,
         )
+
+        # Inject AI analysis into draft
+        draft["ai_analysis"] = {
+            "intent": {k: v for k, v in intent.items() if k != "_ai_generated"},
+            "overlap_analysis": overlap_analysis,
+            "strategy_insights": strategy_insights,
+            "competitor_insights": competitor_insights,
+            "keyword_rationale": keyword_strategy.get("keyword_rationale"),
+        }
         return draft
+
+    async def generate_from_prompt_streaming(
+        self,
+        prompt: str,
+        business_profile: BusinessProfile,
+        google_customer_id: Optional[str] = None,
+    ):
+        """
+        Async generator that yields progress events during campaign generation.
+        ALL steps are AI-powered via OpenAI with rule-based fallbacks.
+        Each yield is a dict: {"step": str, "status": str, "message": str, "detail": any}
+        The final yield has step="complete" and detail=full draft.
+        """
+        industry = (business_profile.industry_classification or "general").lower()
+
+        # ── Step 1: AI Intent Parsing ──
+        yield {"step": "parse_intent", "status": "running", "message": "🤖 AI is analyzing your prompt — parsing services, locations, urgency, and campaign goal..."}
+        intent = await self._parse_intent_ai(prompt, business_profile)
+        campaign_type = intent.get("campaign_type") or self._determine_campaign_type(intent, business_profile)
+        ai_tag = " (AI)" if intent.get("_ai_generated") else ""
+        yield {
+            "step": "parse_intent", "status": "done",
+            "message": f"Intent parsed{ai_tag} — {campaign_type} campaign for {', '.join(intent.get('services', [])[:3])}",
+            "detail": {
+                "services": intent.get("services", []),
+                "locations": intent.get("locations", []),
+                "urgency": intent.get("urgency"),
+                "goal": intent.get("goal"),
+                "campaign_type": campaign_type,
+                "campaign_type_reasoning": intent.get("campaign_type_reasoning"),
+                "target_audience": intent.get("target_audience"),
+                "seasonal_context": intent.get("seasonal_context"),
+                "ai_powered": intent.get("_ai_generated", False),
+            },
+        }
+
+        # ── Step 2: AI Campaign Overlap Analysis ──
+        yield {"step": "existing_campaigns", "status": "running", "message": "🤖 AI is checking existing campaigns for overlap and cannibalization..."}
+        existing = await self._get_existing_campaigns()
+        overlap_analysis = await self._analyze_overlap_ai(existing, intent)
+        ai_tag = " (AI)" if overlap_analysis.get("_ai_generated") else ""
+        yield {
+            "step": "existing_campaigns", "status": "done",
+            "message": f"Overlap analysis{ai_tag} — {overlap_analysis.get('overlap_severity', 'none')} overlap across {len(existing)} campaigns",
+            "detail": {
+                "count": len(existing),
+                "names": [c["name"] for c in existing[:5]],
+                "overlap": overlap_analysis,
+                "ai_powered": overlap_analysis.get("_ai_generated", False),
+            },
+        }
+
+        # ── Step 3: AI Strategy Synthesis (Playbook + Learnings) ──
+        yield {"step": "research", "status": "running", "message": f"🤖 AI is synthesizing industry strategy for '{industry}' — analyzing playbooks and cross-tenant learnings..."}
+        playbook = await self._get_playbook(industry, intent.get("goal"))
+        learnings = await self._get_relevant_learnings(industry)
+        strategy_insights = await self._synthesize_strategy_ai(industry, intent, playbook, learnings, business_profile)
+        ai_tag = " (AI)" if strategy_insights.get("_ai_generated") else ""
+        yield {
+            "step": "research", "status": "done",
+            "message": f"Strategy synthesized{ai_tag} — {len(strategy_insights.get('key_insights', []))} insights, {len(strategy_insights.get('mistakes_to_avoid', []))} pitfalls identified",
+            "detail": {
+                "has_playbook": playbook is not None,
+                "learnings_count": len(learnings),
+                "strategy": strategy_insights,
+                "ai_powered": strategy_insights.get("_ai_generated", False),
+            },
+        }
+
+        # ── Step 4: AI Competitor Intelligence ──
+        yield {"step": "competitors", "status": "running", "message": "🤖 AI is analyzing competitors — finding gaps, weaknesses, and displacement tactics..."}
+        competitors = await self._get_competitor_intelligence()
+        competitor_insights = await self._analyze_competitors_ai(competitors, intent, industry, business_profile)
+        ai_tag = " (AI)" if competitor_insights.get("_ai_generated") else ""
+        gaps_count = len(competitor_insights.get("gaps", competitor_insights.get("differentiation_angles", [])))
+        yield {
+            "step": "competitors", "status": "done",
+            "message": f"Competitive analysis{ai_tag} — {len(competitors)} competitors, {gaps_count} gaps to exploit",
+            "detail": {
+                "competitor_count": len(competitors),
+                "common_themes": competitor_insights.get("common_themes", [])[:5],
+                "gaps": competitor_insights.get("gaps", [])[:4],
+                "displacement_tactics": competitor_insights.get("displacement_tactics", [])[:3],
+                "weaknesses": competitor_insights.get("weaknesses", [])[:3],
+                "ai_powered": competitor_insights.get("_ai_generated", False),
+            },
+        }
+
+        # ── Step 5: AI Keyword Strategy ──
+        yield {"step": "keywords", "status": "running", "message": "🤖 AI is building tiered keyword strategy — emergency, high-intent, local, and negative keywords..."}
+        keyword_strategy = await self._build_keyword_strategy_ai(intent, industry, learnings, playbook, business_profile)
+        ai_tag = " (AI)" if keyword_strategy.get("_ai_generated") else ""
+        yield {
+            "step": "keywords", "status": "done",
+            "message": f"Keyword strategy{ai_tag} — {keyword_strategy['total_keywords']} keywords across {len(keyword_strategy.get('tiers', {}))} tiers + {keyword_strategy['total_negatives']} negatives",
+            "detail": {
+                "tiers": keyword_strategy.get("tiers", {}),
+                "total_keywords": keyword_strategy["total_keywords"],
+                "total_negatives": keyword_strategy["total_negatives"],
+                "keyword_rationale": keyword_strategy.get("keyword_rationale"),
+                "ai_powered": keyword_strategy.get("_ai_generated", False),
+            },
+        }
+
+        # ── Step 6: AI Budget, Bidding & Schedule ──
+        yield {"step": "strategy", "status": "running", "message": "🤖 AI is calculating optimal budget, bidding strategy, ad schedule, and device bids..."}
+        bbs = await self._recommend_budget_bidding_schedule_ai(
+            industry=industry,
+            intent=intent,
+            profile=business_profile,
+            campaign_type=campaign_type,
+            competitor_insights=competitor_insights,
+            strategy_insights=strategy_insights,
+        )
+        ai_tag = " (AI)" if bbs.get("_ai_generated") else ""
+        budget = bbs.get("budget", {})
+        bid_strategy = bbs.get("bidding", {})
+        scheduling = bbs.get("schedule", {})
+        device_bids = bbs.get("device_bids", {})
+        yield {
+            "step": "strategy", "status": "done",
+            "message": f"Budget & bidding{ai_tag} — ${budget.get('daily_usd', 0)}/day • {bid_strategy.get('strategy', 'N/A')} • {'24/7' if scheduling.get('all_day') else 'Scheduled'}",
+            "detail": {
+                "budget": budget,
+                "bidding": bid_strategy,
+                "schedule": scheduling,
+                "device_bids": device_bids,
+                "estimated_cpc": bbs.get("estimated_cpc"),
+                "estimated_monthly_clicks": bbs.get("estimated_monthly_clicks"),
+                "estimated_monthly_conversions": bbs.get("estimated_monthly_conversions"),
+                "ai_powered": bbs.get("_ai_generated", False),
+            },
+        }
+
+        # ── Step 7: AI Ad Copy Generation ──
+        yield {"step": "ai_copy", "status": "running", "message": "🤖 AI is generating expert Google Ads RSA copy with pinning strategy..."}
+        draft = await self._build_campaign_draft(
+            intent=intent,
+            campaign_type=campaign_type,
+            business_profile=business_profile,
+            existing_campaigns=existing,
+            playbook=playbook,
+            learnings=learnings,
+            keyword_strategy=keyword_strategy,
+            bid_strategy=bid_strategy,
+            budget=budget,
+            scheduling=scheduling,
+            device_bids=device_bids,
+            competitor_insights=competitor_insights,
+            google_customer_id=google_customer_id,
+        )
+
+        # Inject AI analysis results into draft for frontend display
+        draft["ai_analysis"] = {
+            "intent": {k: v for k, v in intent.items() if k != "_ai_generated"},
+            "overlap_analysis": overlap_analysis,
+            "strategy_insights": strategy_insights,
+            "competitor_insights": competitor_insights,
+            "keyword_rationale": keyword_strategy.get("keyword_rationale"),
+            "budget_reasoning": budget.get("reasoning"),
+            "bidding_reasoning": bid_strategy.get("reasoning"),
+            "schedule_reasoning": scheduling.get("reasoning"),
+        }
+
+        # Emit per-ad-group AI details
+        for ag in draft.get("ad_groups", []):
+            for ad in ag.get("ads", []):
+                generated_by = ad.get("generated_by", "template")
+                ai_prompt = ad.get("ai_prompt")
+                ai_raw = ad.get("ai_raw_response")
+                yield {
+                    "step": "ai_copy_result", "status": "done",
+                    "message": f"Ad group '{ag['name']}' — copy generated by {generated_by}",
+                    "detail": {
+                        "ad_group": ag["name"],
+                        "generated_by": generated_by,
+                        "headlines_count": len(ad.get("headlines", [])),
+                        "descriptions_count": len(ad.get("descriptions", [])),
+                        "ai_prompt": ai_prompt,
+                        "ai_raw_response": ai_raw,
+                    },
+                }
+
+        yield {
+            "step": "ai_copy", "status": "done",
+            "message": f"Ad copy ready for {len(draft.get('ad_groups', []))} ad groups",
+        }
+
+        # ── Step 8: Extensions ──
+        yield {"step": "extensions", "status": "done", "message": "Extensions generated (sitelinks, callouts, structured snippets)"}
+
+        # ── Final: Complete ──
+        yield {
+            "step": "complete", "status": "done",
+            "message": "🎉 Campaign draft ready for review! All steps powered by AI.",
+            "detail": draft,
+        }
 
     async def _get_competitor_intelligence(self) -> List[Dict]:
         result = await self.db.execute(
@@ -246,6 +475,496 @@ class CampaignGeneratorService:
             return "SEARCH"
         return "SEARCH"
 
+    # ══════════════════════════════════════════════════════════════════════
+    #  Reusable OpenAI JSON helper
+    # ══════════════════════════════════════════════════════════════════════
+
+    async def _call_openai_json(self, system: str, user_prompt: str, temperature: float = 0.7, max_tokens: int = 2000) -> Optional[Dict]:
+        """Call OpenAI and parse JSON response. Returns None on any failure."""
+        if not settings.OPENAI_API_KEY:
+            return None
+        try:
+            client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+            resp = await client.chat.completions.create(
+                model=settings.OPENAI_MODEL,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            content = resp.choices[0].message.content
+            if not content:
+                return None
+            return {"_raw": content, **json.loads(content)}
+        except Exception as e:
+            logger.error("OpenAI call failed", error=str(e))
+            return None
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  Step 1: AI-Powered Intent Parsing
+    # ══════════════════════════════════════════════════════════════════════
+
+    async def _parse_intent_ai(self, prompt: str, profile: BusinessProfile) -> Dict[str, Any]:
+        """Use GPT to deeply parse the user's prompt into structured campaign intent."""
+        services = profile.services_json if isinstance(profile.services_json, list) else []
+        svc_names = [s if isinstance(s, str) else s.get("name", "") for s in services]
+        locations = profile.locations_json if isinstance(profile.locations_json, list) else []
+        loc_names = [l if isinstance(l, str) else l.get("name", "") for l in locations]
+        offers = profile.offers_json if isinstance(profile.offers_json, list) else []
+        offer_texts = [o if isinstance(o, str) else o.get("text", "") for o in offers]
+        usps = profile.usp_json if isinstance(profile.usp_json, list) else []
+        usp_texts = [u if isinstance(u, str) else u.get("text", "") for u in usps]
+        industry = (profile.industry_classification or "general").lower()
+
+        system = """You are a senior Google Ads strategist. Your job is to parse a business owner's
+natural-language campaign request into a precise, structured campaign intent.
+You deeply understand search intent, local service marketing, and Google Ads campaign types.
+You respond ONLY with valid JSON."""
+
+        user_msg = f"""Parse this campaign request into structured intent.
+
+USER PROMPT: "{prompt}"
+
+BUSINESS CONTEXT:
+- Industry: {industry}
+- Services offered: {json.dumps(svc_names[:10])}
+- Service locations: {json.dumps(loc_names[:10])}
+- Active offers: {json.dumps(offer_texts[:5])}
+- USPs: {json.dumps(usp_texts[:5])}
+- Primary conversion goal: {profile.primary_conversion_goal or 'calls'}
+
+INSTRUCTIONS:
+1. Identify which SPECIFIC services from the business's list the user wants to advertise.
+   If the prompt is vague, pick the top 3-5 most relevant services.
+2. Identify target locations. If not specified, use the business's service areas.
+3. Determine urgency level: "high" for emergency/24-7/ASAP requests, "normal" otherwise.
+4. Determine the campaign goal: "calls", "leads", "awareness", "remarketing", or "bookings".
+5. Identify any seasonal or time-sensitive context.
+6. Extract any specific requirements or constraints the user mentioned.
+7. Suggest the best campaign type: "SEARCH", "CALL", "PERFORMANCE_MAX", or "REMARKETING".
+8. Explain your reasoning for campaign type selection.
+
+Return JSON:
+{{
+  "services": ["service1", "service2", ...],
+  "locations": ["city1", "city2", ...],
+  "offers": ["offer1", ...],
+  "usps": ["usp1", ...],
+  "urgency": "high" or "normal",
+  "goal": "calls" | "leads" | "awareness" | "remarketing" | "bookings",
+  "objective": "calls" | "forms" | "leads",
+  "campaign_type": "SEARCH" | "CALL" | "PERFORMANCE_MAX" | "REMARKETING",
+  "campaign_type_reasoning": "Why this campaign type...",
+  "seasonal_context": "any seasonal notes or null",
+  "user_constraints": "any specific requirements or null",
+  "target_audience": "description of the ideal searcher for these ads",
+  "raw_prompt": "{prompt}"
+}}"""
+
+        result = await self._call_openai_json(system, user_msg, temperature=0.4)
+        if result:
+            result.pop("_raw", None)
+            # Ensure required fields
+            result.setdefault("services", svc_names[:5])
+            result.setdefault("locations", loc_names[:5])
+            result.setdefault("offers", offer_texts[:3])
+            result.setdefault("usps", usp_texts[:5])
+            result.setdefault("urgency", "normal")
+            result.setdefault("goal", "leads")
+            result.setdefault("objective", profile.primary_conversion_goal or "calls")
+            result.setdefault("raw_prompt", prompt)
+            result["_ai_generated"] = True
+            return result
+
+        # Fallback to rule-based
+        logger.warning("AI intent parsing failed — falling back to rule-based")
+        return self._parse_intent(prompt, profile)
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  Step 2: AI-Powered Campaign Overlap Analysis
+    # ══════════════════════════════════════════════════════════════════════
+
+    async def _analyze_overlap_ai(self, existing: List[Dict], intent: Dict) -> Dict:
+        """Use GPT to analyze overlap between new campaign intent and existing campaigns."""
+        if not existing:
+            return {"has_overlap": False, "recommendation": "No existing campaigns — safe to create.", "overlapping_campaigns": []}
+
+        system = """You are a Google Ads account strategist. Analyze whether a proposed new campaign
+overlaps with existing campaigns. Overlapping campaigns cannibalize each other's traffic
+and drive up CPCs. You respond ONLY with valid JSON."""
+
+        user_msg = f"""EXISTING CAMPAIGNS in this account:
+{json.dumps(existing[:20], default=str)}
+
+PROPOSED NEW CAMPAIGN INTENT:
+- Services: {json.dumps(intent.get('services', []))}
+- Locations: {json.dumps(intent.get('locations', []))}
+- Goal: {intent.get('goal')}
+- Urgency: {intent.get('urgency')}
+
+Analyze:
+1. Does the new campaign overlap with any existing ones? (same services + locations)
+2. If yes, which campaigns overlap and how?
+3. What's your recommendation? (proceed, modify, or consolidate)
+4. If modifying, what changes would prevent cannibalization?
+
+Return JSON:
+{{
+  "has_overlap": true/false,
+  "overlapping_campaigns": ["campaign name 1", ...],
+  "overlap_severity": "none" | "low" | "medium" | "high",
+  "recommendation": "Your recommendation...",
+  "suggested_modifications": "How to differentiate if overlap exists, or null"
+}}"""
+
+        result = await self._call_openai_json(system, user_msg, temperature=0.3)
+        if result:
+            result.pop("_raw", None)
+            result["_ai_generated"] = True
+            return result
+
+        return {"has_overlap": False, "recommendation": f"Found {len(existing)} existing campaigns.", "overlapping_campaigns": []}
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  Step 3: AI-Powered Strategy Synthesis (Playbook + Learnings)
+    # ══════════════════════════════════════════════════════════════════════
+
+    async def _synthesize_strategy_ai(self, industry: str, intent: Dict, playbook: Optional[Dict], learnings: List[Dict], profile: BusinessProfile) -> Dict:
+        """Use GPT to synthesize industry playbook and cross-tenant learnings into actionable strategy."""
+        system = """You are an elite Google Ads strategist who has managed $200M+ in ad spend for local
+service businesses. You synthesize industry data, proven patterns, and learnings from
+similar businesses into a cohesive campaign strategy. You respond ONLY with valid JSON."""
+
+        playbook_summary = json.dumps(playbook, default=str)[:1500] if playbook else "No industry playbook available."
+        learnings_summary = json.dumps(learnings[:10], default=str)[:1500] if learnings else "No cross-tenant learnings available."
+
+        user_msg = f"""INDUSTRY: {industry}
+BUSINESS: {profile.business_name if hasattr(profile, 'business_name') else 'N/A'}
+CONVERSION GOAL: {profile.primary_conversion_goal or 'calls'}
+SERVICES: {json.dumps(intent.get('services', [])[:5])}
+LOCATIONS: {json.dumps(intent.get('locations', [])[:5])}
+URGENCY: {intent.get('urgency', 'normal')}
+
+INDUSTRY PLAYBOOK DATA:
+{playbook_summary}
+
+CROSS-TENANT LEARNINGS (patterns from similar businesses):
+{learnings_summary}
+
+Based on all this data, create a comprehensive campaign strategy:
+
+1. What campaign structure works best for this {industry} business?
+2. What ad messaging themes historically perform best?
+3. What bidding strategy and budget allocation is optimal?
+4. What time-of-day and day-of-week patterns should we target?
+5. What are the top 3 mistakes to AVOID for {industry} Google Ads?
+6. What is the expected CPC range and conversion rate for this industry?
+
+Return JSON:
+{{
+  "recommended_structure": "Campaign structure recommendation...",
+  "top_messaging_themes": ["theme1", "theme2", ...],
+  "bidding_recommendation": "Which strategy and why...",
+  "budget_recommendation": "Budget guidance...",
+  "scheduling_insights": "When to run ads...",
+  "mistakes_to_avoid": ["mistake1", "mistake2", "mistake3"],
+  "expected_cpc_range": "$X - $Y",
+  "expected_conversion_rate": "X% - Y%",
+  "key_insights": ["insight1", "insight2", ...],
+  "confidence_level": "high" | "medium" | "low"
+}}"""
+
+        result = await self._call_openai_json(system, user_msg, temperature=0.5)
+        if result:
+            result.pop("_raw", None)
+            result["has_playbook"] = playbook is not None
+            result["learnings_count"] = len(learnings)
+            result["_ai_generated"] = True
+            return result
+
+        return {
+            "has_playbook": playbook is not None,
+            "learnings_count": len(learnings),
+            "key_insights": [],
+            "recommended_structure": "Standard SKAG structure",
+        }
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  Step 4: AI-Powered Competitor Analysis
+    # ══════════════════════════════════════════════════════════════════════
+
+    async def _analyze_competitors_ai(self, competitors: List[Dict], intent: Dict, industry: str, profile: BusinessProfile) -> Dict:
+        """Use GPT to deeply analyze competitors and find displacement tactics."""
+        usps = profile.usp_json if isinstance(profile.usp_json, list) else []
+        usp_texts = [u if isinstance(u, str) else u.get("text", "") for u in usps][:5]
+
+        system = """You are a competitive intelligence analyst specializing in Google Ads for local
+service businesses. You find gaps in competitor messaging that can be exploited for
+higher CTR and lower CPC. You respond ONLY with valid JSON."""
+
+        comp_data = json.dumps(competitors[:10], default=str)[:2000] if competitors else "No competitor data available."
+
+        user_msg = f"""INDUSTRY: {industry}
+OUR SERVICES: {json.dumps(intent.get('services', [])[:5])}
+OUR LOCATIONS: {json.dumps(intent.get('locations', [])[:5])}
+OUR USPs: {json.dumps(usp_texts)}
+
+COMPETITOR DATA:
+{comp_data}
+
+Perform deep competitive analysis:
+
+1. What messaging themes do competitors use most? (common_themes)
+2. What are their WEAKNESSES — things they claim poorly or don't mention at all?
+3. What differentiation angles can WE use that they DON'T? (based on our USPs)
+4. What specific ad copy angles would DISPLACE them in the SERP?
+5. What trust signals are they missing that we could emphasize?
+6. Estimate their likely CPC bids and budget levels.
+
+Return JSON:
+{{
+  "competitor_count": {len(competitors)},
+  "competitor_names": ["name1", ...],
+  "common_themes": ["theme1", "theme2", ...],
+  "weaknesses": ["weakness1", "weakness2", ...],
+  "gaps": ["gap1", "gap2", ...],
+  "differentiation_angles": ["angle1", "angle2", ...],
+  "displacement_tactics": ["tactic1", "tactic2", ...],
+  "missing_trust_signals": ["signal1", ...],
+  "estimated_competitor_cpc": "$X - $Y",
+  "recommended_counter_messaging": ["message1", "message2", ...],
+  "confidence_level": "high" | "medium" | "low"
+}}"""
+
+        result = await self._call_openai_json(system, user_msg, temperature=0.5)
+        if result:
+            result.pop("_raw", None)
+            result["_ai_generated"] = True
+            return result
+
+        # Fallback to rule-based
+        return self._extract_competitor_insights(competitors, intent)
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  Step 5: AI-Powered Keyword Strategy
+    # ══════════════════════════════════════════════════════════════════════
+
+    async def _build_keyword_strategy_ai(self, intent: Dict, industry: str, learnings: List[Dict], playbook: Optional[Dict], profile: BusinessProfile) -> Dict:
+        """Use GPT to generate expert-level tiered keyword strategy."""
+        system = """You are a Google Ads keyword research expert with 15+ years of experience.
+You build SKAG-style tightly themed keyword lists optimized for Quality Score.
+You understand match types (EXACT, PHRASE, BROAD), negative keyword strategy,
+and tiered bidding by intent level. You respond ONLY with valid JSON."""
+
+        services = intent.get("services", [])[:5]
+        locations = intent.get("locations", [])[:5]
+        urgency = intent.get("urgency", "normal")
+        learnings_summary = json.dumps(learnings[:5], default=str)[:800] if learnings else "None"
+
+        user_msg = f"""Build a comprehensive Google Ads keyword strategy.
+
+INDUSTRY: {industry}
+SERVICES TO ADVERTISE: {json.dumps(services)}
+TARGET LOCATIONS: {json.dumps(locations)}
+URGENCY LEVEL: {urgency}
+CONVERSION GOAL: {intent.get('goal', 'leads')}
+
+CROSS-TENANT LEARNINGS (what works for similar businesses):
+{learnings_summary}
+
+Generate keywords in these tiers:
+
+TIER 1 — EMERGENCY (highest intent, highest bid):
+  Searchers in immediate need. "emergency [service]", "24/7 [service]", "[problem] help now"
+  Match type: EXACT. Bid adjustment: +30%.
+  Generate 8-12 keywords.
+
+TIER 2 — HIGH COMMERCIAL INTENT:
+  Ready to buy/hire. "[service] near me", "[service] service", "hire [service]"
+  Match type: EXACT + add "near me" variants.
+  Generate 10-15 keywords.
+
+TIER 3 — MEDIUM INTENT:
+  Researching options. "best [service]", "affordable [service]", "[service] cost"
+  Match type: PHRASE.
+  Generate 8-10 keywords.
+
+TIER 4 — LOCAL (geo-modified):
+  Location-specific. "[service] in [city]", "[city] [service]"
+  Match type: EXACT.
+  Generate keywords for each location × top services (max 20).
+
+TIER 5 — SERVICE-SPECIFIC:
+  Each individual service as a keyword + variants.
+  Match type: PHRASE.
+
+NEGATIVES:
+  Generate 20-30 negative keywords to block irrelevant traffic.
+  Include: DIY, jobs/careers, training/schools, free, complaints, tools/supplies.
+  Also include industry-specific negatives.
+
+Return JSON:
+{{
+  "keywords": [
+    {{"text": "keyword", "match_type": "EXACT"|"PHRASE"|"BROAD", "tier": "emergency"|"high"|"medium"|"local"|"service", "bid_adj": "+30%"|null}},
+    ...
+  ],
+  "negatives": [
+    {{"text": "negative keyword", "match_type": "PHRASE"|"EXACT"}},
+    ...
+  ],
+  "total_keywords": N,
+  "total_negatives": N,
+  "tiers": {{
+    "emergency": N,
+    "high": N,
+    "medium": N,
+    "local": N,
+    "service": N
+  }},
+  "keyword_rationale": "Brief explanation of your keyword strategy"
+}}"""
+
+        result = await self._call_openai_json(system, user_msg, temperature=0.6, max_tokens=3000)
+        if result:
+            raw = result.pop("_raw", None)
+            # Validate structure
+            kws = result.get("keywords", [])
+            negs = result.get("negatives", [])
+            if isinstance(kws, list) and len(kws) >= 5:
+                # Ensure proper structure for each keyword
+                clean_kws = []
+                for k in kws:
+                    if isinstance(k, dict) and "text" in k:
+                        k.setdefault("match_type", "PHRASE")
+                        k.setdefault("tier", "medium")
+                        clean_kws.append(k)
+                clean_negs = []
+                for n in negs:
+                    if isinstance(n, dict) and "text" in n:
+                        n.setdefault("match_type", "PHRASE")
+                        clean_negs.append(n)
+                    elif isinstance(n, str):
+                        clean_negs.append({"text": n, "match_type": "PHRASE"})
+
+                tiers = result.get("tiers", {})
+                if not tiers:
+                    tiers = {}
+                    for k in clean_kws:
+                        t = k.get("tier", "medium")
+                        tiers[t] = tiers.get(t, 0) + 1
+
+                result["keywords"] = clean_kws
+                result["negatives"] = clean_negs
+                result["total_keywords"] = len(clean_kws)
+                result["total_negatives"] = len(clean_negs)
+                result["tiers"] = tiers
+                result["_ai_generated"] = True
+                return result
+
+        # Fallback to rule-based
+        logger.warning("AI keyword strategy failed — falling back to rule-based")
+        return self._build_keyword_strategy(intent, industry, learnings, playbook)
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  Step 6: AI-Powered Budget, Bidding & Schedule
+    # ══════════════════════════════════════════════════════════════════════
+
+    async def _recommend_budget_bidding_schedule_ai(
+        self, industry: str, intent: Dict, profile: BusinessProfile,
+        campaign_type: str, competitor_insights: Dict, strategy_insights: Dict,
+    ) -> Dict:
+        """Use GPT to recommend budget, bidding strategy, schedule, and device bids."""
+        constraints = profile.constraints_json or {}
+        monthly_budget = constraints.get("monthly_budget", 0)
+
+        system = """You are a Google Ads budget and bidding strategist. You recommend optimal budget
+allocation, bidding strategies, ad scheduling, and device bid adjustments based on
+industry benchmarks, competitive landscape, and business constraints.
+You respond ONLY with valid JSON."""
+
+        user_msg = f"""Recommend budget, bidding, schedule, and device bids.
+
+INDUSTRY: {industry}
+CAMPAIGN TYPE: {campaign_type}
+SERVICES: {json.dumps(intent.get('services', [])[:5])}
+LOCATIONS: {json.dumps(intent.get('locations', [])[:5])}
+URGENCY: {intent.get('urgency', 'normal')}
+GOAL: {intent.get('goal', 'leads')}
+PRIMARY CONVERSION: {profile.primary_conversion_goal or 'calls'}
+
+BUDGET CONSTRAINT: {"$" + str(monthly_budget) + "/month" if monthly_budget else "No budget set — recommend based on industry"}
+
+COMPETITIVE LANDSCAPE:
+- Competitor count: {competitor_insights.get('competitor_count', 'unknown')}
+- Estimated competitor CPC: {competitor_insights.get('estimated_competitor_cpc', 'unknown')}
+
+STRATEGY INSIGHTS:
+- Expected CPC range: {strategy_insights.get('expected_cpc_range', 'unknown')}
+- Expected conversion rate: {strategy_insights.get('expected_conversion_rate', 'unknown')}
+
+Recommend:
+1. Daily budget in USD (and monthly estimate)
+2. Bidding strategy (MAXIMIZE_CONVERSIONS, TARGET_CPA, MAXIMIZE_CLICKS, etc.) with reasoning
+3. Ad schedule (24/7 or specific hours/days) with reasoning
+4. Device bid adjustments (mobile/desktop/tablet percentages) with reasoning
+5. Target CPA if using TARGET_CPA strategy
+
+Return JSON:
+{{
+  "budget": {{
+    "daily_usd": N,
+    "daily_micros": N,
+    "monthly_estimate_usd": N,
+    "reasoning": "Why this budget..."
+  }},
+  "bidding": {{
+    "strategy": "MAXIMIZE_CONVERSIONS" | "TARGET_CPA" | "MAXIMIZE_CLICKS" | "MAXIMIZE_CONVERSION_VALUE",
+    "target_cpa_usd": N or null,
+    "reasoning": "Why this strategy..."
+  }},
+  "schedule": {{
+    "all_day": true/false,
+    "hours": {{"start": "HH:MM", "end": "HH:MM"}} or null,
+    "days": ["MON", "TUE", ...] or null,
+    "peak_hours_bid_adj": "+X%",
+    "reasoning": "Why this schedule..."
+  }},
+  "device_bids": {{
+    "mobile_bid_adj": N,
+    "desktop_bid_adj": N,
+    "tablet_bid_adj": N,
+    "reasoning": "Why these device bids..."
+  }},
+  "estimated_cpc": "$X.XX",
+  "estimated_monthly_clicks": N,
+  "estimated_monthly_conversions": N
+}}"""
+
+        result = await self._call_openai_json(system, user_msg, temperature=0.4)
+        if result:
+            result.pop("_raw", None)
+            # Ensure budget has micros
+            budget = result.get("budget", {})
+            if "daily_usd" in budget and "daily_micros" not in budget:
+                budget["daily_micros"] = int(budget["daily_usd"] * 1_000_000)
+            if "daily_usd" in budget and "monthly_estimate_usd" not in budget:
+                budget["monthly_estimate_usd"] = round(budget["daily_usd"] * 30, 2)
+            result["_ai_generated"] = True
+            return result
+
+        # Fallback to rule-based
+        playbook = await self._get_playbook(industry, intent.get("goal"))
+        return {
+            "budget": self._calculate_budget(profile, playbook, intent),
+            "bidding": self._determine_bid_strategy(campaign_type, intent, profile),
+            "schedule": self._build_schedule(industry, intent),
+            "device_bids": self._build_device_bids(industry, intent),
+        }
+
     async def _get_existing_campaigns(self) -> List[Dict]:
         result = await self.db.execute(
             select(Campaign).where(Campaign.tenant_id == self.tenant_id)
@@ -420,7 +1139,7 @@ class CampaignGeneratorService:
             },
         }
 
-    def _build_campaign_draft(
+    async def _build_campaign_draft(
         self,
         intent: Dict,
         campaign_type: str,
@@ -446,6 +1165,10 @@ class CampaignGeneratorService:
         brand_voice = business_profile.brand_voice_json or {}
         tone = brand_voice.get("tone", "professional")
 
+        # Fetch business name from tenant
+        tenant = await self.db.get(Tenant, self.tenant_id)
+        business_name = tenant.name if tenant else ""
+
         primary_service = services[0] if services else "Service"
         urgency_tag = "Emergency" if intent.get("urgency") == "high" else "Standard"
         campaign_name = f"{primary_service} | {campaign_type} | {urgency_tag}"
@@ -466,14 +1189,45 @@ class CampaignGeneratorService:
             if not svc_keywords:
                 svc_keywords = all_keywords[:15]
 
-            headlines = self._generate_expert_headlines(
-                svc, locations, offers, usps, phone, tone, industry,
-                intent.get("urgency"), competitor_insights
+            # --- LLM-powered ad copy (falls back to templates) ---
+            llm_copy = await self._generate_ad_copy_llm(
+                service=svc,
+                locations=locations,
+                offers=offers,
+                usps=usps,
+                phone=phone,
+                tone=tone,
+                industry=industry,
+                urgency=intent.get("urgency"),
+                competitor_insights=competitor_insights,
+                campaign_type=campaign_type,
+                business_name=business_name,
+                website=website,
             )
-            descriptions = self._generate_expert_descriptions(
-                svc, locations, offers, usps, phone, tone, industry,
-                intent.get("urgency"), competitor_insights
-            )
+            ai_prompt_used = None
+            ai_raw_response = None
+            ad_pinning = {}
+            ad_sitelinks = []
+            ad_callouts = []
+            ad_rationale = ""
+            if llm_copy:
+                headlines = llm_copy["headlines"]
+                descriptions = llm_copy["descriptions"]
+                ai_prompt_used = llm_copy.get("ai_prompt")
+                ai_raw_response = llm_copy.get("ai_raw_response")
+                ad_pinning = llm_copy.get("pinning", {})
+                ad_sitelinks = llm_copy.get("sitelinks", [])
+                ad_callouts = llm_copy.get("callouts", [])
+                ad_rationale = llm_copy.get("rationale", "")
+            else:
+                headlines = self._generate_expert_headlines(
+                    svc, locations, offers, usps, phone, tone, industry,
+                    intent.get("urgency"), competitor_insights
+                )
+                descriptions = self._generate_expert_descriptions(
+                    svc, locations, offers, usps, phone, tone, industry,
+                    intent.get("urgency"), competitor_insights
+                )
 
             url_slug = svc.lower().replace(" ", "-")
             ad_group = {
@@ -486,9 +1240,16 @@ class CampaignGeneratorService:
                     "type": "RESPONSIVE_SEARCH_AD",
                     "headlines": headlines,
                     "descriptions": descriptions,
+                    "pinning": ad_pinning,
                     "final_urls": [f"{website}/{url_slug}"] if website else [],
                     "display_path": [svc[:15].replace(" ", "-"), locations[0][:15] if locations else "NearYou"],
+                    "generated_by": "openai" if llm_copy else "template",
+                    "ai_prompt": ai_prompt_used,
+                    "ai_raw_response": ai_raw_response,
+                    "ai_rationale": ad_rationale,
                 }],
+                "llm_sitelinks": ad_sitelinks,
+                "llm_callouts": ad_callouts,
             }
             ad_groups.append(ad_group)
 
@@ -536,6 +1297,275 @@ class CampaignGeneratorService:
                 "total_negatives": keyword_strategy["total_negatives"],
             },
         }
+
+    async def _generate_ad_copy_llm(
+        self,
+        service: str,
+        locations: List[str],
+        offers: List[str],
+        usps: List[str],
+        phone: str,
+        tone: str,
+        industry: str,
+        urgency: Optional[str],
+        competitor_insights: Dict,
+        campaign_type: str,
+        business_name: str,
+        website: str,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Use OpenAI to generate expert-quality Google Ads RSA copy.
+        Returns {"headlines": [...], "descriptions": [...], "pinning": [...],
+                 "sitelinks": [...], "callouts": [...], "ai_prompt": str,
+                 "ai_raw_response": str} or None on failure.
+        """
+        if not settings.OPENAI_API_KEY:
+            logger.info("OpenAI key not set — using template fallback for ad copy")
+            return None
+
+        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+
+        loc = locations[0] if locations else "the local area"
+        loc_list = ", ".join(locations[:5]) if locations else "local area"
+        usp_block = "\n".join(f"  - {u}" for u in usps) if usps else "  (none provided)"
+        offer_block = "\n".join(f"  - {o}" for o in offers) if offers else "  (none provided)"
+        comp_themes = ", ".join(competitor_insights.get("common_themes", [])) or "unknown"
+        comp_gaps = ", ".join(competitor_insights.get("gaps", competitor_insights.get("differentiation_angles", []))) or "none identified"
+        comp_weaknesses = ", ".join(competitor_insights.get("weaknesses", [])) or "unknown"
+
+        is_emergency = urgency == "high" or industry in (
+            "locksmith", "plumbing", "hvac", "towing", "restoration", "pest control",
+            "roofing", "electrical", "garage door",
+        )
+
+        system_message = f"""You are a Google Ads Search specialist with 15+ years managing $100M+ in
+search ad spend across 500+ local service businesses. You hold Google Ads Search,
+Display, and Shopping certifications. You optimize for three metrics simultaneously:
+
+1. QUALITY SCORE (Expected CTR + Ad Relevance + Landing Page Experience)
+2. AD STRENGTH (Google's RSA scoring: Poor → Average → Good → Excellent)
+3. CONVERSION RATE (psychological triggers that drive action, not just clicks)
+
+You understand that Google's RSA system tests ~43,680 possible combinations from 15
+headlines and 4 descriptions. Your job is to maximize the probability that ANY
+combination Google serves is high-performing.
+
+You ALWAYS count characters precisely:
+- Headlines: STRICTLY ≤30 characters (including spaces and punctuation)
+- Descriptions: STRICTLY ≤90 characters (including spaces and punctuation)
+- Callouts: STRICTLY ≤25 characters
+- Sitelink text: STRICTLY ≤25 characters
+
+You respond ONLY with valid JSON. No markdown, no explanation outside JSON."""
+
+        prompt = f"""
+╔══════════════════════════════════════════════════════════════════╗
+║  GOOGLE ADS RSA GENERATION — EXPERT BRIEF                       ║
+╚══════════════════════════════════════════════════════════════════╝
+
+── CLIENT PROFILE ──────────────────────────────────────────────
+Business:       {business_name or '[Name not set]'}
+Industry:       {industry}
+Website:        {website or 'N/A'}
+Phone:          {phone or 'N/A'}
+Brand tone:     {tone}
+Service areas:  {loc_list}
+
+── AD GROUP CONTEXT ────────────────────────────────────────────
+Target service: {service}
+Campaign type:  {campaign_type}
+Urgency level:  {'HIGH — emergency/immediate-need searchers' if is_emergency else urgency or 'standard'}
+Primary KW:     "{service.lower()}" and close variants
+
+USPs (use these — they are REAL differentiators):
+{usp_block}
+
+Active offers:
+{offer_block}
+
+── COMPETITIVE INTELLIGENCE ────────────────────────────────────
+What competitors emphasize:  {comp_themes}
+Competitor weaknesses:       {comp_weaknesses}
+Gaps to exploit (they DON'T mention these): {comp_gaps}
+
+── GOOGLE ADS RSA REQUIREMENTS ─────────────────────────────────
+
+HEADLINES — Generate exactly 15 (each ≤30 chars):
+
+Google needs DIVERSE headlines to reach "Excellent" Ad Strength.
+Structure your 15 headlines across these MANDATORY categories:
+
+H1-H3 — KEYWORD RELEVANCE (boosts Quality Score "Ad Relevance"):
+  Pin H1 to Position 1. Must contain "{service}" or a very close variant.
+  H2 and H3 should contain the service term in different phrasings.
+  Example for locksmith: "Emergency Locksmith Near You", "24/7 Locksmith Service", "Fast Lock Repair"
+
+H4-H5 — GEO-TARGETING (boosts Quality Score "Expected CTR"):
+  Include "{loc}" by name. Geo-specific headlines get 15-25% higher CTR.
+  Example: "{service} in {loc}", "Serving {loc} & Nearby"
+
+H6-H8 — TRUST & SOCIAL PROOF (reduces bounce rate → better landing page score):
+  License numbers, years in business, review counts, ratings, insurance status.
+  Example: "Licensed & Insured", "4.9★ Google Rating", "Trusted Since 2010"
+  {'CRITICAL for ' + industry + ': consumers need trust signals before calling.' if is_emergency else ''}
+
+H9-H10 — VALUE PROPOSITION (from the USPs above):
+  Translate each USP into a punchy ≤30 char headline. Be specific, not generic.
+  "Flat-Rate Pricing" beats "Great Prices". "90-Day Warranty" beats "Quality Work".
+
+H11-H12 — OFFER / CTA (drives conversion action):
+  Include the offer if one exists. Strong CTAs with specificity.
+  "Free Estimate Today", "$20 Off First Visit", "Call Now — Save 15%"
+  {'For emergency: "Call Now" and "Open Now" CTAs are critical.' if is_emergency else ''}
+
+H13-H14 — URGENCY / AVAILABILITY (time-pressure triggers):
+  {'CRITICAL for emergency ' + industry + ' — these are panicked searchers.' if is_emergency else 'Use scarcity/time pressure where natural.'}
+  "Available Right Now", "Same-Day Service", "30-Min Response Time"
+
+H15 — BRAND / BUSINESS NAME:
+  Include "{business_name}" if ≤30 chars. Builds brand recognition for remarketing.
+
+DESCRIPTIONS — Generate exactly 4 (each ≤90 chars):
+
+Google shows 2 descriptions at a time. Each must stand alone AND pair well.
+
+D1 (pin to Position 1) — PROBLEM → SOLUTION → CTA:
+  Address the exact pain point a "{service}" searcher has. Offer your solution. End with CTA.
+  {'For emergency: "Locked out? We arrive in 30 min or less. Call now for fast help!"' if is_emergency else 'Example: "Need [service]? Our licensed pros deliver same-day. Get your free quote!"'}
+
+D2 — TRUST PROOF + DIFFERENTIATOR:
+  Combine a trust signal with what makes this business different from competitors.
+  Use competitor gaps: things they DON'T say that you CAN say.
+
+D3 — OFFER + URGENCY + CTA:
+  Lead with the offer/promotion, add time pressure, close with action verb.
+  If no offer, emphasize value: "No hidden fees. Transparent pricing. Book online now."
+
+D4 — LOCAL AUTHORITY + REASSURANCE:
+  Establish local expertise. Reference the service area. Reduce anxiety.
+  "Proudly serving {loc} for 10+ years. Licensed, bonded & insured. Call today!"
+
+PINNING STRATEGY:
+  Specify which headlines/descriptions to pin. This is CRITICAL for RSA performance.
+  Pin your BEST keyword-match headline to Position 1.
+  Pin your BEST trust/CTA headline to Position 2.
+  Pin D1 to Description Position 1.
+  Let Google rotate the rest for machine learning optimization.
+
+SITELINKS — Generate exactly 4:
+  Each sitelink: "text" (≤25 chars), "desc1" (≤35 chars), "desc2" (≤35 chars)
+  Must cover: Services page, Reviews/Testimonials, About/Why Us, Contact/Free Quote
+  Use URLs based on: {website or 'https://example.com'}
+
+CALLOUTS — Generate exactly 6 (each ≤25 chars):
+  Punchy trust signals. No periods. No CTAs (those go in headlines).
+  Mix: licensing, guarantee, speed, availability, pricing transparency, experience.
+
+── EXPERT RULES ────────────────────────────────────────────────
+1. COUNT EVERY CHARACTER. Even 1 char over = Google rejects the asset.
+2. Each headline must be UNIQUE in wording — Google penalizes repetitive copy
+   and it tanks your Ad Strength score.
+3. NEVER use: "Best [service]", "#1 Provider", "Quality Work", "Great Service",
+   "Top Rated" (without a specific rating), or any vague superlative.
+4. Use ACTIVE VOICE and SECOND PERSON: "Get your", "Call us", "Book your".
+5. For {industry}: use industry-specific terminology that matches what real
+   customers search for. Match the searcher's vocabulary, not marketing jargon.
+6. The primary keyword "{service}" must appear in at least 3 headlines for
+   Ad Relevance scoring.
+7. Every piece of copy must answer: "Why THIS business, why NOW, why not them?"
+
+── OUTPUT FORMAT ────────────────────────────────────────────────
+Respond with ONLY this JSON structure:
+{{
+  "headlines": ["H1", "H2", ..., "H15"],
+  "descriptions": ["D1", "D2", "D3", "D4"],
+  "pinning": {{
+    "headline_pins": {{"1": 0, "2": 5}},
+    "description_pins": {{"1": 0}}
+  }},
+  "sitelinks": [
+    {{"text": "...", "desc1": "...", "desc2": "...", "url": "..."}},
+    ...
+  ],
+  "callouts": ["...", "...", "...", "...", "...", "..."],
+  "rationale": "Brief explanation of your strategic choices (2-3 sentences)"
+}}
+
+headline_pins: maps Position (1/2/3) to headline INDEX (0-14).
+description_pins: maps Position (1/2) to description INDEX (0-3).
+"""
+
+        try:
+            response = await client.chat.completions.create(
+                model=settings.OPENAI_MODEL,
+                messages=[
+                    {"role": "system", "content": system_message},
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.8,
+                max_tokens=2500,
+            )
+            content = response.choices[0].message.content
+            if not content:
+                return None
+
+            data = json.loads(content)
+            headlines = data.get("headlines", [])
+            descriptions = data.get("descriptions", [])
+
+            # Enforce Google Ads character limits strictly
+            headlines = [h[:30] for h in headlines if isinstance(h, str) and h.strip()]
+            descriptions = [d[:90] for d in descriptions if isinstance(d, str) and d.strip()]
+
+            # Deduplicate headlines
+            seen = set()
+            unique_headlines = []
+            for h in headlines:
+                h_lower = h.lower().strip()
+                if h_lower not in seen:
+                    seen.add(h_lower)
+                    unique_headlines.append(h)
+
+            if len(unique_headlines) < 5 or len(descriptions) < 2:
+                logger.warning(
+                    "LLM returned too few ad components — falling back to templates",
+                    headlines=len(unique_headlines), descriptions=len(descriptions),
+                )
+                return None
+
+            # Extract extensions and pinning from LLM response
+            sitelinks = data.get("sitelinks", [])
+            if not isinstance(sitelinks, list):
+                sitelinks = []
+            sitelinks = [s for s in sitelinks if isinstance(s, dict) and "text" in s][:4]
+
+            callouts = [c[:25] for c in data.get("callouts", []) if isinstance(c, str) and c.strip()][:8]
+            pinning = data.get("pinning", {})
+            rationale = data.get("rationale", "")
+
+            logger.info(
+                "LLM ad copy generated successfully",
+                service=service,
+                headlines=len(unique_headlines),
+                descriptions=len(descriptions),
+                sitelinks=len(sitelinks),
+                callouts=len(callouts),
+            )
+            return {
+                "headlines": unique_headlines[:15],
+                "descriptions": descriptions[:4],
+                "pinning": pinning,
+                "sitelinks": sitelinks,
+                "callouts": callouts,
+                "rationale": rationale,
+                "ai_prompt": prompt,
+                "ai_raw_response": content,
+            }
+
+        except Exception as e:
+            logger.error("OpenAI ad copy generation failed — using template fallback", error=str(e))
+            return None
 
     def _generate_expert_headlines(
         self, service: str, locations: List[str], offers: List[str], usps: List[str],

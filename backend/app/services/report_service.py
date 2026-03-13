@@ -3,16 +3,23 @@ Report Service — Weekly AI CMO reports, monthly growth reviews, CSV exports.
 """
 import csv
 import io
+import json
 from datetime import date, timedelta
-from typing import Optional
+from typing import Optional, Dict, Any
+from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, desc
+import structlog
 
+from app.core.config import settings
 from app.models.performance_daily import PerformanceDaily
 from app.models.campaign import Campaign
 from app.models.recommendation import Recommendation
 from app.models.change_log import ChangeLog
 from app.models.alert import Alert
+from app.models.business_profile import BusinessProfile
+
+logger = structlog.get_logger()
 
 
 class ReportService:
@@ -30,20 +37,34 @@ class ReportService:
         recs = await self._get_pending_recommendations()
         alerts = await self._get_recent_alerts(period_days)
 
+        deltas = self._compute_deltas(current, previous)
+        wins = self._identify_wins(current, previous)
+        losses = self._identify_losses(current, previous)
+        focus = self._suggest_focus(current, previous, recs)
+
+        # Generate AI narrative
+        ai_narrative = await self._generate_ai_narrative(
+            current=current, previous=previous, deltas=deltas,
+            wins=wins, losses=losses, changes=changes,
+            recs=recs, alerts=alerts, focus=focus,
+            period_days=period_days,
+        )
+
         return {
             "report_type": "weekly",
             "period": {"start": str(start), "end": str(date.today()), "days": period_days},
             "kpis": {
                 "current": current,
                 "previous": previous,
-                "changes": self._compute_deltas(current, previous),
+                "changes": deltas,
             },
-            "wins": self._identify_wins(current, previous),
-            "losses": self._identify_losses(current, previous),
+            "wins": wins,
+            "losses": losses,
             "changes_applied": changes,
             "pending_recommendations": recs,
             "alerts": alerts,
-            "next_week_focus": self._suggest_focus(current, previous, recs),
+            "next_week_focus": focus,
+            "ai_narrative": ai_narrative,
         }
 
     async def _get_period_summary(self, start: date, end: date) -> dict:
@@ -152,6 +173,204 @@ class ReportService:
         if not focus:
             focus.append("Continue monitoring performance and reviewing recommendations")
         return focus
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  AI-Powered CMO Narrative Report
+    # ══════════════════════════════════════════════════════════════════════
+
+    async def _call_openai_json(self, system: str, user_prompt: str, temperature: float = 0.7, max_tokens: int = 2000) -> Optional[Dict[str, Any]]:
+        """Call OpenAI and parse JSON response. Returns None on any failure."""
+        if not settings.OPENAI_API_KEY:
+            return None
+        try:
+            client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+            resp = await client.chat.completions.create(
+                model=getattr(settings, "OPENAI_MODEL", "gpt-4o-mini"),
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            content = resp.choices[0].message.content
+            if not content:
+                return None
+            return json.loads(content)
+        except Exception as e:
+            logger.error("OpenAI call failed in report_service", error=str(e))
+            return None
+
+    async def _get_business_context(self) -> Dict[str, Any]:
+        """Get business profile context for richer AI narratives."""
+        result = await self.db.execute(
+            select(BusinessProfile).where(BusinessProfile.tenant_id == self.tenant_id)
+        )
+        profile = result.scalar_one_or_none()
+        if not profile:
+            return {}
+        return {
+            "business_name": getattr(profile, "business_name", ""),
+            "industry": (profile.industry_classification or "general").lower(),
+            "conversion_goal": profile.primary_conversion_goal or "calls",
+            "website": profile.website_url or "",
+        }
+
+    async def _get_campaign_breakdown(self, period_days: int) -> list:
+        """Get per-campaign performance for the period."""
+        start = date.today() - timedelta(days=period_days)
+        result = await self.db.execute(
+            select(
+                Campaign.name,
+                Campaign.type,
+                Campaign.status,
+                func.sum(PerformanceDaily.impressions).label("impressions"),
+                func.sum(PerformanceDaily.clicks).label("clicks"),
+                func.sum(PerformanceDaily.cost_micros).label("cost_micros"),
+                func.sum(PerformanceDaily.conversions).label("conversions"),
+            )
+            .join(PerformanceDaily, and_(
+                PerformanceDaily.entity_id == Campaign.campaign_id,
+                PerformanceDaily.tenant_id == Campaign.tenant_id,
+                PerformanceDaily.entity_type == "campaign",
+            ))
+            .where(Campaign.tenant_id == self.tenant_id, PerformanceDaily.date >= start)
+            .group_by(Campaign.name, Campaign.type, Campaign.status)
+            .order_by(desc(func.sum(PerformanceDaily.cost_micros)))
+            .limit(10)
+        )
+        rows = result.all()
+        breakdown = []
+        for r in rows:
+            imp = int(r.impressions or 0)
+            clicks = int(r.clicks or 0)
+            cost = float(r.cost_micros or 0) / 1_000_000
+            conv = float(r.conversions or 0)
+            breakdown.append({
+                "name": r.name, "type": r.type, "status": r.status,
+                "impressions": imp, "clicks": clicks,
+                "cost": round(cost, 2), "conversions": round(conv, 1),
+                "ctr": round((clicks / imp * 100) if imp > 0 else 0, 2),
+                "cpc": round((cost / clicks) if clicks > 0 else 0, 2),
+                "cpa": round((cost / conv) if conv > 0 else 0, 2),
+            })
+        return breakdown
+
+    async def _generate_ai_narrative(
+        self, current: dict, previous: dict, deltas: dict,
+        wins: list, losses: list, changes: list,
+        recs: list, alerts: list, focus: list,
+        period_days: int,
+    ) -> Optional[Dict[str, Any]]:
+        """Use GPT to generate a CMO-style narrative performance report."""
+        biz = await self._get_business_context()
+        campaign_breakdown = await self._get_campaign_breakdown(period_days)
+
+        system = """You are a fractional CMO for a local service business running Google Ads.
+You write concise, actionable weekly performance reports for business owners who are NOT
+marketing experts. You explain what happened, why it matters, and what to do next.
+
+You are direct, data-driven, and avoid jargon. When something is going well, you celebrate
+briefly. When something is wrong, you explain the root cause and give a specific action item.
+
+You respond ONLY with valid JSON."""
+
+        user_msg = f"""Write the weekly Google Ads performance report for this business.
+
+BUSINESS CONTEXT:
+- Business: {biz.get('business_name', 'N/A')}
+- Industry: {biz.get('industry', 'general')}
+- Primary goal: {biz.get('conversion_goal', 'calls')}
+- Report period: last {period_days} days
+
+THIS WEEK'S PERFORMANCE:
+- Impressions: {current['impressions']:,} ({deltas.get('impressions', 0):+.1f}% vs prior)
+- Clicks: {current['clicks']:,} ({deltas.get('clicks', 0):+.1f}%)
+- Cost: ${current['cost']:,.2f} ({deltas.get('cost', 0):+.1f}%)
+- Conversions: {current['conversions']} ({deltas.get('conversions', 0):+.1f}%)
+- CTR: {current['ctr']}% ({deltas.get('ctr', 0):+.1f}%)
+- CPC: ${current['cpc']} ({deltas.get('cpc', 0):+.1f}%)
+- CPA: ${current['cpa']} ({deltas.get('cpa', 0):+.1f}%)
+
+PRIOR PERIOD PERFORMANCE:
+- Impressions: {previous['impressions']:,}
+- Clicks: {previous['clicks']:,}
+- Cost: ${previous['cost']:,.2f}
+- Conversions: {previous['conversions']}
+- CTR: {previous['ctr']}%
+- CPC: ${previous['cpc']}
+- CPA: ${previous['cpa']}
+
+CAMPAIGN BREAKDOWN (top campaigns):
+{json.dumps(campaign_breakdown[:8], indent=2)}
+
+WINS IDENTIFIED: {json.dumps(wins)}
+LOSSES IDENTIFIED: {json.dumps(losses)}
+
+CHANGES APPLIED THIS PERIOD ({len(changes)} total):
+{json.dumps(changes[:10], indent=2)}
+
+ACTIVE ALERTS ({len(alerts)}):
+{json.dumps(alerts[:5], indent=2)}
+
+PENDING RECOMMENDATIONS ({len(recs)}):
+{json.dumps(recs[:8], indent=2)}
+
+SUGGESTED FOCUS AREAS: {json.dumps(focus)}
+
+Write a comprehensive but concise CMO report. Return JSON:
+{{
+  "executive_summary": "2-3 sentence TL;DR of the week — what happened and what it means for the business",
+  "performance_analysis": "3-5 sentence deep analysis of the numbers — what drove changes and why",
+  "campaign_highlights": [
+    {{"campaign": "name", "insight": "what happened and why it matters"}}
+  ],
+  "wins_narrative": "1-2 sentences celebrating what went well (or 'No significant wins this period' if none)",
+  "concerns": [
+    {{"issue": "what's wrong", "impact": "business impact", "action": "specific next step"}}
+  ],
+  "recommendations_summary": "2-3 sentences about the most important pending recommendations and why they matter",
+  "next_week_plan": [
+    "Specific action item 1",
+    "Specific action item 2",
+    "Specific action item 3"
+  ],
+  "health_score": 1-10,
+  "health_score_reasoning": "Why this score — what's working and what needs attention",
+  "trend_direction": "improving" | "stable" | "declining",
+  "estimated_monthly_projection": {{
+    "conversions": estimated_monthly_conversions,
+    "cost": estimated_monthly_cost,
+    "cpa": estimated_monthly_cpa
+  }}
+}}"""
+
+        result = await self._call_openai_json(system, user_msg, temperature=0.5, max_tokens=2500)
+        if result:
+            result["_ai_generated"] = True
+            logger.info("AI CMO narrative generated", tenant_id=self.tenant_id)
+            return result
+
+        # Fallback: simple template narrative
+        logger.warning("AI narrative failed — using template fallback")
+        return {
+            "executive_summary": (
+                f"This week: {current['clicks']:,} clicks, {current['conversions']} conversions "
+                f"at ${current['cpa']} CPA. "
+                + (f"Conversions {'up' if deltas.get('conversions', 0) > 0 else 'down'} "
+                   f"{abs(deltas.get('conversions', 0)):.0f}% vs last period."
+                   if deltas.get('conversions', 0) != 0 else "Performance flat vs last period.")
+            ),
+            "performance_analysis": f"Spent ${current['cost']:,.2f} with a {current['ctr']}% CTR.",
+            "wins_narrative": "; ".join(wins) if wins else "No significant wins this period.",
+            "concerns": [{"issue": l, "impact": "Monitor closely", "action": "Review in detail"} for l in losses],
+            "next_week_plan": focus,
+            "health_score": 5,
+            "health_score_reasoning": "Template-generated — AI unavailable for deeper analysis.",
+            "trend_direction": "improving" if deltas.get("conversions", 0) > 0 else ("declining" if deltas.get("conversions", 0) < 0 else "stable"),
+            "_ai_generated": False,
+        }
 
     async def export_csv(self, entity_type: str, days: int) -> str:
         start = date.today() - timedelta(days=days)

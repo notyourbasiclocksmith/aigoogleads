@@ -2,9 +2,12 @@
 Recommendation Engine — hybrid rules + heuristics + LLM reasoning.
 Converts raw AccountSnapshot into actionable recommendations.
 """
+import json
 import structlog
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+from openai import AsyncOpenAI
 
+from app.core.config import settings
 from app.services.operator.schemas import (
     AccountSnapshot, RecommendationOutput, ImpactProjection,
     RecType, RecGroup, RiskLevel,
@@ -51,6 +54,10 @@ async def generate_recommendations(
 
     # Pass 3: Strategic (new campaign opportunities)
     recommendations.extend(_strategic_missing_campaigns(snapshot))
+
+    # Pass 4: AI Reasoning — enrich existing recs + discover new patterns
+    ai_recs = await _ai_reasoning_pass(snapshot, recommendations)
+    recommendations.extend(ai_recs)
 
     # Filter by scan goal
     if scan_goal != "full_review":
@@ -929,6 +936,247 @@ def _heuristic_roas_bidding_strategy(snapshot: AccountSnapshot) -> List[Recommen
         ))
 
     return recs
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PASS 4: AI REASONING — GPT enrichment + pattern discovery
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def _call_openai_json(system: str, user_prompt: str, temperature: float = 0.4, max_tokens: int = 2500) -> Optional[Dict]:
+    """Call OpenAI and parse JSON response. Returns None on any failure."""
+    if not settings.OPENAI_API_KEY:
+        return None
+    try:
+        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        resp = await client.chat.completions.create(
+            model=getattr(settings, "OPENAI_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        content = resp.choices[0].message.content
+        if not content:
+            return None
+        return json.loads(content)
+    except Exception as e:
+        logger.error("OpenAI call failed in recommendation_engine", error=str(e))
+        return None
+
+
+async def _ai_reasoning_pass(
+    snapshot: AccountSnapshot,
+    existing_recs: List[RecommendationOutput],
+) -> List[RecommendationOutput]:
+    """
+    GPT analyzes the account snapshot + existing recommendations to:
+    1. Explain WHY each recommendation matters in business terms
+    2. Find cross-signal patterns that rules missed
+    3. Suggest strategic recommendations rules can't generate
+    Returns additional AI-generated recommendations.
+    """
+    if not settings.OPENAI_API_KEY:
+        return []
+
+    # Build compact snapshot summary for the prompt
+    camp_summary = []
+    for c in snapshot.campaigns[:10]:
+        camp_summary.append({
+            "name": c.name, "type": c.campaign_type or "SEARCH",
+            "status": c.status, "cost": round(c.cost, 2),
+            "clicks": c.clicks, "conversions": round(c.conversions, 1),
+            "cpa": round(c.cost_per_conversion, 2) if c.conversions > 0 else None,
+            "ctr": round(c.ctr, 4),
+            "budget_daily": round(c.budget_daily, 2),
+            "lost_is_budget": round(c.search_lost_is_budget or 0, 3),
+            "bidding": c.bidding_strategy,
+        })
+
+    # Top waste keywords
+    waste_kws = sorted(
+        [k for k in snapshot.keywords if k.conversions == 0 and k.cost > 5],
+        key=lambda k: -k.cost
+    )[:15]
+    waste_kw_summary = [
+        {"keyword": k.text, "match": k.match_type, "cost": round(k.cost, 2), "clicks": k.clicks}
+        for k in waste_kws
+    ]
+
+    # Top converting search terms not exact-matched
+    existing_exact = {kw.text.lower() for kw in snapshot.keywords if kw.match_type == "EXACT"}
+    good_terms = sorted(
+        [st for st in snapshot.search_terms if st.conversions >= 1 and st.search_term.lower() not in existing_exact],
+        key=lambda st: -st.conversions
+    )[:10]
+    good_term_summary = [
+        {"term": st.search_term, "conversions": round(st.conversions, 1), "cost": round(st.cost, 2)}
+        for st in good_terms
+    ]
+
+    # Existing recommendations summary
+    rec_summary = [
+        {"title": r.title, "type": r.recommendation_type.value, "risk": r.risk_level.value,
+         "confidence": r.confidence_score, "generated_by": r.generated_by}
+        for r in existing_recs[:20]
+    ]
+
+    # Ad strength summary
+    weak_ads = [a for a in snapshot.ads if a.ad_strength in ("POOR", "AVERAGE", "UNSPECIFIED") and a.impressions > 100]
+    weak_ad_summary = [
+        {"id": a.ad_id, "strength": a.ad_strength, "ctr": round(a.ctr, 4), "impressions": a.impressions}
+        for a in weak_ads[:8]
+    ]
+
+    system = """You are a senior Google Ads strategist with 15+ years managing $100M+ in search spend
+for local service businesses. You analyze account data and existing rule-based recommendations
+to find patterns that automated rules miss.
+
+You think like a human PPC expert: you look for STORIES in the data, not just threshold violations.
+For example:
+- "This account is spending 40% of budget on keywords that don't convert — the targeting is too broad"
+- "The emergency campaign converts at 3x the rate of the general campaign but has 1/5 the budget"
+- "CTR is strong but CPA is high — the landing page is probably the issue, not the ads"
+- "There are 12 converting search terms not covered by exact match — easy wins being left on the table"
+
+You respond ONLY with valid JSON."""
+
+    user_msg = f"""Analyze this Google Ads account and find opportunities the automated rules may have missed.
+
+ACCOUNT OVERVIEW:
+- Customer ID: {snapshot.customer_id}
+- Date range: {snapshot.date_range_start} to {snapshot.date_range_end}
+- Total campaigns: {len(snapshot.campaigns)}
+- Total keywords: {len(snapshot.keywords)}
+- Account avg CPA: ${snapshot.avg_cpa:.2f}
+- Total spend: ${sum(c.cost for c in snapshot.campaigns):.2f}
+- Total conversions: {sum(c.conversions for c in snapshot.campaigns):.0f}
+
+CAMPAIGNS:
+{json.dumps(camp_summary, indent=2)}
+
+TOP WASTE KEYWORDS (spend > $5, 0 conversions):
+{json.dumps(waste_kw_summary, indent=2)}
+
+HIGH-VALUE SEARCH TERMS NOT EXACT-MATCHED:
+{json.dumps(good_term_summary, indent=2)}
+
+WEAK ADS ({len(weak_ads)} ads with POOR/AVERAGE strength):
+{json.dumps(weak_ad_summary, indent=2)}
+
+EXISTING AUTOMATED RECOMMENDATIONS ({len(existing_recs)} total):
+{json.dumps(rec_summary, indent=2)}
+
+INSTRUCTIONS:
+Look for patterns rules can't catch. Return JSON:
+{{
+  "strategic_insights": [
+    {{
+      "title": "Short title of the insight",
+      "explanation": "Why this matters for the business — in plain English",
+      "recommendation": "Specific action to take",
+      "group": "one of: keywords_search_terms, negative_keywords, budget_bidding, ad_copy, device_modifiers, ad_schedule, geo_targeting, new_campaigns, extensions_assets, ad_groups",
+      "risk": "low" | "medium" | "high",
+      "confidence": 0.0-1.0,
+      "estimated_impact": "dollar or percentage estimate of impact"
+    }}
+  ],
+  "enriched_rationale": [
+    {{
+      "original_title": "Title of an existing recommendation",
+      "business_explanation": "WHY this matters to the business owner in plain English",
+      "priority_reasoning": "Why this should be done before/after other recommendations"
+    }}
+  ],
+  "account_narrative": "3-4 sentence story about this account — what's working, what's not, and the single biggest lever to pull",
+  "hidden_patterns": ["Pattern 1 rules missed", "Pattern 2 rules missed"]
+}}"""
+
+    result = await _call_openai_json(system, user_msg, temperature=0.4, max_tokens=2500)
+    if not result:
+        logger.warning("AI reasoning pass failed — skipping")
+        return []
+
+    ai_recs: List[RecommendationOutput] = []
+
+    # Convert strategic insights into RecommendationOutput objects
+    group_map = {
+        "keywords_search_terms": RecGroup.KEYWORDS_SEARCH_TERMS,
+        "negative_keywords": RecGroup.NEGATIVE_KEYWORDS,
+        "budget_bidding": RecGroup.BUDGET_BIDDING,
+        "ad_copy": RecGroup.AD_COPY,
+        "device_modifiers": RecGroup.DEVICE_MODIFIERS,
+        "ad_schedule": RecGroup.AD_SCHEDULE,
+        "geo_targeting": RecGroup.GEO_TARGETING,
+        "new_campaigns": RecGroup.NEW_CAMPAIGNS,
+        "extensions_assets": RecGroup.EXTENSIONS_ASSETS,
+        "ad_groups": RecGroup.AD_GROUPS,
+    }
+
+    risk_map = {
+        "low": RiskLevel.LOW,
+        "medium": RiskLevel.MEDIUM,
+        "high": RiskLevel.HIGH,
+    }
+
+    for insight in result.get("strategic_insights", []):
+        group_key = insight.get("group", "budget_bidding")
+        group = group_map.get(group_key, RecGroup.BUDGET_BIDDING)
+        risk = risk_map.get(insight.get("risk", "medium"), RiskLevel.MEDIUM)
+        confidence = min(max(insight.get("confidence", 0.5), 0.0), 1.0)
+
+        ai_recs.append(RecommendationOutput(
+            recommendation_type=RecType.STRATEGIC_INSIGHT,
+            group_name=group,
+            entity_type="account",
+            title=f'[AI] {insight.get("title", "Strategic insight")[:120]}',
+            rationale=insight.get("explanation", "") + "\n\n" + insight.get("recommendation", ""),
+            evidence={
+                "ai_generated": True,
+                "estimated_impact": insight.get("estimated_impact", ""),
+                "account_narrative": result.get("account_narrative", ""),
+            },
+            current_state={},
+            proposed_state={"action": "ai_strategic_insight", "recommendation": insight.get("recommendation", "")},
+            impact=ImpactProjection(
+                assumptions=[insight.get("estimated_impact", "AI-estimated impact")],
+                confidence=confidence,
+            ),
+            confidence_score=confidence,
+            risk_level=risk,
+            generated_by="ai",
+        ))
+
+    # Enrich existing recommendations with AI business explanations
+    enrichments = {e["original_title"]: e for e in result.get("enriched_rationale", [])}
+    for rec in existing_recs:
+        enrichment = enrichments.get(rec.title)
+        if enrichment:
+            rec.rationale = (
+                rec.rationale + "\n\n"
+                f"💡 Business impact: {enrichment.get('business_explanation', '')}\n"
+                f"📋 Priority: {enrichment.get('priority_reasoning', '')}"
+            )
+            rec.generated_by = f"{rec.generated_by}+ai"
+
+    # Store the narrative on the first AI rec or create a meta-rec
+    if result.get("account_narrative") and ai_recs:
+        ai_recs[0].evidence["account_narrative"] = result["account_narrative"]
+    if result.get("hidden_patterns"):
+        for i, pattern in enumerate(result["hidden_patterns"][:3]):
+            if ai_recs and i < len(ai_recs):
+                ai_recs[i].evidence["hidden_pattern"] = pattern
+
+    logger.info(
+        "AI reasoning pass complete",
+        new_insights=len(ai_recs),
+        enriched=len(enrichments),
+        patterns=len(result.get("hidden_patterns", [])),
+    )
+
+    return ai_recs
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

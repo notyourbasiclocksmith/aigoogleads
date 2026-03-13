@@ -1,12 +1,37 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { AppLayout } from "@/components/layout/sidebar";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
-import { Wand2, Send, Save, Rocket, ChevronDown, ChevronUp } from "lucide-react";
+import {
+  Wand2, Save, Rocket, ChevronDown, ChevronUp,
+  CheckCircle2, Loader2, Brain, Search, Users, Target,
+  DollarSign, Sparkles, Puzzle, Eye, EyeOff, AlertCircle,
+} from "lucide-react";
+
+interface LogEntry {
+  step: string;
+  status: string;
+  message: string;
+  detail?: any;
+}
+
+const STEP_ICONS: Record<string, any> = {
+  parse_intent: Brain,
+  existing_campaigns: Search,
+  research: Target,
+  competitors: Users,
+  keywords: Search,
+  strategy: DollarSign,
+  ai_copy: Sparkles,
+  ai_copy_result: Sparkles,
+  extensions: Puzzle,
+  complete: CheckCircle2,
+  error: AlertCircle,
+};
 
 export default function PromptPage() {
   const [prompt, setPrompt] = useState("");
@@ -14,14 +39,74 @@ export default function PromptPage() {
   const [draft, setDraft] = useState<any>(null);
   const [error, setError] = useState("");
   const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set([0]));
+  const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
+  const [showLog, setShowLog] = useState(true);
+  const [aiPromptExpanded, setAiPromptExpanded] = useState<string | null>(null);
+  const logEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [logEntries]);
 
   async function handleGenerate() {
     if (!prompt.trim()) return;
     setError("");
     setLoading(true);
+    setDraft(null);
+    setLogEntries([]);
+    setShowLog(true);
+
+    const token = api.getToken();
+
     try {
-      const data = await api.post("/api/ads/prompt/generate", { prompt });
-      setDraft(data);
+      const res = await fetch("/api/ads/prompt/generate-stream", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ prompt }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: "Generation failed" }));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("No response stream");
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const jsonStr = line.slice(6).trim();
+          if (!jsonStr) continue;
+
+          try {
+            const event: LogEntry = JSON.parse(jsonStr);
+            setLogEntries((prev) => [...prev, event]);
+
+            if (event.step === "complete" && event.detail) {
+              setDraft(event.detail);
+            }
+            if (event.step === "error") {
+              setError(event.message);
+            }
+          } catch {
+            // skip malformed events
+          }
+        }
+      }
     } catch (err: any) {
       setError(err.message || "Generation failed");
     } finally {
@@ -42,7 +127,7 @@ export default function PromptPage() {
   async function handleLaunch() {
     if (!draft) return;
     try {
-      const result = await api.post("/api/ads/prompt/approve-launch", { draft: draft });
+      const result = await api.post("/api/ads/prompt/approve-launch", { draft });
       alert(`Campaign approved and launching! (ID: ${result.id})`);
     } catch (err: any) {
       setError(err.message);
@@ -56,6 +141,9 @@ export default function PromptPage() {
     setExpandedGroups(next);
   }
 
+  const doneSteps = logEntries.filter((e) => e.status === "done" && e.step !== "ai_copy_result");
+  const isComplete = logEntries.some((e) => e.step === "complete");
+
   return (
     <AppLayout>
       <div className="space-y-6">
@@ -64,6 +152,7 @@ export default function PromptPage() {
           <p className="text-muted-foreground">Describe what you want and let AI build your campaign</p>
         </div>
 
+        {/* Prompt Input */}
         <Card>
           <CardContent className="p-6">
             <div className="space-y-4">
@@ -76,7 +165,9 @@ export default function PromptPage() {
               <div className="flex items-center gap-3">
                 <Button onClick={handleGenerate} disabled={loading || !prompt.trim()}>
                   {loading ? (
-                    <span className="flex items-center gap-2">Generating...</span>
+                    <span className="flex items-center gap-2">
+                      <Loader2 className="w-4 h-4 animate-spin" /> Generating...
+                    </span>
                   ) : (
                     <span className="flex items-center gap-2">
                       <Wand2 className="w-4 h-4" /> Generate Campaign
@@ -84,7 +175,7 @@ export default function PromptPage() {
                   )}
                 </Button>
                 <span className="text-xs text-muted-foreground">
-                  AI will analyze your business profile, past performance, and industry learnings
+                  AI will analyze your business profile, competitors, and industry data
                 </span>
               </div>
               {error && <p className="text-sm text-destructive">{error}</p>}
@@ -92,6 +183,124 @@ export default function PromptPage() {
           </CardContent>
         </Card>
 
+        {/* Process Log */}
+        {logEntries.length > 0 && (
+          <Card className="overflow-hidden">
+            <CardHeader className="pb-3 cursor-pointer" onClick={() => setShowLog(!showLog)}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <CardTitle className="text-base">Generation Process</CardTitle>
+                  {loading && <Loader2 className="w-4 h-4 animate-spin text-blue-500" />}
+                  {isComplete && <CheckCircle2 className="w-4 h-4 text-green-500" />}
+                  <span className="text-xs text-muted-foreground">
+                    {doneSteps.length} steps completed
+                  </span>
+                </div>
+                {showLog ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+              </div>
+            </CardHeader>
+            {showLog && (
+              <CardContent className="pt-0">
+                <div className="space-y-1 max-h-[400px] overflow-y-auto pr-2">
+                  {logEntries.map((entry, i) => {
+                    const Icon = STEP_ICONS[entry.step] || CheckCircle2;
+                    const isRunning = entry.status === "running";
+                    const isDone = entry.status === "done";
+                    const isError = entry.status === "error";
+                    const isAiResult = entry.step === "ai_copy_result";
+                    const hasAiPrompt = isAiResult && entry.detail?.ai_prompt;
+                    const promptKey = `${i}`;
+
+                    return (
+                      <div key={i}>
+                        <div
+                          className={`flex items-start gap-3 py-2 px-3 rounded-lg text-sm transition-colors ${
+                            isRunning ? "bg-blue-50 border border-blue-100" :
+                            isError ? "bg-red-50 border border-red-100" :
+                            isAiResult ? "bg-purple-50/50 border border-purple-100 ml-6" :
+                            isDone ? "bg-slate-50" : ""
+                          }`}
+                        >
+                          <div className="mt-0.5 flex-shrink-0">
+                            {isRunning ? (
+                              <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
+                            ) : isError ? (
+                              <AlertCircle className="w-4 h-4 text-red-500" />
+                            ) : (
+                              <Icon className={`w-4 h-4 ${isAiResult ? "text-purple-500" : "text-green-500"}`} />
+                            )}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className={`${isRunning ? "text-blue-700 font-medium" : isError ? "text-red-700" : "text-slate-700"}`}>
+                              {entry.message}
+                            </p>
+                            {entry.detail && !isAiResult && entry.step !== "complete" && (
+                              <p className="text-xs text-muted-foreground mt-0.5 truncate">
+                                {typeof entry.detail === "object" ? JSON.stringify(entry.detail) : entry.detail}
+                              </p>
+                            )}
+                          </div>
+                          {hasAiPrompt && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="flex-shrink-0 h-7 px-2 text-xs text-purple-600 hover:text-purple-800"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setAiPromptExpanded(aiPromptExpanded === promptKey ? null : promptKey);
+                              }}
+                            >
+                              {aiPromptExpanded === promptKey ? (
+                                <><EyeOff className="w-3 h-3 mr-1" /> Hide AI</>
+                              ) : (
+                                <><Eye className="w-3 h-3 mr-1" /> View AI</>
+                              )}
+                            </Button>
+                          )}
+                        </div>
+
+                        {/* Expanded AI Prompt / Response */}
+                        {hasAiPrompt && aiPromptExpanded === promptKey && (
+                          <div className="ml-6 mt-1 mb-2 rounded-lg border border-purple-200 bg-purple-50/30 overflow-hidden">
+                            <div className="p-3 border-b border-purple-100">
+                              <div className="flex items-center gap-2 mb-2">
+                                <Brain className="w-4 h-4 text-purple-600" />
+                                <span className="text-xs font-semibold text-purple-700 uppercase tracking-wide">
+                                  Prompt sent to OpenAI
+                                </span>
+                              </div>
+                              <pre className="text-xs text-slate-700 whitespace-pre-wrap font-mono bg-white rounded p-3 border max-h-[300px] overflow-y-auto">
+                                {entry.detail.ai_prompt}
+                              </pre>
+                            </div>
+                            {entry.detail.ai_raw_response && (
+                              <div className="p-3">
+                                <div className="flex items-center gap-2 mb-2">
+                                  <Sparkles className="w-4 h-4 text-purple-600" />
+                                  <span className="text-xs font-semibold text-purple-700 uppercase tracking-wide">
+                                    Raw AI Response
+                                  </span>
+                                </div>
+                                <pre className="text-xs text-slate-700 whitespace-pre-wrap font-mono bg-white rounded p-3 border max-h-[200px] overflow-y-auto">
+                                  {typeof entry.detail.ai_raw_response === "string"
+                                    ? entry.detail.ai_raw_response
+                                    : JSON.stringify(entry.detail.ai_raw_response, null, 2)}
+                                </pre>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  <div ref={logEndRef} />
+                </div>
+              </CardContent>
+            )}
+          </Card>
+        )}
+
+        {/* Campaign Preview */}
         {draft && (
           <>
             <div className="flex items-center justify-between">
@@ -112,13 +321,13 @@ export default function PromptPage() {
                 <CardDescription className="flex items-center gap-2">
                   <Badge variant="secondary">{draft.campaign?.type}</Badge>
                   <Badge variant="outline">{draft.campaign?.bidding_strategy}</Badge>
-                  <span>${draft.campaign?.budget_daily}/day</span>
+                  <span>${draft.campaign?.budget_daily_usd}/day</span>
                 </CardDescription>
               </CardHeader>
               <CardContent>
                 {draft.reasoning && (
                   <div className="mb-4 p-3 rounded-lg bg-blue-50 border border-blue-100 text-sm">
-                    <strong>AI Reasoning:</strong> {draft.reasoning.campaign_type_reason}
+                    <strong>AI Reasoning:</strong> {draft.reasoning.campaign_type}
                     {draft.reasoning.learnings_applied > 0 && (
                       <span className="ml-2 text-blue-600">
                         ({draft.reasoning.learnings_applied} cross-tenant learnings applied)
@@ -133,7 +342,14 @@ export default function PromptPage() {
               <Card key={idx}>
                 <CardHeader className="cursor-pointer" onClick={() => toggleGroup(idx)}>
                   <div className="flex items-center justify-between">
-                    <CardTitle className="text-base">{ag.name}</CardTitle>
+                    <div className="flex items-center gap-2">
+                      <CardTitle className="text-base">{ag.name}</CardTitle>
+                      {ag.ads?.[0]?.generated_by === "openai" && (
+                        <Badge variant="secondary" className="text-xs bg-purple-100 text-purple-700">
+                          <Sparkles className="w-3 h-3 mr-1" /> AI Generated
+                        </Badge>
+                      )}
+                    </div>
                     {expandedGroups.has(idx) ? (
                       <ChevronUp className="w-5 h-5 text-muted-foreground" />
                     ) : (
@@ -170,29 +386,115 @@ export default function PromptPage() {
                       </div>
                     )}
 
-                    {ag.ads?.map((ad: any, ai: number) => (
-                      <div key={ai} className="border rounded-lg p-4 bg-slate-50">
-                        <h4 className="text-sm font-semibold mb-2">Responsive Search Ad</h4>
-                        <div className="space-y-2">
+                    {ag.ads?.map((ad: any, ai: number) => {
+                      const hPins = ad.pinning?.headline_pins || {};
+                      const dPins = ad.pinning?.description_pins || {};
+                      const pinnedHIdxs = new Set(Object.values(hPins).map(Number));
+                      const pinnedDIdxs = new Set(Object.values(dPins).map(Number));
+
+                      return (
+                        <div key={ai} className="border rounded-lg p-4 bg-slate-50 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <h4 className="text-sm font-semibold">Responsive Search Ad</h4>
+                            {ad.generated_by === "openai" && (
+                              <span className="text-xs text-purple-600 font-medium">Powered by OpenAI</span>
+                            )}
+                          </div>
+
+                          {ad.ai_rationale && (
+                            <div className="text-xs bg-purple-50 border border-purple-100 rounded p-2 text-purple-800">
+                              <strong>AI Strategy:</strong> {ad.ai_rationale}
+                            </div>
+                          )}
+
                           <div>
-                            <span className="text-xs text-muted-foreground">Headlines:</span>
+                            <span className="text-xs text-muted-foreground">Headlines ({ad.headlines?.length || 0}):</span>
                             <div className="flex flex-wrap gap-1 mt-1">
-                              {ad.headlines?.map((h: string, hi: number) => (
-                                <span key={hi} className="text-sm bg-white border rounded px-2 py-0.5">
-                                  {h}
-                                </span>
+                              {ad.headlines?.map((h: string, hi: number) => {
+                                const overLimit = h.length > 30;
+                                const isPinned = pinnedHIdxs.has(hi);
+                                const pinPos = Object.entries(hPins).find(([, v]) => Number(v) === hi);
+                                return (
+                                  <span
+                                    key={hi}
+                                    className={`text-sm border rounded px-2 py-0.5 ${
+                                      overLimit ? "bg-red-50 border-red-300" :
+                                      isPinned ? "bg-blue-50 border-blue-300" : "bg-white"
+                                    }`}
+                                  >
+                                    {isPinned && pinPos && (
+                                      <span className="text-[10px] font-bold text-blue-600 mr-1">📌P{pinPos[0]}</span>
+                                    )}
+                                    {h}
+                                    <span className={`text-[10px] ml-1 ${overLimit ? "text-red-600 font-bold" : "text-muted-foreground"}`}>
+                                      {h.length}/30
+                                    </span>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          <div>
+                            <span className="text-xs text-muted-foreground">Descriptions ({ad.descriptions?.length || 0}):</span>
+                            {ad.descriptions?.map((d: string, di: number) => {
+                              const overLimit = d.length > 90;
+                              const isPinned = pinnedDIdxs.has(di);
+                              const pinPos = Object.entries(dPins).find(([, v]) => Number(v) === di);
+                              return (
+                                <p
+                                  key={di}
+                                  className={`text-sm mt-1 border rounded px-2 py-1 ${
+                                    overLimit ? "bg-red-50 border-red-300" :
+                                    isPinned ? "bg-blue-50 border-blue-300" : "bg-white"
+                                  }`}
+                                >
+                                  {isPinned && pinPos && (
+                                    <span className="text-[10px] font-bold text-blue-600 mr-1">📌D{pinPos[0]}</span>
+                                  )}
+                                  {d}
+                                  <span className={`text-[10px] ml-1 ${overLimit ? "text-red-600 font-bold" : "text-muted-foreground"}`}>
+                                    ({d.length}/90)
+                                  </span>
+                                </p>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {(ag.llm_sitelinks?.length > 0 || ag.llm_callouts?.length > 0) && (
+                      <div className="border rounded-lg p-4 bg-green-50/50 space-y-3">
+                        <h4 className="text-sm font-semibold text-green-800">AI-Generated Extensions</h4>
+                        {ag.llm_sitelinks?.length > 0 && (
+                          <div>
+                            <span className="text-xs text-muted-foreground">Sitelinks ({ag.llm_sitelinks.length}):</span>
+                            <div className="grid grid-cols-2 gap-2 mt-1">
+                              {ag.llm_sitelinks.map((sl: any, si: number) => (
+                                <div key={si} className="text-sm bg-white border rounded p-2">
+                                  <div className="font-medium text-blue-600">{sl.text} <span className="text-[10px] text-muted-foreground">{sl.text?.length}/25</span></div>
+                                  <div className="text-xs text-muted-foreground">{sl.desc1 || sl.description}</div>
+                                  {sl.desc2 && <div className="text-xs text-muted-foreground">{sl.desc2}</div>}
+                                </div>
                               ))}
                             </div>
                           </div>
+                        )}
+                        {ag.llm_callouts?.length > 0 && (
                           <div>
-                            <span className="text-xs text-muted-foreground">Descriptions:</span>
-                            {ad.descriptions?.map((d: string, di: number) => (
-                              <p key={di} className="text-sm mt-1 bg-white border rounded px-2 py-1">{d}</p>
-                            ))}
+                            <span className="text-xs text-muted-foreground">Callouts ({ag.llm_callouts.length}):</span>
+                            <div className="flex flex-wrap gap-1.5 mt-1">
+                              {ag.llm_callouts.map((c: string, ci: number) => (
+                                <Badge key={ci} variant="outline" className="bg-white">
+                                  {c} <span className="text-[10px] text-muted-foreground ml-1">{c.length}/25</span>
+                                </Badge>
+                              ))}
+                            </div>
                           </div>
-                        </div>
+                        )}
                       </div>
-                    ))}
+                    )}
                   </CardContent>
                 )}
               </Card>
@@ -201,7 +503,7 @@ export default function PromptPage() {
             {draft.extensions && (
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-base">Extensions</CardTitle>
+                  <CardTitle className="text-base">Extensions (Template)</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {draft.extensions.sitelinks && (
@@ -211,7 +513,7 @@ export default function PromptPage() {
                         {draft.extensions.sitelinks.map((sl: any, i: number) => (
                           <div key={i} className="text-sm border rounded p-2">
                             <div className="font-medium text-blue-600">{sl.text}</div>
-                            <div className="text-xs text-muted-foreground">{sl.description}</div>
+                            <div className="text-xs text-muted-foreground">{sl.description || sl.desc1}</div>
                           </div>
                         ))}
                       </div>
