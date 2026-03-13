@@ -1279,3 +1279,185 @@ class GoogleAdsClient:
         except Exception as e:
             logger.error("Failed to end experiment", error=str(e))
             return {"status": "error", "error": str(e)}
+
+    # ── LOCAL SERVICES ADS (LSA) ─────────────────────────────────────
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
+    async def get_lsa_leads(self, days: int = 30) -> List[Dict[str, Any]]:
+        """
+        Fetch Local Services Ads leads via GAQL.
+        Returns lead details including type, status, contact info, charge status.
+        """
+        client = self._get_client()
+        ga_service = client.get_service("GoogleAdsService")
+        query = f"""
+            SELECT local_services_lead.id,
+                   local_services_lead.resource_name,
+                   local_services_lead.lead_type,
+                   local_services_lead.category_id,
+                   local_services_lead.service_id,
+                   local_services_lead.contact_details,
+                   local_services_lead.lead_status,
+                   local_services_lead.creation_date_time,
+                   local_services_lead.locale,
+                   local_services_lead.lead_charged,
+                   local_services_lead.credit_details.credit_state,
+                   local_services_lead.credit_details.credit_state_last_update_date_time
+            FROM local_services_lead
+            WHERE local_services_lead.creation_date_time DURING LAST_{days}_DAYS
+            ORDER BY local_services_lead.creation_date_time DESC
+            LIMIT 1000
+        """
+        try:
+            response = ga_service.search(customer_id=self.customer_id, query=query)
+        except Exception as e:
+            err_str = str(e)
+            if "UNRECOGNIZED" in err_str or "not found" in err_str.lower():
+                logger.info("No LSA campaigns found for this account", customer_id=self.customer_id)
+                return []
+            raise
+
+        results = []
+        for row in response:
+            lead = row.local_services_lead
+            # Extract contact details
+            contact_name = ""
+            contact_phone = ""
+            contact_email = ""
+            try:
+                cd = lead.contact_details
+                contact_name = getattr(cd, "consumer_name", "") or ""
+                contact_phone = getattr(cd, "phone_number", "") or ""
+                contact_email = getattr(cd, "email", "") or ""
+            except Exception:
+                pass
+
+            # Parse credit details
+            credit_state = ""
+            credit_state_updated = None
+            try:
+                credit_state = lead.credit_details.credit_state.name if lead.credit_details.credit_state else ""
+                credit_state_updated = lead.credit_details.credit_state_last_update_date_time or None
+            except Exception:
+                pass
+
+            results.append({
+                "lead_id": str(lead.id),
+                "resource_name": lead.resource_name,
+                "lead_type": lead.lead_type.name if hasattr(lead.lead_type, 'name') else str(lead.lead_type),
+                "category_id": str(lead.category_id) if lead.category_id else None,
+                "service_id": str(lead.service_id) if lead.service_id else None,
+                "lead_status": lead.lead_status.name if hasattr(lead.lead_status, 'name') else str(lead.lead_status),
+                "contact_name": contact_name,
+                "contact_phone": contact_phone,
+                "contact_email": contact_email,
+                "locale": lead.locale or None,
+                "lead_charged": bool(lead.lead_charged),
+                "credit_state": credit_state,
+                "credit_state_updated": credit_state_updated,
+                "creation_date_time": lead.creation_date_time,
+            })
+        logger.info("Fetched LSA leads", customer_id=self.customer_id, count=len(results))
+        return results
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
+    async def get_lsa_conversations(self, days: int = 30) -> List[Dict[str, Any]]:
+        """
+        Fetch LSA lead conversations (call recordings, messages) via GAQL.
+        """
+        client = self._get_client()
+        ga_service = client.get_service("GoogleAdsService")
+        query = f"""
+            SELECT local_services_lead_conversation.id,
+                   local_services_lead_conversation.resource_name,
+                   local_services_lead_conversation.conversation_channel,
+                   local_services_lead_conversation.participant_type,
+                   local_services_lead_conversation.lead,
+                   local_services_lead_conversation.event_date_time,
+                   local_services_lead_conversation.phone_call_details.call_duration_millis,
+                   local_services_lead_conversation.phone_call_details.call_recording_url,
+                   local_services_lead_conversation.message_details.text,
+                   local_services_lead_conversation.message_details.attachment_urls
+            FROM local_services_lead_conversation
+            WHERE local_services_lead_conversation.event_date_time DURING LAST_{days}_DAYS
+            ORDER BY local_services_lead_conversation.event_date_time DESC
+            LIMIT 2000
+        """
+        try:
+            response = ga_service.search(customer_id=self.customer_id, query=query)
+        except Exception as e:
+            err_str = str(e)
+            if "UNRECOGNIZED" in err_str or "not found" in err_str.lower():
+                logger.info("No LSA conversations found", customer_id=self.customer_id)
+                return []
+            raise
+
+        results = []
+        for row in response:
+            conv = row.local_services_lead_conversation
+            # Phone call details
+            call_duration_ms = None
+            call_recording_url = None
+            try:
+                pcd = conv.phone_call_details
+                call_duration_ms = pcd.call_duration_millis if pcd.call_duration_millis else None
+                call_recording_url = pcd.call_recording_url if pcd.call_recording_url else None
+            except Exception:
+                pass
+
+            # Message details
+            message_text = None
+            attachment_urls = None
+            try:
+                md = conv.message_details
+                message_text = md.text if md.text else None
+                attachment_urls = list(md.attachment_urls) if md.attachment_urls else None
+            except Exception:
+                pass
+
+            # Extract lead resource name from the lead reference
+            lead_resource = ""
+            try:
+                lead_resource = conv.lead or ""
+            except Exception:
+                pass
+
+            results.append({
+                "conversation_id": str(conv.id),
+                "resource_name": conv.resource_name,
+                "channel": conv.conversation_channel.name if hasattr(conv.conversation_channel, 'name') else str(conv.conversation_channel),
+                "participant_type": conv.participant_type.name if hasattr(conv.participant_type, 'name') else str(conv.participant_type),
+                "lead_resource_name": lead_resource,
+                "event_date_time": conv.event_date_time,
+                "call_duration_ms": call_duration_ms,
+                "call_recording_url": call_recording_url,
+                "message_text": message_text,
+                "attachment_urls": attachment_urls,
+            })
+        logger.info("Fetched LSA conversations", customer_id=self.customer_id, count=len(results))
+        return results
+
+    async def submit_lsa_lead_feedback(self, lead_resource_name: str, feedback_type: str = "DISPUTE") -> Dict[str, Any]:
+        """
+        Submit feedback on an LSA lead (e.g., dispute a bad lead).
+        feedback_type: "DISPUTE" to request credit for a bad lead.
+        """
+        try:
+            client = self._get_client()
+            lsa_service = client.get_service("LocalServicesLeadService")
+
+            # Build the feedback request
+            request = client.get_type("ProvideLocalServicesLeadRequest")
+            request.resource_name = lead_resource_name
+
+            if feedback_type == "DISPUTE":
+                request.lead_feedback_submissions.append(
+                    client.get_type("LocalServicesLeadFeedbackSubmission")
+                )
+
+            response = lsa_service.provide_local_services_lead(request=request)
+            logger.info("LSA lead feedback submitted", lead=lead_resource_name, type=feedback_type)
+            return {"status": "submitted", "resource": lead_resource_name}
+        except Exception as e:
+            logger.error("Failed to submit LSA lead feedback", lead=lead_resource_name, error=str(e))
+            return {"status": "error", "error": str(e)}

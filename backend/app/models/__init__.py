@@ -34,6 +34,8 @@ from app.models.ad_performance_daily import AdPerformanceDaily
 from app.models.ad_group_performance_daily import AdGroupPerformanceDaily
 from app.models.landing_page_performance import LandingPagePerformance
 from app.models.google_recommendation import GoogleRecommendation
+from app.models.lsa_lead import LSALead
+from app.models.lsa_conversation import LSAConversation
 
 __all__ = [
     "Tenant", "User", "TenantUser", "IntegrationGoogleAds",
@@ -46,6 +48,7 @@ __all__ = [
     "SearchTermPerformance", "KeywordPerformanceDaily",
     "AdPerformanceDaily", "AdGroupPerformanceDaily",
     "LandingPagePerformance", "GoogleRecommendation",
+    "LSALead", "LSAConversation",
 ]
 
 # V2 Models — imported so Alembic/ORM can discover them

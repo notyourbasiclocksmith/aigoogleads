@@ -473,6 +473,12 @@ async def get_landing_pages(
 
 # ── PAGESPEED INSIGHTS ──────────────────────────────────────────
 
+import time as _time, logging as _logging
+_psi_cache: dict = {}        # {cache_key: (timestamp, result)}
+_PSI_CACHE_TTL = 3600        # 1 hour
+_psi_logger = _logging.getLogger("pagespeed")
+
+
 @router.get("/landing-pages/pagespeed")
 async def get_pagespeed(
     url: str = Query(...),
@@ -481,14 +487,28 @@ async def get_pagespeed(
 ):
     """Fetch Google PageSpeed Insights scores for a landing page URL."""
     import httpx
+    from app.core.config import settings
+
+    # Check in-memory cache first (avoids rate limits on rapid page loads)
+    cache_key = f"{url}|{strategy}"
+    cached = _psi_cache.get(cache_key)
+    if cached and (_time.time() - cached[0]) < _PSI_CACHE_TTL:
+        return cached[1]
 
     psi_url = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
     params = {"url": url, "strategy": strategy, "category": "performance"}
+    if settings.GOOGLE_API_KEY:
+        params["key"] = settings.GOOGLE_API_KEY
 
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.get(psi_url, params=params)
             if resp.status_code != 200:
+                body = resp.text[:500]
+                _psi_logger.warning(
+                    "PageSpeed API error: status=%s body=%s url=%s",
+                    resp.status_code, body, url,
+                )
                 raise HTTPException(502, f"PageSpeed API returned {resp.status_code}")
             data = resp.json()
 
@@ -510,7 +530,7 @@ async def get_pagespeed(
         loading_exp = data.get("loadingExperience", {})
         overall_category = loading_exp.get("overall_category", "NONE")
 
-        return {
+        result = {
             "url": url,
             "strategy": strategy,
             "performance_score": perf_score,
@@ -521,11 +541,16 @@ async def get_pagespeed(
             "speed_index_ms": round(si) if si else None,
             "overall_category": overall_category,
         }
+
+        # Cache the successful result
+        _psi_cache[cache_key] = (_time.time(), result)
+        return result
     except httpx.TimeoutException:
         raise HTTPException(504, "PageSpeed Insights timed out — try again")
     except HTTPException:
         raise
     except Exception as e:
+        _psi_logger.error("PageSpeed error: %s url=%s", str(e), url)
         raise HTTPException(502, f"PageSpeed error: {str(e)}")
 
 

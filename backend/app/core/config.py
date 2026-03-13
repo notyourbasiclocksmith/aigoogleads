@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     # V2 — Slack
     SLACK_DEFAULT_WEBHOOK: str = ""
 
+    # Google REST APIs (PageSpeed Insights, etc.)
+    GOOGLE_API_KEY: str = ""
+
+    # CallFlux Bridge (cross-platform LSA + call data)
+    CALLFLUX_BRIDGE_API_KEY: str = ""
+    CALLFLUX_API_URL: str = ""  # e.g. https://callflux-api.onrender.com
+
     # V2 — GA4 OAuth
     GA4_CLIENT_ID: str = ""
     GA4_CLIENT_SECRET: str = ""

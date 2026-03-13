@@ -8,7 +8,7 @@ import {
   Search, Zap, FlaskConical, FileText, Settings, LogOut,
   Shield, BarChart3, Building2, GitBranch, Plug, Scale,
   CreditCard, Bell, Trophy, Crosshair, Brain,
-  MessageSquare, Key, Image, Globe, Lightbulb, Compass,
+  MessageSquare, Key, Image, Globe, Lightbulb, Compass, Phone,
 } from "lucide-react";
 
 const navItems = [
@@ -25,6 +25,8 @@ const navItems = [
   { label: "Landing Pages", href: "/ads/landing-pages", icon: Globe },
   { label: "Recommendations", href: "/ads/recommendations", icon: Lightbulb },
   { label: "Keyword Research", href: "/ads/keyword-research", icon: Compass },
+  { label: "LSA Leads", href: "/lsa", icon: Phone },
+  { label: "Unified Calls", href: "/calls", icon: BarChart3 },
   { label: "Creative Studio", href: "/creative", icon: Palette },
   { label: "Competitors", href: "/intel/competitors", icon: Search },
   { label: "Optimizations", href: "/optimizations", icon: Zap },

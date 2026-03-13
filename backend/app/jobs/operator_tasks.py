@@ -3,8 +3,9 @@ Celery tasks for the AI Campaign Operator pipeline.
 """
 import asyncio
 import structlog
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from app.jobs.celery_app import celery_app
-from app.core.database import async_session_factory
+from app.core.config import settings
 
 logger = structlog.get_logger()
 
@@ -50,18 +51,26 @@ def apply_change_set_task(self, change_set_id: str):
 
 async def _run_scan(scan_id: str):
     from app.services.operator.operator_orchestrator import run_operator_scan
-    async with async_session_factory() as db:
-        await run_operator_scan(scan_id, db)
+    eng, factory = _make_task_session()
+    try:
+        async with factory() as db:
+            await run_operator_scan(scan_id, db)
+    finally:
+        await eng.dispose()
 
 
 async def _mark_failed(scan_id: str, error: str):
     from app.models.v2.operator_scan import OperatorScan
-    async with async_session_factory() as db:
-        scan = await db.get(OperatorScan, scan_id)
-        if scan:
-            scan.status = "failed"
-            scan.error_message = error
-            await db.commit()
+    eng, factory = _make_task_session()
+    try:
+        async with factory() as db:
+            scan = await db.get(OperatorScan, scan_id)
+            if scan:
+                scan.status = "failed"
+                scan.error_message = error
+                await db.commit()
+    finally:
+        await eng.dispose()
 
 
 @celery_app.task(name="app.jobs.operator_tasks.run_autonomous_optimizer_task", bind=True, max_retries=1)
@@ -134,29 +143,58 @@ def rollback_cycle_task(self, cycle_id: str):
 
 
 # ── Async helpers ─────────────────────────────────────────────────────────
+# Each helper creates a fresh async engine so the asyncpg connection pool is
+# bound to the current event loop (created by the Celery task).  The module-
+# level engine in database.py is tied to whatever loop existed at import time
+# and causes "Future attached to a different loop" when reused here.
+
+def _make_task_session():
+    """Create a disposable engine + session factory for this task's event loop."""
+    eng = create_async_engine(
+        settings.DATABASE_URL, pool_size=5, max_overflow=5, pool_pre_ping=True,
+    )
+    factory = async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)
+    return eng, factory
+
 
 async def _run_all_autonomous():
     from app.services.operator.autonomous_optimizer import run_all_accounts
-    async with async_session_factory() as db:
-        return await run_all_accounts(db)
+    eng, factory = _make_task_session()
+    try:
+        async with factory() as db:
+            return await run_all_accounts(db)
+    finally:
+        await eng.dispose()
 
 
 async def _run_single_cycle(tenant_id: str, account_id: str, trigger: str):
     from app.services.operator.autonomous_optimizer import run_autonomous_cycle
-    async with async_session_factory() as db:
-        return await run_autonomous_cycle(tenant_id, account_id, db, trigger)
+    eng, factory = _make_task_session()
+    try:
+        async with factory() as db:
+            return await run_autonomous_cycle(tenant_id, account_id, db, trigger)
+    finally:
+        await eng.dispose()
 
 
 async def _evaluate_feedback(cycle_id: str):
     from app.services.operator.feedback_loop import evaluate_cycle
-    async with async_session_factory() as db:
-        return await evaluate_cycle(cycle_id, db)
+    eng, factory = _make_task_session()
+    try:
+        async with factory() as db:
+            return await evaluate_cycle(cycle_id, db)
+    finally:
+        await eng.dispose()
 
 
 async def _rollback_cycle(cycle_id: str):
     from app.services.operator.feedback_loop import rollback_cycle
-    async with async_session_factory() as db:
-        return await rollback_cycle(cycle_id, db)
+    eng, factory = _make_task_session()
+    try:
+        async with factory() as db:
+            return await rollback_cycle(cycle_id, db)
+    finally:
+        await eng.dispose()
 
 
 async def _apply_changes(change_set_id: str):
@@ -165,8 +203,12 @@ async def _apply_changes(change_set_id: str):
     Converts OperatorRecommendations into real Google Ads API calls.
     """
     from app.services.operator.execution_engine import ExecutionEngine
-    async with async_session_factory() as db:
-        engine = ExecutionEngine(db)
-        result = await engine.execute_change_set(change_set_id)
-        logger.info("Change set execution result",
-                     change_set_id=change_set_id, result=result)
+    eng, factory = _make_task_session()
+    try:
+        async with factory() as db:
+            execution_engine = ExecutionEngine(db)
+            result = await execution_engine.execute_change_set(change_set_id)
+            logger.info("Change set execution result",
+                         change_set_id=change_set_id, result=result)
+    finally:
+        await eng.dispose()

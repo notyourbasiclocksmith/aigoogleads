@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 import structlog
 
 from app.core.config import settings
-from app.api import auth, tenants, onboarding, dashboard, ads_accounts, ads_audit, ads_prompt, ads_data, campaigns, creative, competitors, optimizations, experiments, reports, admin_settings
+from app.api import auth, tenants, onboarding, dashboard, ads_accounts, ads_audit, ads_prompt, ads_data, campaigns, creative, competitors, optimizations, experiments, reports, admin_settings, lsa, bridge
 from app.api import workspace
 from app.api.v2 import mcc, conversions, change_mgmt, connectors, policy, billing, notifications, evaluation, operator
 
@@ -64,6 +64,8 @@ app.include_router(optimizations.router, prefix="/api/optimizations", tags=["Opt
 app.include_router(experiments.router, prefix="/api/experiments", tags=["Experiments"])
 app.include_router(reports.router, prefix="/api/reports", tags=["Reports"])
 app.include_router(admin_settings.router, prefix="/api/settings", tags=["Settings"])
+app.include_router(lsa.router, prefix="/api/lsa", tags=["LSA (Local Services Ads)"])
+app.include_router(bridge.router, prefix="/api/bridge", tags=["Bridge (CallFlux ↔ IgniteAds)"])
 
 # V2 API Routes
 app.include_router(mcc.router, prefix="/api/v2/mcc", tags=["V2 MCC/Agency"])

@@ -206,6 +206,8 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
     from app.models.landing_page_performance import LandingPagePerformance
     from app.models.auction_insight import AuctionInsight
     from app.models.google_recommendation import GoogleRecommendation
+    from app.models.lsa_lead import LSALead
+    from app.models.lsa_conversation import LSAConversation
     from app.integrations.google_ads.client import GoogleAdsClient
     from datetime import datetime, timezone
 
@@ -758,7 +760,103 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
             except Exception as rec_err:
                 logger.warning("Google recommendations sync failed", error=str(rec_err))
 
-            # Step 14: Complete
+            # Step 14: LSA leads + conversations
+            await _update_sync_progress(db, integration, "syncing", "Pulling Local Services leads...", 98)
+            lsa_lead_count = 0
+            lsa_conv_count = 0
+            try:
+                lsa_leads = await client.get_lsa_leads(days=30)
+                # Build a mapping: lead_resource_name -> our LSALead UUID
+                lsa_resource_to_uuid = {}
+                for ll in lsa_leads:
+                    existing_ll = await db.execute(
+                        select(LSALead).where(
+                            LSALead.tenant_id == tenant_id,
+                            LSALead.google_lead_id == ll["lead_id"],
+                        )
+                    )
+                    lead_obj = existing_ll.scalar_one_or_none()
+                    if not lead_obj:
+                        lead_obj = LSALead(
+                            tenant_id=tenant_id,
+                            google_customer_id=integration.customer_id,
+                            lead_resource_name=ll["resource_name"],
+                            google_lead_id=ll["lead_id"],
+                            lead_type=ll["lead_type"],
+                            category_id=ll.get("category_id"),
+                            service_id=ll.get("service_id"),
+                            lead_status=ll.get("lead_status"),
+                            locale=ll.get("locale"),
+                            contact_name=ll.get("contact_name"),
+                            contact_phone=ll.get("contact_phone"),
+                            contact_email=ll.get("contact_email"),
+                            lead_charged=ll.get("lead_charged", False),
+                            credit_state=ll.get("credit_state"),
+                            lead_creation_datetime=ll.get("creation_date_time"),
+                            synced_at=datetime.now(timezone.utc),
+                        )
+                        db.add(lead_obj)
+                        await db.flush()
+                    else:
+                        lead_obj.lead_status = ll.get("lead_status") or lead_obj.lead_status
+                        lead_obj.lead_charged = ll.get("lead_charged", lead_obj.lead_charged)
+                        lead_obj.credit_state = ll.get("credit_state") or lead_obj.credit_state
+                        lead_obj.contact_name = ll.get("contact_name") or lead_obj.contact_name
+                        lead_obj.contact_phone = ll.get("contact_phone") or lead_obj.contact_phone
+                        lead_obj.contact_email = ll.get("contact_email") or lead_obj.contact_email
+                        lead_obj.synced_at = datetime.now(timezone.utc)
+                    lsa_resource_to_uuid[ll["resource_name"]] = lead_obj.id
+                    lsa_lead_count += 1
+                await db.flush()
+
+                # Conversations
+                lsa_convos = await client.get_lsa_conversations(days=30)
+                for lc in lsa_convos:
+                    # Match conversation to its parent lead
+                    lead_rn = lc.get("lead_resource_name", "")
+                    parent_lead_uuid = lsa_resource_to_uuid.get(lead_rn)
+                    if not parent_lead_uuid:
+                        # Try to find lead in DB by resource name
+                        lead_lookup = await db.execute(
+                            select(LSALead).where(LSALead.lead_resource_name == lead_rn)
+                        )
+                        found_lead = lead_lookup.scalar_one_or_none()
+                        if found_lead:
+                            parent_lead_uuid = found_lead.id
+                        else:
+                            continue  # Skip orphan conversations
+
+                    existing_lc = await db.execute(
+                        select(LSAConversation).where(
+                            LSAConversation.conversation_resource_name == lc["resource_name"],
+                        )
+                    )
+                    conv_obj = existing_lc.scalar_one_or_none()
+                    if not conv_obj:
+                        conv_obj = LSAConversation(
+                            tenant_id=tenant_id,
+                            lead_id=parent_lead_uuid,
+                            conversation_resource_name=lc["resource_name"],
+                            channel=lc["channel"],
+                            participant_type=lc.get("participant_type"),
+                            event_datetime=lc.get("event_date_time"),
+                            call_duration_ms=lc.get("call_duration_ms"),
+                            call_recording_url=lc.get("call_recording_url"),
+                            message_text=lc.get("message_text"),
+                            attachment_urls=lc.get("attachment_urls"),
+                            synced_at=datetime.now(timezone.utc),
+                        )
+                        db.add(conv_obj)
+                    else:
+                        conv_obj.call_recording_url = lc.get("call_recording_url") or conv_obj.call_recording_url
+                        conv_obj.call_duration_ms = lc.get("call_duration_ms") or conv_obj.call_duration_ms
+                        conv_obj.synced_at = datetime.now(timezone.utc)
+                    lsa_conv_count += 1
+                await db.flush()
+            except Exception as lsa_err:
+                logger.warning("LSA leads sync failed (account may not have LSA)", error=str(lsa_err))
+
+            # Step 15: Complete
             integration.last_sync_at = datetime.now(timezone.utc)
             integration.health_score = 85
             await _update_sync_progress(
@@ -766,7 +864,8 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
                 f"Sync complete — {campaign_count} campaigns, {total_ag} ad groups, {total_kw} keywords, "
                 f"{total_ad} ads, {conv_count} conversions, {metrics_count} campaign metrics, "
                 f"{kw_perf_count} keyword metrics, {ad_perf_count} ad metrics, {ag_perf_count} ad group metrics, "
-                f"{st_count} search terms, {lp_count} landing pages, {ai_count} auction insights, {rec_count} recommendations",
+                f"{st_count} search terms, {lp_count} landing pages, {ai_count} auction insights, "
+                f"{rec_count} recommendations, {lsa_lead_count} LSA leads, {lsa_conv_count} LSA conversations",
                 100,
             )
             logger.info("Ads account sync complete", tenant_id=tenant_id, integration_id=integration_id,
@@ -774,7 +873,7 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
                         ads=total_ad, conversions=conv_count, metrics=metrics_count,
                         kw_perf=kw_perf_count, ad_perf=ad_perf_count, ag_perf=ag_perf_count,
                         search_terms=st_count, landing_pages=lp_count, auction_insights=ai_count,
-                        recommendations=rec_count)
+                        recommendations=rec_count, lsa_leads=lsa_lead_count, lsa_conversations=lsa_conv_count)
         except Exception as e:
             await db.rollback()
             # Extract real error from RetryError wrapper
@@ -1238,3 +1337,107 @@ async def _generate_all_reports(report_type: str, period_days: int):
 @celery_app.task(name="app.jobs.tasks.aggregate_learnings")
 def aggregate_learnings():
     logger.info("Learning aggregation task started")
+
+
+# ── LSA Auto-Dispute ──────────────────────────────────────────
+
+@celery_app.task(name="app.jobs.tasks.auto_dispute_lsa_leads")
+def auto_dispute_lsa_leads():
+    """Auto-dispute charged LSA leads that AI flagged as spam/unqualified."""
+    import asyncio
+    asyncio.run(_auto_dispute_lsa_leads_async())
+
+
+async def _auto_dispute_lsa_leads_async():
+    from app.core.database import async_session_factory
+    from app.models.lsa_lead import LSALead
+    from app.models.integration_google_ads import IntegrationGoogleAds
+    from app.integrations.google_ads.client import GoogleAdsClient
+    from datetime import datetime, timezone, timedelta
+
+    async with async_session_factory() as db:
+        # Find charged leads with low AI quality score and not yet disputed
+        cutoff = datetime.now(timezone.utc) - timedelta(days=14)
+        result = await db.execute(
+            select(LSALead).where(
+                and_(
+                    LSALead.lead_charged == True,
+                    LSALead.ai_qualified_lead == False,
+                    LSALead.ai_lead_quality_score.isnot(None),
+                    LSALead.ai_lead_quality_score < 20,
+                    LSALead.credit_state.in_([None, "NORMAL"]),
+                    LSALead.feedback_submitted_at.is_(None),
+                    LSALead.lead_creation_datetime >= cutoff,
+                )
+            )
+        )
+        leads = result.scalars().all()
+
+        if not leads:
+            logger.info("LSA auto-dispute: no eligible leads found")
+            return
+
+        logger.info("LSA auto-dispute: found eligible leads", count=len(leads))
+
+        # Group leads by google_customer_id so we can reuse clients
+        leads_by_customer = {}
+        for lead in leads:
+            cid = lead.google_customer_id
+            if cid not in leads_by_customer:
+                leads_by_customer[cid] = []
+            leads_by_customer[cid].append(lead)
+
+        disputed = 0
+        failed = 0
+
+        for customer_id, customer_leads in leads_by_customer.items():
+            # Find active integration for this customer
+            integ_result = await db.execute(
+                select(IntegrationGoogleAds).where(
+                    IntegrationGoogleAds.customer_id == customer_id,
+                    IntegrationGoogleAds.is_active == True,
+                )
+            )
+            integration = integ_result.scalar_one_or_none()
+            if not integration:
+                logger.warning("LSA auto-dispute: no integration for customer", customer_id=customer_id)
+                continue
+
+            client = GoogleAdsClient(
+                customer_id=integration.customer_id,
+                refresh_token_encrypted=integration.refresh_token_encrypted,
+                login_customer_id=integration.login_customer_id,
+            )
+
+            for lead in customer_leads:
+                try:
+                    # Determine dispute reason from AI analysis
+                    reason = lead.ai_qualified_reason or "Spam or unrelated call"
+                    if lead.ai_lead_quality_score is not None and lead.ai_lead_quality_score < 5:
+                        feedback_type = "SPAM"
+                    else:
+                        feedback_type = "NOT_USEFUL"
+
+                    await client.submit_lsa_lead_feedback(
+                        lead.lead_resource_name,
+                        feedback_type,
+                    )
+
+                    lead.credit_state = "CREDIT_REQUESTED"
+                    lead.feedback_submitted_at = datetime.now(timezone.utc)
+                    lead.feedback_data = {
+                        "auto_disputed": True,
+                        "feedback_type": feedback_type,
+                        "reason": reason,
+                        "ai_score": lead.ai_lead_quality_score,
+                    }
+                    disputed += 1
+                    logger.info("LSA auto-dispute: disputed lead",
+                                lead_id=str(lead.id), score=lead.ai_lead_quality_score)
+                except Exception as e:
+                    failed += 1
+                    logger.error("LSA auto-dispute: failed to dispute lead",
+                                 lead_id=str(lead.id), error=str(e))
+
+        await db.commit()
+        logger.info("LSA auto-dispute complete", disputed=disputed, failed=failed)
