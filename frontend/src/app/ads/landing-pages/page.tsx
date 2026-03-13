@@ -5,7 +5,7 @@ import { AppLayout } from "@/components/layout/sidebar";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
-import { Globe, Gauge, Loader2, ExternalLink, Zap } from "lucide-react";
+import { Globe, Gauge, Loader2, ExternalLink, Zap, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
 
 interface PageSpeedResult {
   performance_score: number | null;
@@ -37,6 +37,9 @@ function formatMs(ms: number | null): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+type SortKey = "clicks" | "cost" | "conversions" | "conversion_rate" | "ctr" | "pagespeed";
+type SortDir = "asc" | "desc";
+
 export default function LandingPagesPage() {
   const [pages, setPages] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -44,6 +47,8 @@ export default function LandingPagesPage() {
   const [speeds, setSpeeds] = useState<Record<string, PageSpeedResult>>({});
   const [checking, setChecking] = useState<Record<string, boolean>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey>("clicks");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   useEffect(() => {
     setLoading(true);
@@ -80,6 +85,34 @@ export default function LandingPagesPage() {
     }
   }, [pages]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDir(sortDir === "desc" ? "asc" : "desc");
+    } else {
+      setSortKey(key);
+      setSortDir("desc");
+    }
+  }
+
+  function SortIcon({ col }: { col: SortKey }) {
+    if (sortKey !== col) return <ArrowUpDown className="w-3 h-3 text-slate-300" />;
+    return sortDir === "desc"
+      ? <ArrowDown className="w-3 h-3 text-blue-600" />
+      : <ArrowUp className="w-3 h-3 text-blue-600" />;
+  }
+
+  const sortedPages = [...pages].sort((a, b) => {
+    let av: number, bv: number;
+    if (sortKey === "pagespeed") {
+      av = speeds[a.landing_page_url]?.performance_score ?? -1;
+      bv = speeds[b.landing_page_url]?.performance_score ?? -1;
+    } else {
+      av = a[sortKey] || 0;
+      bv = b[sortKey] || 0;
+    }
+    return sortDir === "desc" ? bv - av : av - bv;
+  });
+
   return (
     <AppLayout>
       <div className="space-y-6">
@@ -110,20 +143,34 @@ export default function LandingPagesPage() {
                   <thead>
                     <tr className="border-b bg-slate-50">
                       <th className="text-left p-3 font-medium">Landing Page URL</th>
-                      <th className="text-right p-3 font-medium">Clicks</th>
-                      <th className="text-right p-3 font-medium">Cost</th>
-                      <th className="text-right p-3 font-medium">Conv.</th>
-                      <th className="text-right p-3 font-medium">Conv. Rate</th>
-                      <th className="text-right p-3 font-medium">CTR</th>
+                      {[
+                        { key: "clicks" as SortKey, label: "Clicks" },
+                        { key: "cost" as SortKey, label: "Cost" },
+                        { key: "conversions" as SortKey, label: "Conv." },
+                        { key: "conversion_rate" as SortKey, label: "Conv. Rate" },
+                        { key: "ctr" as SortKey, label: "CTR" },
+                      ].map(({ key, label }) => (
+                        <th key={key} className="text-right p-3 font-medium">
+                          <button
+                            onClick={() => toggleSort(key)}
+                            className="inline-flex items-center gap-1 hover:text-blue-600 transition-colors"
+                          >
+                            {label} <SortIcon col={key} />
+                          </button>
+                        </th>
+                      ))}
                       <th className="text-center p-3 font-medium">
-                        <div className="flex items-center justify-center gap-1">
-                          <Gauge className="w-3.5 h-3.5" /> PageSpeed
-                        </div>
+                        <button
+                          onClick={() => toggleSort("pagespeed")}
+                          className="inline-flex items-center gap-1 hover:text-blue-600 transition-colors"
+                        >
+                          <Gauge className="w-3.5 h-3.5" /> PageSpeed <SortIcon col="pagespeed" />
+                        </button>
                       </th>
                     </tr>
                   </thead>
                   <tbody>
-                    {pages.map((p, i) => {
+                    {sortedPages.map((p, i) => {
                       const speed = speeds[p.landing_page_url];
                       const isChecking = checking[p.landing_page_url];
                       const isExpanded = expanded === p.landing_page_url;
