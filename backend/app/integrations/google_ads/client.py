@@ -291,6 +291,676 @@ class GoogleAdsClient:
             })
         return ads
 
+    # ── NEW DATA PIPELINES ─────────────────────────────────────────
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
+    async def get_search_terms(self, date_range: str = "LAST_30_DAYS") -> List[Dict[str, Any]]:
+        client = self._get_client()
+        ga_service = client.get_service("GoogleAdsService")
+        query = f"""
+            SELECT search_term_view.search_term,
+                   campaign.id, ad_group.id,
+                   segments.keyword.info.text,
+                   segments.keyword.ad_group_criterion,
+                   segments.date,
+                   metrics.impressions, metrics.clicks, metrics.cost_micros,
+                   metrics.conversions, metrics.conversions_value,
+                   metrics.ctr, metrics.average_cpc
+            FROM search_term_view
+            WHERE segments.date DURING {date_range}
+            ORDER BY metrics.cost_micros DESC
+            LIMIT 5000
+        """
+        response = ga_service.search(customer_id=self.customer_id, query=query)
+        from datetime import datetime as dt
+        results = []
+        for row in response:
+            date_str = str(row.segments.date)
+            date_obj = dt.strptime(date_str, "%Y-%m-%d").date()
+            keyword_text = ""
+            keyword_id = ""
+            try:
+                keyword_text = row.segments.keyword.info.text
+                criterion_rn = row.segments.keyword.ad_group_criterion
+                keyword_id = criterion_rn.split("~")[-1] if criterion_rn else ""
+            except Exception:
+                pass
+            results.append({
+                "search_term": row.search_term_view.search_term,
+                "campaign_id": str(row.campaign.id),
+                "ad_group_id": str(row.ad_group.id),
+                "keyword_id": keyword_id,
+                "keyword_text": keyword_text,
+                "date": date_obj,
+                "impressions": row.metrics.impressions,
+                "clicks": row.metrics.clicks,
+                "cost_micros": row.metrics.cost_micros,
+                "conversions": row.metrics.conversions,
+                "conversion_value": row.metrics.conversions_value,
+                "ctr": row.metrics.ctr,
+                "average_cpc_micros": row.metrics.average_cpc,
+            })
+        return results
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
+    async def get_keyword_performance(self, date_range: str = "LAST_30_DAYS") -> List[Dict[str, Any]]:
+        client = self._get_client()
+        ga_service = client.get_service("GoogleAdsService")
+        query = f"""
+            SELECT ad_group_criterion.criterion_id,
+                   ad_group_criterion.keyword.text,
+                   ad_group_criterion.keyword.match_type,
+                   ad_group_criterion.quality_info.quality_score,
+                   campaign.id, ad_group.id, segments.date,
+                   metrics.impressions, metrics.clicks, metrics.cost_micros,
+                   metrics.conversions, metrics.conversions_value,
+                   metrics.ctr, metrics.average_cpc
+            FROM keyword_view
+            WHERE segments.date DURING {date_range}
+              AND ad_group_criterion.status != 'REMOVED'
+            ORDER BY metrics.cost_micros DESC
+        """
+        response = ga_service.search(customer_id=self.customer_id, query=query)
+        from datetime import datetime as dt
+        results = []
+        for row in response:
+            date_str = str(row.segments.date)
+            date_obj = dt.strptime(date_str, "%Y-%m-%d").date()
+            qs = row.ad_group_criterion.quality_info.quality_score
+            results.append({
+                "keyword_id": str(row.ad_group_criterion.criterion_id),
+                "keyword_text": row.ad_group_criterion.keyword.text,
+                "match_type": row.ad_group_criterion.keyword.match_type.name,
+                "campaign_id": str(row.campaign.id),
+                "ad_group_id": str(row.ad_group.id),
+                "date": date_obj,
+                "impressions": row.metrics.impressions,
+                "clicks": row.metrics.clicks,
+                "cost_micros": row.metrics.cost_micros,
+                "conversions": row.metrics.conversions,
+                "conversion_value": row.metrics.conversions_value,
+                "ctr": row.metrics.ctr,
+                "average_cpc_micros": row.metrics.average_cpc,
+                "quality_score": qs if qs else None,
+            })
+        return results
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
+    async def get_ad_performance(self, date_range: str = "LAST_30_DAYS") -> List[Dict[str, Any]]:
+        client = self._get_client()
+        ga_service = client.get_service("GoogleAdsService")
+        query = f"""
+            SELECT ad_group_ad.ad.id, campaign.id, ad_group.id,
+                   segments.date,
+                   metrics.impressions, metrics.clicks, metrics.cost_micros,
+                   metrics.conversions, metrics.conversions_value,
+                   metrics.ctr, metrics.average_cpc
+            FROM ad_group_ad
+            WHERE segments.date DURING {date_range}
+              AND ad_group_ad.status != 'REMOVED'
+            ORDER BY metrics.cost_micros DESC
+        """
+        response = ga_service.search(customer_id=self.customer_id, query=query)
+        from datetime import datetime as dt
+        results = []
+        for row in response:
+            date_str = str(row.segments.date)
+            date_obj = dt.strptime(date_str, "%Y-%m-%d").date()
+            results.append({
+                "ad_id": str(row.ad_group_ad.ad.id),
+                "campaign_id": str(row.campaign.id),
+                "ad_group_id": str(row.ad_group.id),
+                "date": date_obj,
+                "impressions": row.metrics.impressions,
+                "clicks": row.metrics.clicks,
+                "cost_micros": row.metrics.cost_micros,
+                "conversions": row.metrics.conversions,
+                "conversion_value": row.metrics.conversions_value,
+                "ctr": row.metrics.ctr,
+                "average_cpc_micros": row.metrics.average_cpc,
+            })
+        return results
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
+    async def get_ad_group_performance(self, date_range: str = "LAST_30_DAYS") -> List[Dict[str, Any]]:
+        client = self._get_client()
+        ga_service = client.get_service("GoogleAdsService")
+        query = f"""
+            SELECT ad_group.id, campaign.id, segments.date,
+                   metrics.impressions, metrics.clicks, metrics.cost_micros,
+                   metrics.conversions, metrics.conversions_value,
+                   metrics.ctr, metrics.average_cpc
+            FROM ad_group
+            WHERE segments.date DURING {date_range}
+              AND ad_group.status != 'REMOVED'
+            ORDER BY metrics.cost_micros DESC
+        """
+        response = ga_service.search(customer_id=self.customer_id, query=query)
+        from datetime import datetime as dt
+        results = []
+        for row in response:
+            date_str = str(row.segments.date)
+            date_obj = dt.strptime(date_str, "%Y-%m-%d").date()
+            results.append({
+                "ad_group_id": str(row.ad_group.id),
+                "campaign_id": str(row.campaign.id),
+                "date": date_obj,
+                "impressions": row.metrics.impressions,
+                "clicks": row.metrics.clicks,
+                "cost_micros": row.metrics.cost_micros,
+                "conversions": row.metrics.conversions,
+                "conversion_value": row.metrics.conversions_value,
+                "ctr": row.metrics.ctr,
+                "average_cpc_micros": row.metrics.average_cpc,
+            })
+        return results
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
+    async def get_landing_page_performance(self, date_range: str = "LAST_30_DAYS") -> List[Dict[str, Any]]:
+        client = self._get_client()
+        ga_service = client.get_service("GoogleAdsService")
+        query = f"""
+            SELECT landing_page_view.unexpanded_final_url,
+                   campaign.id, ad_group.id, segments.date,
+                   metrics.impressions, metrics.clicks, metrics.cost_micros,
+                   metrics.conversions, metrics.conversions_value,
+                   metrics.mobile_friendly_clicks_percentage,
+                   metrics.speed_score
+            FROM landing_page_view
+            WHERE segments.date DURING {date_range}
+            ORDER BY metrics.clicks DESC
+            LIMIT 2000
+        """
+        response = ga_service.search(customer_id=self.customer_id, query=query)
+        from datetime import datetime as dt
+        results = []
+        for row in response:
+            date_str = str(row.segments.date)
+            date_obj = dt.strptime(date_str, "%Y-%m-%d").date()
+            mobile_rate = None
+            speed = None
+            try:
+                mobile_rate = row.metrics.mobile_friendly_clicks_percentage
+            except Exception:
+                pass
+            try:
+                speed = row.metrics.speed_score
+            except Exception:
+                pass
+            results.append({
+                "landing_page_url": row.landing_page_view.unexpanded_final_url,
+                "campaign_id": str(row.campaign.id),
+                "ad_group_id": str(row.ad_group.id),
+                "date": date_obj,
+                "impressions": row.metrics.impressions,
+                "clicks": row.metrics.clicks,
+                "cost_micros": row.metrics.cost_micros,
+                "conversions": row.metrics.conversions,
+                "conversion_value": row.metrics.conversions_value,
+                "mobile_friendly_click_rate": mobile_rate,
+                "speed_score": speed,
+            })
+        return results
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
+    async def get_google_recommendations(self) -> List[Dict[str, Any]]:
+        client = self._get_client()
+        ga_service = client.get_service("GoogleAdsService")
+        query = """
+            SELECT recommendation.resource_name,
+                   recommendation.type,
+                   recommendation.impact,
+                   recommendation.campaign,
+                   recommendation.ad_group,
+                   recommendation.campaign_budget_recommendation,
+                   recommendation.keyword_recommendation,
+                   recommendation.text_ad_recommendation,
+                   recommendation.sitelink_extension_recommendation,
+                   recommendation.responsive_search_ad_recommendation
+            FROM recommendation
+        """
+        response = ga_service.search(customer_id=self.customer_id, query=query)
+        results = []
+        for row in response:
+            rec = row.recommendation
+            campaign_id = ""
+            ad_group_id = ""
+            try:
+                if rec.campaign:
+                    campaign_id = rec.campaign.split("/")[-1]
+            except Exception:
+                pass
+            try:
+                if rec.ad_group:
+                    ad_group_id = rec.ad_group.split("/")[-1]
+            except Exception:
+                pass
+
+            impact_base = {}
+            impact_potential = {}
+            try:
+                impact = rec.impact
+                if impact and impact.base_metrics:
+                    bm = impact.base_metrics
+                    impact_base = {
+                        "impressions": getattr(bm, "impressions", None),
+                        "clicks": getattr(bm, "clicks", None),
+                        "cost_micros": getattr(bm, "cost_micros", None),
+                        "conversions": getattr(bm, "conversions", None),
+                    }
+                if impact and impact.potential_metrics:
+                    pm = impact.potential_metrics
+                    impact_potential = {
+                        "impressions": getattr(pm, "impressions", None),
+                        "clicks": getattr(pm, "clicks", None),
+                        "cost_micros": getattr(pm, "cost_micros", None),
+                        "conversions": getattr(pm, "conversions", None),
+                    }
+            except Exception:
+                pass
+
+            details = {}
+            rec_type_name = rec.type_.name if hasattr(rec.type_, 'name') else str(rec.type_)
+            try:
+                if rec_type_name == "KEYWORD" and rec.keyword_recommendation:
+                    kr = rec.keyword_recommendation
+                    details = {
+                        "keyword": kr.keyword.text if kr.keyword else "",
+                        "match_type": kr.keyword.match_type.name if kr.keyword else "",
+                        "recommended_cpc_bid_micros": kr.recommended_cpc_bid_micros if hasattr(kr, 'recommended_cpc_bid_micros') else None,
+                    }
+                elif rec_type_name == "CAMPAIGN_BUDGET" and rec.campaign_budget_recommendation:
+                    cbr = rec.campaign_budget_recommendation
+                    details = {
+                        "current_budget_micros": cbr.current_budget_amount_micros if hasattr(cbr, 'current_budget_amount_micros') else None,
+                        "recommended_budget_micros": cbr.recommended_budget_amount_micros if hasattr(cbr, 'recommended_budget_amount_micros') else None,
+                    }
+                elif rec_type_name == "RESPONSIVE_SEARCH_AD" and rec.responsive_search_ad_recommendation:
+                    rsar = rec.responsive_search_ad_recommendation
+                    details = {"ad": str(rsar)}
+            except Exception:
+                pass
+
+            results.append({
+                "resource_name": rec.resource_name,
+                "type": rec_type_name,
+                "campaign_id": campaign_id,
+                "ad_group_id": ad_group_id,
+                "impact_base": impact_base,
+                "impact_potential": impact_potential,
+                "details": details,
+            })
+        return results
+
+    async def apply_google_recommendation(self, resource_name: str) -> Dict[str, Any]:
+        try:
+            client = self._get_client()
+            rec_service = client.get_service("RecommendationService")
+            operation = client.get_type("ApplyRecommendationOperation")
+            operation.resource_name = resource_name
+            response = rec_service.apply_recommendation(
+                customer_id=self.customer_id,
+                operations=[operation],
+            )
+            return {"status": "applied", "resource": resource_name}
+        except Exception as e:
+            logger.error("Failed to apply recommendation", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def dismiss_google_recommendation(self, resource_name: str) -> Dict[str, Any]:
+        try:
+            client = self._get_client()
+            rec_service = client.get_service("RecommendationService")
+            operation = client.get_type("DismissRecommendationRequest.DismissRecommendationOperation")
+            operation.resource_name = resource_name
+            response = rec_service.dismiss_recommendation(
+                customer_id=self.customer_id,
+                operations=[operation],
+            )
+            return {"status": "dismissed", "resource": resource_name}
+        except Exception as e:
+            logger.error("Failed to dismiss recommendation", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def get_keyword_ideas(self, seed_keywords: List[str], location_id: str = "2840",
+                                 language_id: str = "1000") -> List[Dict[str, Any]]:
+        try:
+            client = self._get_client()
+            kp_service = client.get_service("KeywordPlanIdeaService")
+
+            request = client.get_type("GenerateKeywordIdeasRequest")
+            request.customer_id = self.customer_id
+            request.language = f"languageConstants/{language_id}"
+            request.geo_target_constants.append(f"geoTargetConstants/{location_id}")
+            request.keyword_plan_network = client.enums.KeywordPlanNetworkEnum.GOOGLE_SEARCH
+
+            seed = request.keyword_seed
+            for kw in seed_keywords:
+                seed.keywords.append(kw)
+
+            response = kp_service.generate_keyword_ideas(request=request)
+            results = []
+            for idea in response:
+                avg_monthly = 0
+                competition = "UNKNOWN"
+                low_bid = 0
+                high_bid = 0
+                try:
+                    km = idea.keyword_idea_metrics
+                    avg_monthly = km.avg_monthly_searches
+                    competition = km.competition.name if hasattr(km.competition, 'name') else str(km.competition)
+                    low_bid = km.low_top_of_page_bid_micros
+                    high_bid = km.high_top_of_page_bid_micros
+                except Exception:
+                    pass
+                results.append({
+                    "keyword": idea.text,
+                    "avg_monthly_searches": avg_monthly,
+                    "competition": competition,
+                    "low_top_of_page_bid_micros": low_bid,
+                    "high_top_of_page_bid_micros": high_bid,
+                })
+            return results
+        except Exception as e:
+            logger.error("Failed to get keyword ideas", error=str(e))
+            return []
+
+    # ── MUTATION OPERATIONS ──────────────────────────────────────────
+
+    async def add_negative_keywords(self, campaign_id: str, keywords: List[str]) -> Dict[str, Any]:
+        try:
+            client = self._get_client()
+            campaign_criterion_service = client.get_service("CampaignCriterionService")
+            campaign_resource = f"customers/{self.customer_id}/campaigns/{campaign_id}"
+
+            operations = []
+            for kw_text in keywords:
+                operation = client.get_type("CampaignCriterionOperation")
+                criterion = operation.create
+                criterion.campaign = campaign_resource
+                criterion.negative = True
+                criterion.keyword.text = kw_text
+                criterion.keyword.match_type = client.enums.KeywordMatchTypeEnum.PHRASE
+                operations.append(operation)
+
+            response = campaign_criterion_service.mutate_campaign_criteria(
+                customer_id=self.customer_id, operations=operations
+            )
+            return {"status": "created", "count": len(response.results)}
+        except Exception as e:
+            logger.error("Failed to add negative keywords", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def update_keyword_bid(self, ad_group_id: str, criterion_id: str,
+                                  new_cpc_bid_micros: int) -> Dict[str, Any]:
+        try:
+            client = self._get_client()
+            agc_service = client.get_service("AdGroupCriterionService")
+
+            resource_name = f"customers/{self.customer_id}/adGroupCriteria/{ad_group_id}~{criterion_id}"
+            operation = client.get_type("AdGroupCriterionOperation")
+            criterion = operation.update
+            criterion.resource_name = resource_name
+            criterion.cpc_bid_micros = new_cpc_bid_micros
+
+            field_mask = client.get_type("FieldMask")
+            field_mask.paths.append("cpc_bid_micros")
+            operation.update_mask.CopyFrom(field_mask)
+
+            agc_service.mutate_ad_group_criteria(
+                customer_id=self.customer_id, operations=[operation]
+            )
+            return {"status": "updated", "criterion_id": criterion_id, "new_cpc_bid_micros": new_cpc_bid_micros}
+        except Exception as e:
+            logger.error("Failed to update keyword bid", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def update_keyword_status(self, ad_group_id: str, criterion_id: str,
+                                     status: str) -> Dict[str, Any]:
+        try:
+            client = self._get_client()
+            agc_service = client.get_service("AdGroupCriterionService")
+
+            resource_name = f"customers/{self.customer_id}/adGroupCriteria/{ad_group_id}~{criterion_id}"
+            operation = client.get_type("AdGroupCriterionOperation")
+            criterion = operation.update
+            criterion.resource_name = resource_name
+            status_map = {
+                "ENABLED": client.enums.AdGroupCriterionStatusEnum.ENABLED,
+                "PAUSED": client.enums.AdGroupCriterionStatusEnum.PAUSED,
+            }
+            criterion.status = status_map.get(status, client.enums.AdGroupCriterionStatusEnum.PAUSED)
+
+            field_mask = client.get_type("FieldMask")
+            field_mask.paths.append("status")
+            operation.update_mask.CopyFrom(field_mask)
+
+            agc_service.mutate_ad_group_criteria(
+                customer_id=self.customer_id, operations=[operation]
+            )
+            return {"status": status, "criterion_id": criterion_id}
+        except Exception as e:
+            logger.error("Failed to update keyword status", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def update_ad_status(self, ad_group_id: str, ad_id: str, status: str) -> Dict[str, Any]:
+        try:
+            client = self._get_client()
+            ag_ad_service = client.get_service("AdGroupAdService")
+
+            resource_name = f"customers/{self.customer_id}/adGroupAds/{ad_group_id}~{ad_id}"
+            operation = client.get_type("AdGroupAdOperation")
+            ag_ad = operation.update
+            ag_ad.resource_name = resource_name
+            status_map = {
+                "ENABLED": client.enums.AdGroupAdStatusEnum.ENABLED,
+                "PAUSED": client.enums.AdGroupAdStatusEnum.PAUSED,
+            }
+            ag_ad.status = status_map.get(status, client.enums.AdGroupAdStatusEnum.PAUSED)
+
+            field_mask = client.get_type("FieldMask")
+            field_mask.paths.append("status")
+            operation.update_mask.CopyFrom(field_mask)
+
+            ag_ad_service.mutate_ad_group_ads(
+                customer_id=self.customer_id, operations=[operation]
+            )
+            return {"status": status, "ad_id": ad_id}
+        except Exception as e:
+            logger.error("Failed to update ad status", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def update_ad_group_status(self, ad_group_id: str, status: str) -> Dict[str, Any]:
+        try:
+            client = self._get_client()
+            ag_service = client.get_service("AdGroupService")
+
+            resource_name = f"customers/{self.customer_id}/adGroups/{ad_group_id}"
+            operation = client.get_type("AdGroupOperation")
+            ag = operation.update
+            ag.resource_name = resource_name
+            status_map = {
+                "ENABLED": client.enums.AdGroupStatusEnum.ENABLED,
+                "PAUSED": client.enums.AdGroupStatusEnum.PAUSED,
+            }
+            ag.status = status_map.get(status, client.enums.AdGroupStatusEnum.PAUSED)
+
+            field_mask = client.get_type("FieldMask")
+            field_mask.paths.append("status")
+            operation.update_mask.CopyFrom(field_mask)
+
+            ag_service.mutate_ad_groups(
+                customer_id=self.customer_id, operations=[operation]
+            )
+            return {"status": status, "ad_group_id": ad_group_id}
+        except Exception as e:
+            logger.error("Failed to update ad group status", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def set_device_bid_modifier(self, campaign_id: str, device: str,
+                                       bid_modifier: float) -> Dict[str, Any]:
+        try:
+            client = self._get_client()
+            campaign_bid_modifier_service = client.get_service("CampaignBidModifierService")
+
+            operation = client.get_type("CampaignBidModifierOperation")
+            modifier = operation.create
+            modifier.campaign = f"customers/{self.customer_id}/campaigns/{campaign_id}"
+            modifier.bid_modifier = bid_modifier
+
+            device_map = {
+                "MOBILE": client.enums.DeviceEnum.MOBILE,
+                "TABLET": client.enums.DeviceEnum.TABLET,
+                "DESKTOP": client.enums.DeviceEnum.DESKTOP,
+            }
+            modifier.device.type_ = device_map.get(device.upper(), client.enums.DeviceEnum.MOBILE)
+
+            campaign_bid_modifier_service.mutate_campaign_bid_modifiers(
+                customer_id=self.customer_id, operations=[operation]
+            )
+            return {"status": "set", "device": device, "bid_modifier": bid_modifier}
+        except Exception as e:
+            logger.error("Failed to set device bid modifier", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def add_location_targeting(self, campaign_id: str, location_id: str) -> Dict[str, Any]:
+        try:
+            client = self._get_client()
+            campaign_criterion_service = client.get_service("CampaignCriterionService")
+
+            operation = client.get_type("CampaignCriterionOperation")
+            criterion = operation.create
+            criterion.campaign = f"customers/{self.customer_id}/campaigns/{campaign_id}"
+            criterion.location.geo_target_constant = f"geoTargetConstants/{location_id}"
+
+            campaign_criterion_service.mutate_campaign_criteria(
+                customer_id=self.customer_id, operations=[operation]
+            )
+            return {"status": "added", "location_id": location_id}
+        except Exception as e:
+            logger.error("Failed to add location targeting", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def add_proximity_targeting(self, campaign_id: str, latitude: float, longitude: float,
+                                       radius_miles: float) -> Dict[str, Any]:
+        try:
+            client = self._get_client()
+            campaign_criterion_service = client.get_service("CampaignCriterionService")
+
+            operation = client.get_type("CampaignCriterionOperation")
+            criterion = operation.create
+            criterion.campaign = f"customers/{self.customer_id}/campaigns/{campaign_id}"
+            criterion.proximity.address.city_name = ""
+            criterion.proximity.geo_point.latitude_in_micro_degrees = int(latitude * 1_000_000)
+            criterion.proximity.geo_point.longitude_in_micro_degrees = int(longitude * 1_000_000)
+            criterion.proximity.radius = radius_miles
+            criterion.proximity.radius_units = client.enums.ProximityRadiusUnitsEnum.MILES
+
+            campaign_criterion_service.mutate_campaign_criteria(
+                customer_id=self.customer_id, operations=[operation]
+            )
+            return {"status": "added", "latitude": latitude, "longitude": longitude, "radius_miles": radius_miles}
+        except Exception as e:
+            logger.error("Failed to add proximity targeting", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def set_ad_schedule(self, campaign_id: str, day_of_week: str,
+                               start_hour: int, end_hour: int,
+                               bid_modifier: float = 1.0) -> Dict[str, Any]:
+        try:
+            client = self._get_client()
+            campaign_criterion_service = client.get_service("CampaignCriterionService")
+
+            operation = client.get_type("CampaignCriterionOperation")
+            criterion = operation.create
+            criterion.campaign = f"customers/{self.customer_id}/campaigns/{campaign_id}"
+
+            day_map = {
+                "MONDAY": client.enums.DayOfWeekEnum.MONDAY,
+                "TUESDAY": client.enums.DayOfWeekEnum.TUESDAY,
+                "WEDNESDAY": client.enums.DayOfWeekEnum.WEDNESDAY,
+                "THURSDAY": client.enums.DayOfWeekEnum.THURSDAY,
+                "FRIDAY": client.enums.DayOfWeekEnum.FRIDAY,
+                "SATURDAY": client.enums.DayOfWeekEnum.SATURDAY,
+                "SUNDAY": client.enums.DayOfWeekEnum.SUNDAY,
+            }
+            criterion.ad_schedule.day_of_week = day_map.get(day_of_week.upper(), client.enums.DayOfWeekEnum.MONDAY)
+            criterion.ad_schedule.start_hour = start_hour
+            criterion.ad_schedule.start_minute = client.enums.MinuteOfHourEnum.ZERO
+            criterion.ad_schedule.end_hour = end_hour
+            criterion.ad_schedule.end_minute = client.enums.MinuteOfHourEnum.ZERO
+            criterion.bid_modifier = bid_modifier
+
+            campaign_criterion_service.mutate_campaign_criteria(
+                customer_id=self.customer_id, operations=[operation]
+            )
+            return {"status": "set", "day": day_of_week, "start": start_hour, "end": end_hour}
+        except Exception as e:
+            logger.error("Failed to set ad schedule", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def upload_offline_conversions(self, conversions: List[Dict[str, Any]],
+                                          conversion_action_id: str) -> Dict[str, Any]:
+        try:
+            client = self._get_client()
+            conversion_upload_service = client.get_service("ConversionUploadService")
+
+            operations = []
+            for conv in conversions:
+                click_conversion = client.get_type("ClickConversion")
+                click_conversion.gclid = conv["gclid"]
+                click_conversion.conversion_action = f"customers/{self.customer_id}/conversionActions/{conversion_action_id}"
+                click_conversion.conversion_date_time = conv["conversion_time"]
+                click_conversion.conversion_value = conv.get("conversion_value", 0)
+                click_conversion.currency_code = conv.get("currency", "USD")
+                operations.append(click_conversion)
+
+            request = client.get_type("UploadClickConversionsRequest")
+            request.customer_id = self.customer_id
+            request.conversions.extend(operations)
+            request.partial_failure = True
+
+            response = conversion_upload_service.upload_click_conversions(request=request)
+            success_count = sum(1 for r in response.results if r.gclid)
+            return {"status": "uploaded", "total": len(conversions), "success": success_count}
+        except Exception as e:
+            logger.error("Failed to upload offline conversions", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def list_accessible_customers(self) -> List[Dict[str, Any]]:
+        try:
+            client = self._get_client()
+            customer_service = client.get_service("CustomerService")
+            ga_service = client.get_service("GoogleAdsService")
+            accessible = customer_service.list_accessible_customers()
+
+            accounts = []
+            for resource_name in accessible.resource_names:
+                cid = resource_name.split("/")[-1]
+                try:
+                    query = """
+                        SELECT customer.id, customer.descriptive_name,
+                               customer.currency_code, customer.time_zone,
+                               customer.manager, customer.status
+                        FROM customer
+                        LIMIT 1
+                    """
+                    for row in ga_service.search(customer_id=cid, query=query):
+                        accounts.append({
+                            "customer_id": str(row.customer.id),
+                            "descriptive_name": row.customer.descriptive_name,
+                            "currency": row.customer.currency_code,
+                            "timezone": row.customer.time_zone,
+                            "is_manager": row.customer.manager,
+                            "status": row.customer.status.name if hasattr(row.customer.status, 'name') else str(row.customer.status),
+                        })
+                except Exception:
+                    accounts.append({"customer_id": cid, "descriptive_name": f"Account {cid}", "error": True})
+            return accounts
+        except Exception as e:
+            logger.error("Failed to list accessible customers", error=str(e))
+            return []
+
     # ── WRITE OPERATIONS (CHANGESETS) ────────────────────────────────
 
     async def create_campaign(self, campaign_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -463,4 +1133,149 @@ class GoogleAdsClient:
             return {"status": "updated", "new_amount_micros": new_amount_micros}
         except Exception as e:
             logger.error("Failed to update budget", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    # ── EXPERIMENT SERVICE ─────────────────────────────────────────
+
+    async def create_experiment(self, name: str, campaign_id: str,
+                                 suffix: str = "experiment",
+                                 traffic_split_pct: int = 50) -> Dict[str, Any]:
+        """Create a Google Ads experiment (campaign draft → experiment)."""
+        try:
+            client = self._get_client()
+            campaign_resource = f"customers/{self.customer_id}/campaigns/{campaign_id}"
+
+            # Step 1: Create campaign draft
+            draft_service = client.get_service("CampaignDraftService")
+            draft_op = client.get_type("CampaignDraftOperation")
+            draft = draft_op.create
+            draft.base_campaign = campaign_resource
+            draft.name = f"{name} Draft"
+
+            draft_response = draft_service.mutate_campaign_drafts(
+                customer_id=self.customer_id, operations=[draft_op]
+            )
+            draft_resource = draft_response.results[0].resource_name
+
+            # Step 2: Create experiment from draft
+            experiment_service = client.get_service("ExperimentService")
+            exp_op = client.get_type("ExperimentOperation")
+            exp = exp_op.create
+            exp.name = name
+            exp.description = f"Auto-created experiment for campaign {campaign_id}"
+            exp.suffix = suffix
+            exp.type_ = client.enums.ExperimentTypeEnum.SEARCH_CUSTOM
+
+            # Add experiment arm
+            arm = client.get_type("ExperimentArm")
+            arm.campaign = campaign_resource
+            arm.control = True
+            arm.traffic_split = 100 - traffic_split_pct
+
+            exp_response = experiment_service.mutate_experiments(
+                customer_id=self.customer_id, operations=[exp_op]
+            )
+            experiment_resource = exp_response.results[0].resource_name
+
+            return {
+                "status": "created",
+                "experiment_resource": experiment_resource,
+                "draft_resource": draft_resource,
+            }
+        except Exception as e:
+            logger.error("Failed to create experiment", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def schedule_experiment(self, experiment_resource: str) -> Dict[str, Any]:
+        """Schedule (start) a Google Ads experiment."""
+        try:
+            client = self._get_client()
+            experiment_service = client.get_service("ExperimentService")
+            experiment_service.schedule_experiment(resource_name=experiment_resource)
+            return {"status": "scheduled", "resource": experiment_resource}
+        except Exception as e:
+            logger.error("Failed to schedule experiment", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def get_experiment_results(self, experiment_resource: str) -> Dict[str, Any]:
+        """Fetch experiment performance metrics using GAQL."""
+        try:
+            client = self._get_client()
+            ga_service = client.get_service("GoogleAdsService")
+
+            # Get experiment details
+            exp_id = experiment_resource.split("/")[-1]
+            query = f"""
+                SELECT experiment.id, experiment.name, experiment.status,
+                       experiment.start_date, experiment.end_date,
+                       experiment.description
+                FROM experiment
+                WHERE experiment.id = {exp_id}
+            """
+            response = ga_service.search(customer_id=self.customer_id, query=query)
+            exp_data = {}
+            for row in response:
+                exp_data = {
+                    "id": str(row.experiment.id),
+                    "name": row.experiment.name,
+                    "status": row.experiment.status.name if hasattr(row.experiment.status, 'name') else str(row.experiment.status),
+                    "start_date": row.experiment.start_date,
+                    "end_date": row.experiment.end_date,
+                }
+
+            # Get experiment arm metrics
+            arms_query = f"""
+                SELECT experiment_arm.experiment, experiment_arm.name,
+                       experiment_arm.control, experiment_arm.traffic_split,
+                       experiment_arm.campaigns,
+                       metrics.impressions, metrics.clicks, metrics.cost_micros,
+                       metrics.conversions, metrics.conversions_value, metrics.ctr
+                FROM experiment_arm
+                WHERE experiment_arm.experiment = '{experiment_resource}'
+            """
+            arm_results = []
+            try:
+                arms_response = ga_service.search(customer_id=self.customer_id, query=arms_query)
+                for row in arms_response:
+                    arm = row.experiment_arm
+                    m = row.metrics
+                    arm_results.append({
+                        "name": arm.name,
+                        "control": arm.control,
+                        "traffic_split": arm.traffic_split,
+                        "impressions": m.impressions,
+                        "clicks": m.clicks,
+                        "cost_micros": m.cost_micros,
+                        "conversions": round(m.conversions, 2),
+                        "conversion_value": round(m.conversions_value, 2),
+                        "ctr": round(m.ctr, 4),
+                    })
+            except Exception:
+                pass
+
+            return {"status": "ok", "experiment": exp_data, "arms": arm_results}
+        except Exception as e:
+            logger.error("Failed to get experiment results", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def promote_experiment(self, experiment_resource: str) -> Dict[str, Any]:
+        """Promote the winning experiment arm to the base campaign."""
+        try:
+            client = self._get_client()
+            experiment_service = client.get_service("ExperimentService")
+            experiment_service.promote_experiment(resource_name=experiment_resource)
+            return {"status": "promoted", "resource": experiment_resource}
+        except Exception as e:
+            logger.error("Failed to promote experiment", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def end_experiment(self, experiment_resource: str) -> Dict[str, Any]:
+        """End an experiment without promoting."""
+        try:
+            client = self._get_client()
+            experiment_service = client.get_service("ExperimentService")
+            experiment_service.end_experiment(resource_name=experiment_resource)
+            return {"status": "ended", "resource": experiment_resource}
+        except Exception as e:
+            logger.error("Failed to end experiment", error=str(e))
             return {"status": "error", "error": str(e)}

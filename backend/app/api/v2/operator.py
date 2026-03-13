@@ -8,7 +8,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func, and_
 
 from app.core.database import get_db
 from app.core.deps import require_tenant, CurrentUser
@@ -364,6 +364,231 @@ async def list_scan_history(
             "completed_at": s.completed_at.isoformat() if s.completed_at else None,
         }
         for s in scans
+    ]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AUTONOMOUS OPTIMIZATION ENGINE — Live Dashboard Endpoints
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/live/status")
+async def get_live_status(
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the current autonomous optimization status for the tenant."""
+    from app.models.v2.optimization_cycle import OptimizationCycle
+    from app.models.tenant import Tenant
+
+    tenant = await db.get(Tenant, str(user.tenant_id))
+
+    # Get latest cycle
+    result = await db.execute(
+        select(OptimizationCycle)
+        .where(OptimizationCycle.tenant_id == str(user.tenant_id))
+        .order_by(desc(OptimizationCycle.started_at))
+        .limit(1)
+    )
+    latest_cycle = result.scalar_one_or_none()
+
+    # Get stats for last 7 days
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    stats_result = await db.execute(
+        select(
+            func.count(OptimizationCycle.id).label("total_cycles"),
+            func.sum(OptimizationCycle.actions_executed).label("total_executed"),
+            func.sum(OptimizationCycle.actions_blocked).label("total_blocked"),
+            func.sum(OptimizationCycle.projected_monthly_savings).label("total_savings"),
+        ).where(
+            and_(
+                OptimizationCycle.tenant_id == str(user.tenant_id),
+                OptimizationCycle.started_at >= week_ago,
+            )
+        )
+    )
+    stats = stats_result.one()
+
+    return {
+        "autonomy_mode": tenant.autonomy_mode if tenant else "suggest",
+        "risk_tolerance": tenant.risk_tolerance if tenant else "low",
+        "latest_cycle": {
+            "id": latest_cycle.id,
+            "status": latest_cycle.status,
+            "trigger": latest_cycle.trigger,
+            "problems_detected": latest_cycle.problems_detected,
+            "actions_executed": latest_cycle.actions_executed,
+            "actions_blocked": latest_cycle.actions_blocked,
+            "projected_savings": latest_cycle.projected_monthly_savings,
+            "feedback_status": latest_cycle.feedback_status,
+            "started_at": latest_cycle.started_at.isoformat() if latest_cycle.started_at else None,
+            "completed_at": latest_cycle.completed_at.isoformat() if latest_cycle.completed_at else None,
+        } if latest_cycle else None,
+        "week_stats": {
+            "total_cycles": stats.total_cycles or 0,
+            "total_actions_executed": stats.total_executed or 0,
+            "total_actions_blocked": stats.total_blocked or 0,
+            "projected_monthly_savings": round(float(stats.total_savings or 0), 2),
+        },
+    }
+
+
+@router.get("/live/cycles")
+async def list_cycles(
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+    limit: int = Query(20, le=100),
+):
+    """List recent autonomous optimization cycles."""
+    from app.models.v2.optimization_cycle import OptimizationCycle
+
+    result = await db.execute(
+        select(OptimizationCycle)
+        .where(OptimizationCycle.tenant_id == str(user.tenant_id))
+        .order_by(desc(OptimizationCycle.started_at))
+        .limit(limit)
+    )
+    cycles = list(result.scalars().all())
+
+    return [
+        {
+            "id": c.id,
+            "trigger": c.trigger,
+            "status": c.status,
+            "problems_detected": c.problems_detected,
+            "actions_generated": c.actions_generated,
+            "actions_approved": c.actions_approved,
+            "actions_executed": c.actions_executed,
+            "actions_blocked": c.actions_blocked,
+            "projected_monthly_savings": c.projected_monthly_savings,
+            "projected_conversion_lift": c.projected_conversion_lift,
+            "feedback_status": c.feedback_status,
+            "started_at": c.started_at.isoformat() if c.started_at else None,
+            "completed_at": c.completed_at.isoformat() if c.completed_at else None,
+        }
+        for c in cycles
+    ]
+
+
+@router.get("/live/cycle/{cycle_id}")
+async def get_cycle_detail(
+    cycle_id: str,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get full detail of a specific optimization cycle."""
+    from app.models.v2.optimization_cycle import OptimizationCycle
+
+    cycle = await db.get(OptimizationCycle, cycle_id)
+    if not cycle or str(cycle.tenant_id) != str(user.tenant_id):
+        raise HTTPException(404, "Cycle not found")
+
+    return {
+        "id": cycle.id,
+        "trigger": cycle.trigger,
+        "status": cycle.status,
+        "snapshot": cycle.snapshot_json,
+        "problems": cycle.problems_json,
+        "actions": cycle.actions_json,
+        "problems_detected": cycle.problems_detected,
+        "actions_generated": cycle.actions_generated,
+        "actions_approved": cycle.actions_approved,
+        "actions_executed": cycle.actions_executed,
+        "actions_blocked": cycle.actions_blocked,
+        "projected_monthly_savings": cycle.projected_monthly_savings,
+        "projected_conversion_lift": cycle.projected_conversion_lift,
+        "feedback_status": cycle.feedback_status,
+        "feedback": cycle.feedback_json,
+        "feedback_evaluated_at": cycle.feedback_evaluated_at.isoformat() if cycle.feedback_evaluated_at else None,
+        "scan_id": cycle.scan_id,
+        "change_set_id": cycle.change_set_id,
+        "error_message": cycle.error_message,
+        "started_at": cycle.started_at.isoformat() if cycle.started_at else None,
+        "completed_at": cycle.completed_at.isoformat() if cycle.completed_at else None,
+    }
+
+
+@router.post("/live/trigger")
+async def trigger_manual_cycle(
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually trigger an autonomous optimization cycle."""
+    # Find the first active integration for this tenant
+    result = await db.execute(
+        select(IntegrationGoogleAds).where(
+            and_(
+                IntegrationGoogleAds.tenant_id == str(user.tenant_id),
+                IntegrationGoogleAds.customer_id != "pending",
+            )
+        ).limit(1)
+    )
+    integration = result.scalar_one_or_none()
+    if not integration:
+        raise HTTPException(400, "No connected Google Ads account found")
+
+    from app.jobs.operator_tasks import run_autonomous_cycle_task
+    run_autonomous_cycle_task.delay(
+        str(user.tenant_id),
+        str(integration.id),
+        "manual",
+    )
+
+    return {"status": "queued", "message": "Optimization cycle triggered"}
+
+
+@router.post("/live/cycle/{cycle_id}/rollback")
+async def rollback_cycle_endpoint(
+    cycle_id: str,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Rollback all changes from an optimization cycle."""
+    from app.models.v2.optimization_cycle import OptimizationCycle
+
+    cycle = await db.get(OptimizationCycle, cycle_id)
+    if not cycle or str(cycle.tenant_id) != str(user.tenant_id):
+        raise HTTPException(404, "Cycle not found")
+    if cycle.status != "completed" and cycle.feedback_status != "degraded":
+        raise HTTPException(400, "Cycle is not eligible for rollback")
+    if not cycle.change_set_id:
+        raise HTTPException(400, "No change set to rollback")
+
+    from app.jobs.operator_tasks import rollback_cycle_task
+    rollback_cycle_task.delay(cycle_id)
+
+    return {"status": "queued", "message": "Rollback initiated"}
+
+
+@router.get("/live/learnings")
+async def get_learnings(
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+    limit: int = Query(50, le=200),
+):
+    """Get optimization learnings for the tenant."""
+    from app.models.v2.optimization_learning import OptimizationLearning
+
+    result = await db.execute(
+        select(OptimizationLearning)
+        .where(OptimizationLearning.tenant_id == str(user.tenant_id))
+        .order_by(desc(OptimizationLearning.updated_at))
+        .limit(limit)
+    )
+    learnings = list(result.scalars().all())
+
+    return [
+        {
+            "id": l.id,
+            "pattern": l.pattern,
+            "action_type": l.action_type,
+            "result": l.result,
+            "confidence_score": l.confidence_score,
+            "observation_count": l.observation_count,
+            "pattern_detail": l.pattern_detail_json,
+            "result_detail": l.result_detail_json,
+            "updated_at": l.updated_at.isoformat() if l.updated_at else None,
+        }
+        for l in learnings
     ]
 
 

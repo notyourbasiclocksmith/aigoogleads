@@ -164,6 +164,30 @@ async def promote_winner(
     return {"status": "promoting", "variant": req.winning_variant_index}
 
 
+@router.post("/{experiment_id}/collect-results")
+async def collect_results(
+    experiment_id: str,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Experiment).where(
+            Experiment.id == experiment_id,
+            Experiment.tenant_id == user.tenant_id,
+        )
+    )
+    exp = result.scalar_one_or_none()
+    if not exp:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    if exp.status != "running":
+        raise HTTPException(status_code=400, detail=f"Experiment is {exp.status}, not running")
+
+    from app.jobs.tasks import collect_experiment_results_task
+    collect_experiment_results_task.delay(user.tenant_id, experiment_id)
+
+    return {"status": "collecting", "experiment_id": experiment_id}
+
+
 @router.get("/{experiment_id}")
 async def get_experiment(
     experiment_id: str,

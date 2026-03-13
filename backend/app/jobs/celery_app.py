@@ -86,6 +86,11 @@ celery_app.conf.beat_schedule = {
         "task": "app.jobs.v2_tasks.check_evaluation_regression",
         "schedule": crontab(hour=6, minute=30, day_of_week=1),  # weekly
     },
+    # Autonomous Optimization Engine — runs every 4 hours
+    "autonomous-optimizer-4h": {
+        "task": "app.jobs.operator_tasks.run_autonomous_optimizer_task",
+        "schedule": crontab(minute=15, hour="*/4"),  # 0:15, 4:15, 8:15, 12:15, 16:15, 20:15
+    },
 }
 
 celery_app.autodiscover_tasks(["app.jobs", "app.jobs.operator_tasks"])

@@ -44,6 +44,10 @@ async def generate_recommendations(
     recommendations.extend(_heuristic_ad_strength_audit(snapshot))
     recommendations.extend(_heuristic_ad_group_theme_split(snapshot))
     recommendations.extend(_heuristic_missing_exact_match(snapshot))
+    recommendations.extend(_heuristic_ad_fatigue_detection(snapshot))
+    recommendations.extend(_heuristic_budget_reallocation(snapshot))
+    recommendations.extend(_heuristic_geo_bid_modifier(snapshot))
+    recommendations.extend(_heuristic_roas_bidding_strategy(snapshot))
 
     # Pass 3: Strategic (new campaign opportunities)
     recommendations.extend(_strategic_missing_campaigns(snapshot))
@@ -493,6 +497,94 @@ def _heuristic_missing_exact_match(snapshot: AccountSnapshot) -> List[Recommenda
     return recs
 
 
+def _heuristic_ad_fatigue_detection(snapshot: AccountSnapshot) -> List[RecommendationOutput]:
+    """
+    Detect ad fatigue — ads with high impressions but declining CTR.
+    Signs: CTR well below account average despite significant spend,
+    or ads running as sole ad in an ad group with below-average CTR.
+    """
+    recs = []
+    camp_names = {c.campaign_id: c.name for c in snapshot.campaigns}
+
+    # Calculate account average CTR
+    total_clicks = sum(a.clicks for a in snapshot.ads if a.impressions > 0)
+    total_impr = sum(a.impressions for a in snapshot.ads if a.impressions > 0)
+    account_avg_ctr = total_clicks / total_impr if total_impr > 0 else 0
+
+    if account_avg_ctr <= 0:
+        return recs
+
+    # Group ads by ad group to detect single-ad groups
+    ad_groups: Dict[str, list] = {}
+    for ad in snapshot.ads:
+        if ad.ad_group_id not in ad_groups:
+            ad_groups[ad.ad_group_id] = []
+        ad_groups[ad.ad_group_id].append(ad)
+
+    for ad in snapshot.ads:
+        if ad.impressions < 500 or ad.clicks < 5:
+            continue
+
+        # Ad fatigue indicator: CTR < 50% of account average with significant impressions
+        if ad.ctr < account_avg_ctr * 0.5 and ad.impressions >= 1000:
+            # Check if it's the only ad in its ad group (no rotation possible)
+            sibling_count = len(ad_groups.get(ad.ad_group_id, []))
+            severity = "high" if sibling_count <= 1 else "medium"
+
+            recs.append(RecommendationOutput(
+                recommendation_type=RecType.PAUSE_AD if sibling_count > 1 else RecType.CREATE_AD_VARIANTS,
+                group_name=RecGroup.AD_COPY,
+                entity_type="ad",
+                entity_id=ad.ad_id,
+                entity_name=f"Ad in {camp_names.get(ad.campaign_id, ad.campaign_id)}",
+                parent_entity_id=ad.ad_group_id,
+                title=(
+                    f'Ad fatigue detected — CTR {ad.ctr:.2%} vs account avg {account_avg_ctr:.2%}'
+                    if sibling_count > 1 else
+                    f'Single ad in ad group with low CTR ({ad.ctr:.2%}) — create variants'
+                ),
+                rationale=(
+                    f'This ad has {ad.impressions:,} impressions but a CTR of {ad.ctr:.2%}, '
+                    f'which is {((account_avg_ctr - ad.ctr) / account_avg_ctr * 100):.0f}% below '
+                    f'the account average of {account_avg_ctr:.2%}. '
+                    + (f'It is the only ad in its ad group — creating new variants will '
+                       f'enable A/B testing and ad rotation.' if sibling_count <= 1 else
+                       f'Pausing this ad will shift impressions to better-performing variants.')
+                ),
+                evidence={
+                    "ad_ctr": round(ad.ctr, 4),
+                    "account_avg_ctr": round(account_avg_ctr, 4),
+                    "impressions": ad.impressions,
+                    "clicks": ad.clicks,
+                    "cost": ad.cost,
+                    "sibling_ads": sibling_count,
+                    "headlines": ad.headlines[:3],
+                },
+                current_state={
+                    "ctr": ad.ctr,
+                    "impressions": ad.impressions,
+                    "ad_strength": ad.ad_strength,
+                },
+                proposed_state={
+                    "action": "pause_ad" if sibling_count > 1 else "create_ad_variants",
+                    "target_ctr": round(account_avg_ctr, 4),
+                },
+                impact=ImpactProjection(
+                    click_delta=round(ad.impressions * (account_avg_ctr - ad.ctr) * 0.5, 0),
+                    assumptions=[
+                        "Shifting impressions to better ads increases CTR toward account average",
+                        "50% of potential CTR gap recovery assumed",
+                    ],
+                    confidence=0.50 if sibling_count > 1 else 0.40,
+                ),
+                confidence_score=0.50 if sibling_count > 1 else 0.40,
+                risk_level=RiskLevel.LOW if sibling_count > 1 else RiskLevel.MEDIUM,
+                generated_by="heuristic",
+            ))
+
+    return recs
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # PASS 3: STRATEGIC — NEW CAMPAIGN OPPORTUNITIES
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -602,6 +694,237 @@ def _strategic_missing_campaigns(snapshot: AccountSnapshot) -> List[Recommendati
             ),
             confidence_score=0.50,
             risk_level=RiskLevel.LOW,
+            generated_by="heuristic",
+        ))
+
+    return recs
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PASS 2b: ENHANCED AUTOPILOT RULES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _heuristic_budget_reallocation(snapshot: AccountSnapshot) -> List[RecommendationOutput]:
+    """
+    Reallocate budget from high-CPA / low-ROAS campaigns to efficient ones.
+    Identifies donor (wasteful) and receiver (budget-limited + efficient) campaigns.
+    """
+    recs = []
+    if len(snapshot.campaigns) < 2:
+        return recs
+
+    active = [c for c in snapshot.campaigns if c.status == "ENABLED" and c.cost > 0]
+    if len(active) < 2:
+        return recs
+
+    account_avg_cpa = snapshot.avg_cpa
+    if account_avg_cpa <= 0:
+        return recs
+
+    # Identify donors: campaigns with CPA > 2x average and meaningful spend
+    donors = [c for c in active if c.conversions > 0 and c.cost_per_conversion > account_avg_cpa * 2.0 and c.cost > 50]
+    # Identify receivers: budget-limited campaigns with good CPA
+    receivers = [
+        c for c in active
+        if c.search_lost_is_budget and c.search_lost_is_budget > 0.10
+        and c.conversions > 0
+        and c.cost_per_conversion <= account_avg_cpa * 1.1
+    ]
+
+    for donor in donors:
+        for receiver in receivers:
+            if donor.campaign_id == receiver.campaign_id:
+                continue
+            # Suggest moving 20% of donor budget to receiver
+            realloc_amount = round(donor.budget_daily * 0.20, 2)
+            potential_extra_conv = round(realloc_amount / receiver.cost_per_conversion, 1) if receiver.cost_per_conversion > 0 else 0
+
+            recs.append(RecommendationOutput(
+                recommendation_type=RecType.DECREASE_BUDGET,
+                group_name=RecGroup.BUDGET_BIDDING,
+                entity_type="campaign",
+                entity_id=donor.campaign_id,
+                entity_name=donor.name,
+                title=f'Reallocate ${realloc_amount:.0f}/day from "{donor.name}" → "{receiver.name}"',
+                rationale=(
+                    f'"{donor.name}" has a CPA of ${donor.cost_per_conversion:.2f} '
+                    f'({donor.cost_per_conversion/account_avg_cpa:.1f}x account avg), while '
+                    f'"{receiver.name}" converts at ${receiver.cost_per_conversion:.2f} but is '
+                    f'losing {receiver.search_lost_is_budget:.0%} impression share to budget. '
+                    f'Shifting ${realloc_amount:.2f}/day could yield ~{potential_extra_conv:.0f} extra conversions.'
+                ),
+                evidence={
+                    "donor_cpa": donor.cost_per_conversion,
+                    "receiver_cpa": receiver.cost_per_conversion,
+                    "donor_budget": donor.budget_daily,
+                    "receiver_lost_is_budget": receiver.search_lost_is_budget,
+                    "realloc_amount": realloc_amount,
+                },
+                current_state={"donor_budget": donor.budget_daily, "receiver_budget": receiver.budget_daily},
+                proposed_state={
+                    "donor_new_budget": round(donor.budget_daily - realloc_amount, 2),
+                    "receiver_new_budget": round(receiver.budget_daily + realloc_amount, 2),
+                },
+                impact=ImpactProjection(
+                    spend_delta=0,  # net-zero spend change
+                    conversion_delta=potential_extra_conv,
+                    cpa_delta=-round((donor.cost_per_conversion - account_avg_cpa) * 0.15, 2),
+                    assumptions=[
+                        "Receiver campaign CVR holds at increased volume",
+                        "Donor campaign loses proportional conversions at its higher CPA",
+                        "Net effect is improved blended CPA",
+                    ],
+                    confidence=0.55,
+                ),
+                confidence_score=0.55,
+                risk_level=RiskLevel.MEDIUM,
+                generated_by="heuristic",
+            ))
+            break  # one reallocation per donor
+
+    return recs
+
+
+def _heuristic_geo_bid_modifier(snapshot: AccountSnapshot) -> List[RecommendationOutput]:
+    """
+    Detect geographic performance gaps and recommend bid adjustments.
+    Identifies geos with high spend + zero conversions or very high CPA.
+    """
+    recs = []
+    if not snapshot.geo_segments:
+        return recs
+
+    # Aggregate geo data per campaign
+    camp_geos: Dict[str, Dict[str, Any]] = {}
+    for seg in snapshot.geo_segments:
+        key = (seg.campaign_id, seg.location_name)
+        if key not in camp_geos:
+            camp_geos[key] = {"cost": 0, "conversions": 0, "clicks": 0, "impressions": 0}
+        camp_geos[key]["cost"] += seg.cost
+        camp_geos[key]["conversions"] += seg.conversions
+        camp_geos[key]["clicks"] += seg.clicks
+        camp_geos[key]["impressions"] += seg.impressions
+
+    camp_names = {c.campaign_id: c.name for c in snapshot.campaigns}
+    account_avg_cpa = snapshot.avg_cpa
+
+    for (cid, loc), data in camp_geos.items():
+        if data["clicks"] < 10:
+            continue
+        camp = next((c for c in snapshot.campaigns if c.campaign_id == cid), None)
+        if not camp or camp.conversions == 0:
+            continue
+
+        geo_cpa = data["cost"] / data["conversions"] if data["conversions"] > 0 else float("inf")
+
+        # Zero-conversion geo with significant spend
+        if data["conversions"] == 0 and data["cost"] > ZERO_CONV_SPEND_THRESHOLD:
+            recs.append(RecommendationOutput(
+                recommendation_type=RecType.EXCLUDE_LOCATION,
+                group_name=RecGroup.GEO_TARGETING,
+                entity_type="campaign",
+                entity_id=cid,
+                entity_name=camp_names.get(cid, cid),
+                title=f'Reduce bid for location {loc} in "{camp_names.get(cid, "")}" — ${data["cost"]:.0f}, 0 conversions',
+                rationale=(
+                    f'Location {loc} spent ${data["cost"]:.2f} with {data["clicks"]} clicks '
+                    f'but zero conversions. A negative bid modifier or exclusion may reduce waste.'
+                ),
+                evidence={"location": loc, "cost": data["cost"], "clicks": data["clicks"]},
+                current_state={"geo_bid_modifier": 0},
+                proposed_state={"geo_bid_modifier": -50},
+                impact=ImpactProjection(
+                    spend_delta=-data["cost"] * 0.5,
+                    confidence=0.55,
+                ),
+                confidence_score=0.55,
+                risk_level=RiskLevel.LOW,
+                generated_by="heuristic",
+            ))
+        # High-CPA geo (> 2.5x account average)
+        elif data["conversions"] > 0 and account_avg_cpa > 0 and geo_cpa > account_avg_cpa * 2.5:
+            recs.append(RecommendationOutput(
+                recommendation_type=RecType.EXCLUDE_LOCATION,
+                group_name=RecGroup.GEO_TARGETING,
+                entity_type="campaign",
+                entity_id=cid,
+                entity_name=camp_names.get(cid, cid),
+                title=f'Reduce bid for location {loc} — CPA ${geo_cpa:.0f} vs ${account_avg_cpa:.0f} avg',
+                rationale=(
+                    f'Location {loc} converts at ${geo_cpa:.2f}/conv, which is '
+                    f'{geo_cpa/account_avg_cpa:.1f}x the account average. '
+                    f'A negative bid modifier can improve blended CPA.'
+                ),
+                evidence={"location": loc, "geo_cpa": geo_cpa, "account_avg_cpa": account_avg_cpa},
+                current_state={"geo_bid_modifier": 0},
+                proposed_state={"geo_bid_modifier": -30},
+                impact=ImpactProjection(
+                    cpa_delta=-round((geo_cpa - account_avg_cpa) * 0.2, 2),
+                    confidence=0.45,
+                ),
+                confidence_score=0.45,
+                risk_level=RiskLevel.MEDIUM,
+                generated_by="heuristic",
+            ))
+
+    return recs
+
+
+def _heuristic_roas_bidding_strategy(snapshot: AccountSnapshot) -> List[RecommendationOutput]:
+    """
+    Recommend switching to Target ROAS bidding for campaigns with enough conversion
+    data and good ROAS but using suboptimal bidding strategies.
+    """
+    recs = []
+    suboptimal_strategies = {"MANUAL_CPC", "ENHANCED_CPC", "MAXIMIZE_CLICKS", "MANUAL_CPM"}
+
+    for c in snapshot.campaigns:
+        if c.status != "ENABLED" or c.conversions < 15:
+            continue
+        if c.bidding_strategy not in suboptimal_strategies:
+            continue
+        if c.conversion_value <= 0 or c.cost <= 0:
+            continue
+
+        roas = c.conversion_value / c.cost
+        if roas < 1.5:
+            continue  # not profitable enough to recommend ROAS bidding
+
+        recs.append(RecommendationOutput(
+            recommendation_type=RecType.CHANGE_BIDDING_STRATEGY,
+            group_name=RecGroup.BUDGET_BIDDING,
+            entity_type="campaign",
+            entity_id=c.campaign_id,
+            entity_name=c.name,
+            title=f'Switch "{c.name}" to Target ROAS — current ROAS {roas:.1f}x',
+            rationale=(
+                f'"{c.name}" has {c.conversions:.0f} conversions with a ROAS of {roas:.1f}x '
+                f'using {c.bidding_strategy.replace("_", " ").title()} bidding. '
+                f'With sufficient conversion data, switching to Target ROAS allows Google\'s '
+                f'algorithm to optimize bids for maximum conversion value.'
+            ),
+            evidence={
+                "current_strategy": c.bidding_strategy,
+                "roas": round(roas, 2),
+                "conversions": c.conversions,
+                "conversion_value": c.conversion_value,
+                "cost": c.cost,
+            },
+            current_state={"bidding_strategy": c.bidding_strategy, "roas": round(roas, 2)},
+            proposed_state={
+                "bidding_strategy": "TARGET_ROAS",
+                "target_roas": round(roas * 0.9, 2),  # 90% of current as starting target
+            },
+            impact=ImpactProjection(
+                conversion_delta=round(c.conversions * 0.10, 1),
+                assumptions=[
+                    "Target ROAS bidding with sufficient data typically improves ROAS 10-20%",
+                    "Conservative target (90% of current) allows algorithm to learn",
+                ],
+                confidence=0.50,
+            ),
+            confidence_score=0.50,
+            risk_level=RiskLevel.MEDIUM,
             generated_by="heuristic",
         ))
 

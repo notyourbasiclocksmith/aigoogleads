@@ -60,6 +60,7 @@ async def run_operator_scan(scan_id: str, db: AsyncSession) -> None:
             date_start=scan.date_range_start,
             date_end=scan.date_range_end,
             campaign_ids=campaign_ids,
+            login_customer_id=integration.login_customer_id,
         )
 
         scan.metrics_snapshot_json = {

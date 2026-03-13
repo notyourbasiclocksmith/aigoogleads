@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 import structlog
 
 from app.core.config import settings
-from app.api import auth, tenants, onboarding, dashboard, ads_accounts, ads_audit, ads_prompt, campaigns, creative, competitors, optimizations, experiments, reports, admin_settings
+from app.api import auth, tenants, onboarding, dashboard, ads_accounts, ads_audit, ads_prompt, ads_data, campaigns, creative, competitors, optimizations, experiments, reports, admin_settings
 from app.api import workspace
 from app.api.v2 import mcc, conversions, change_mgmt, connectors, policy, billing, notifications, evaluation, operator
 
@@ -56,6 +56,7 @@ app.include_router(dashboard.router, prefix="/api/dashboard", tags=["Dashboard"]
 app.include_router(ads_accounts.router, prefix="/api/ads/accounts", tags=["Ads Accounts"])
 app.include_router(ads_audit.router, prefix="/api/ads/audit", tags=["Ads Audit"])
 app.include_router(ads_prompt.router, prefix="/api/ads/prompt", tags=["Ads Prompt"])
+app.include_router(ads_data.router, prefix="/api/ads", tags=["Ads Data"])
 app.include_router(campaigns.router, prefix="/api/campaigns", tags=["Campaigns"])
 app.include_router(creative.router, prefix="/api/creative", tags=["Creative"])
 app.include_router(competitors.router, prefix="/api/intel/competitors", tags=["Competitors"])

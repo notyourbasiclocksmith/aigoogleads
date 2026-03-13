@@ -37,7 +37,13 @@ class RollupKPIRequest(BaseModel):
 
 @router.post("/discover-accounts")
 async def discover_accounts(req: DiscoverAccountsRequest, db: AsyncSession = Depends(get_db)):
-    """Discover child accounts from MCC. In production, calls Google Ads API CustomerService."""
+    """Discover child accounts from MCC via Google Ads API CustomerService."""
+    import structlog
+    from app.core.config import settings
+    from app.core.security import decrypt_token
+
+    logger = structlog.get_logger()
+
     stmt = select(IntegrationGoogleAds).where(IntegrationGoogleAds.tenant_id == req.tenant_id)
     result = await db.execute(stmt)
     integration = result.scalars().first()
@@ -48,14 +54,60 @@ async def discover_accounts(req: DiscoverAccountsRequest, db: AsyncSession = Dep
     if not manager_id:
         raise HTTPException(400, "No manager/login customer ID configured — not an MCC account")
 
-    # Stub: In production, call Google Ads API list_accessible_customers
-    mock_accounts = [
-        {"customer_id": "1234567890", "descriptive_name": "Demo Account 1", "currency": "USD", "timezone": "America/Chicago", "status": "ENABLED"},
-        {"customer_id": "0987654321", "descriptive_name": "Demo Account 2", "currency": "USD", "timezone": "America/New_York", "status": "ENABLED"},
-    ]
+    # Call real Google Ads API
+    try:
+        from google.ads.googleads.client import GoogleAdsClient as GAdsClient
+
+        refresh_token = decrypt_token(integration.refresh_token_encrypted)
+        creds = {
+            "developer_token": settings.GOOGLE_ADS_DEVELOPER_TOKEN,
+            "client_id": settings.GOOGLE_ADS_CLIENT_ID,
+            "client_secret": settings.GOOGLE_ADS_CLIENT_SECRET,
+            "refresh_token": refresh_token,
+            "use_proto_plus": True,
+            "login_customer_id": manager_id.replace("-", ""),
+        }
+        gads_client = GAdsClient.load_from_dict(creds)
+        customer_service = gads_client.get_service("CustomerService")
+        response = customer_service.list_accessible_customers()
+
+        ga_service = gads_client.get_service("GoogleAdsService")
+        discovered_accounts = []
+
+        for resource_name in response.resource_names:
+            cid = resource_name.split("/")[-1]
+            try:
+                query = """SELECT customer.id, customer.descriptive_name,
+                                  customer.currency_code, customer.time_zone,
+                                  customer.manager, customer.status
+                           FROM customer LIMIT 1"""
+                rows = ga_service.search(customer_id=cid, query=query)
+                for row in rows:
+                    discovered_accounts.append({
+                        "customer_id": str(row.customer.id),
+                        "descriptive_name": row.customer.descriptive_name or f"Account {cid}",
+                        "currency": row.customer.currency_code,
+                        "timezone": row.customer.time_zone,
+                        "is_manager": row.customer.manager,
+                        "status": row.customer.status.name if hasattr(row.customer.status, 'name') else "ENABLED",
+                    })
+            except Exception as e:
+                logger.warning("Could not query customer during MCC discover", customer_id=cid, error=str(e))
+                discovered_accounts.append({
+                    "customer_id": cid,
+                    "descriptive_name": f"Account {cid}",
+                    "currency": "",
+                    "timezone": "",
+                    "is_manager": False,
+                    "status": "UNKNOWN",
+                })
+
+    except Exception as e:
+        logger.error("Failed to discover MCC accounts", error=str(e))
+        raise HTTPException(502, f"Google Ads API error: {str(e)}")
 
     saved = []
-    for acc in mock_accounts:
+    for acc in discovered_accounts:
         existing = await db.execute(
             select(GoogleAdsAccessibleAccount).where(
                 and_(
@@ -72,15 +124,15 @@ async def discover_accounts(req: DiscoverAccountsRequest, db: AsyncSession = Dep
             manager_customer_id=manager_id,
             customer_id=acc["customer_id"],
             descriptive_name=acc["descriptive_name"],
-            currency=acc["currency"],
-            timezone=acc["timezone"],
-            status=acc["status"],
+            currency=acc.get("currency", ""),
+            timezone=acc.get("timezone", ""),
+            status=acc.get("status", "ENABLED"),
             last_seen_at=datetime.now(timezone.utc),
         )
         db.add(record)
         saved.append(acc)
 
-    return {"discovered": len(saved), "accounts": saved}
+    return {"discovered": len(saved), "accounts": discovered_accounts}
 
 
 @router.get("/accessible-accounts")

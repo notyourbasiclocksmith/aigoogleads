@@ -17,14 +17,17 @@ from app.services.operator.schemas import (
 logger = structlog.get_logger()
 
 
-def _build_client(refresh_token: str) -> GoogleAdsClient:
-    return GoogleAdsClient.load_from_dict({
+def _build_client(refresh_token: str, login_customer_id: Optional[str] = None) -> GoogleAdsClient:
+    creds = {
         "developer_token": settings.GOOGLE_ADS_DEVELOPER_TOKEN,
         "client_id": settings.GOOGLE_ADS_CLIENT_ID,
         "client_secret": settings.GOOGLE_ADS_CLIENT_SECRET,
         "refresh_token": refresh_token,
         "use_proto_plus": True,
-    })
+    }
+    if login_customer_id:
+        creds["login_customer_id"] = login_customer_id.replace("-", "")
+    return GoogleAdsClient.load_from_dict(creds)
 
 
 def _micros_to_currency(micros: int) -> float:
@@ -41,11 +44,12 @@ async def collect_account_data(
     date_start: str,
     date_end: str,
     campaign_ids: Optional[List[str]] = None,
+    login_customer_id: Optional[str] = None,
 ) -> AccountSnapshot:
     """
     Pull all account data from Google Ads API and normalize into AccountSnapshot.
     """
-    client = _build_client(refresh_token)
+    client = _build_client(refresh_token, login_customer_id=login_customer_id)
     ga_service = client.get_service("GoogleAdsService")
     cid = customer_id.replace("-", "")
 

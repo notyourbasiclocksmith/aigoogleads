@@ -219,6 +219,71 @@ async def save_asset(
     return {"id": asset.id, "status": "saved"}
 
 
+class DeployAdCopyRequest(BaseModel):
+    account_id: str
+    ad_group_id: str
+    campaign_id: str
+    headlines: List[str]
+    descriptions: List[str]
+    final_url: str
+
+
+@router.post("/copy/deploy")
+async def deploy_ad_copy(
+    req: DeployAdCopyRequest,
+    user: CurrentUser = Depends(require_analyst),
+    db: AsyncSession = Depends(get_db),
+):
+    """Deploy AI-generated ad copy as a Responsive Search Ad in Google Ads."""
+    from app.models.ads_account_cache import AdsAccountCache
+    from app.models.integration_google_ads import IntegrationGoogleAds
+
+    # Look up account
+    acct = await db.execute(
+        select(AdsAccountCache).where(
+            AdsAccountCache.id == req.account_id,
+            AdsAccountCache.tenant_id == user.tenant_id,
+        )
+    )
+    account = acct.scalar_one_or_none()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    integration = await db.execute(
+        select(IntegrationGoogleAds).where(IntegrationGoogleAds.tenant_id == user.tenant_id)
+    )
+    ig = integration.scalar_one_or_none()
+    if not ig:
+        raise HTTPException(status_code=400, detail="Google Ads not connected")
+
+    from app.integrations.google_ads.client import GoogleAdsClient
+    gads = GoogleAdsClient(
+        customer_id=account.customer_id,
+        refresh_token_encrypted=ig.refresh_token_encrypted,
+        login_customer_id=ig.login_customer_id,
+    )
+
+    ad_group_resource = f"customers/{account.customer_id}/adGroups/{req.ad_group_id}"
+    result = await gads.create_responsive_search_ad(
+        ad_group_resource=ad_group_resource,
+        ad_data={
+            "headlines": req.headlines[:15],
+            "descriptions": req.descriptions[:4],
+            "final_urls": [req.final_url],
+        },
+    )
+
+    if result.get("status") == "error":
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to create ad"))
+
+    return {
+        "status": "deployed",
+        "ad_resource": result.get("ad_resource"),
+        "headlines_count": len(req.headlines[:15]),
+        "descriptions_count": len(req.descriptions[:4]),
+    }
+
+
 @router.get("/templates")
 async def list_image_templates():
     return {

@@ -28,6 +28,12 @@ from app.models.user_session import UserSession
 from app.models.invitation import Invitation
 from app.models.audit_event import AuditEvent
 from app.models.tenant_settings import TenantSettings
+from app.models.search_term_performance import SearchTermPerformance
+from app.models.keyword_performance_daily import KeywordPerformanceDaily
+from app.models.ad_performance_daily import AdPerformanceDaily
+from app.models.ad_group_performance_daily import AdGroupPerformanceDaily
+from app.models.landing_page_performance import LandingPagePerformance
+from app.models.google_recommendation import GoogleRecommendation
 
 __all__ = [
     "Tenant", "User", "TenantUser", "IntegrationGoogleAds",
@@ -37,6 +43,9 @@ __all__ = [
     "CompetitorProfile", "Recommendation", "ChangeLog", "Approval",
     "Experiment", "Playbook", "Learning", "Alert",
     "UserSession", "Invitation", "AuditEvent", "TenantSettings",
+    "SearchTermPerformance", "KeywordPerformanceDaily",
+    "AdPerformanceDaily", "AdGroupPerformanceDaily",
+    "LandingPagePerformance", "GoogleRecommendation",
 ]
 
 # V2 Models — imported so Alembic/ORM can discover them
@@ -54,4 +63,5 @@ from app.models.v2 import (  # noqa: E402, F401
     NotificationChannel, NotificationRule, NotificationSent,
     OperatorScan, OperatorRecommendation, OperatorChangeSet,
     OperatorMutation, CreativeAudit,
+    OptimizationCycle, OptimizationLearning,
 )

@@ -199,6 +199,13 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
     from app.models.keyword import Keyword
     from app.models.conversion import Conversion
     from app.models.performance_daily import PerformanceDaily
+    from app.models.keyword_performance_daily import KeywordPerformanceDaily
+    from app.models.ad_performance_daily import AdPerformanceDaily
+    from app.models.ad_group_performance_daily import AdGroupPerformanceDaily
+    from app.models.search_term_performance import SearchTermPerformance
+    from app.models.landing_page_performance import LandingPagePerformance
+    from app.models.auction_insight import AuctionInsight
+    from app.models.google_recommendation import GoogleRecommendation
     from app.integrations.google_ads.client import GoogleAdsClient
     from datetime import datetime, timezone
 
@@ -490,17 +497,284 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str):
                 perf.cpc_micros = m.get("avg_cpc", 0)
                 metrics_count += 1
 
-            # Step 7: Complete
+            # Step 7: Keyword performance
+            await _update_sync_progress(db, integration, "syncing", "Pulling keyword performance...", 78)
+            kw_perf_count = 0
+            try:
+                kw_metrics = await client.get_keyword_performance("LAST_30_DAYS")
+                for km in kw_metrics:
+                    existing_kp = await db.execute(
+                        select(KeywordPerformanceDaily).where(
+                            KeywordPerformanceDaily.tenant_id == tenant_id,
+                            KeywordPerformanceDaily.keyword_id == km["keyword_id"],
+                            KeywordPerformanceDaily.date == km["date"],
+                        )
+                    )
+                    kp = existing_kp.scalar_one_or_none()
+                    if not kp:
+                        kp = KeywordPerformanceDaily(
+                            tenant_id=tenant_id,
+                            google_customer_id=integration.customer_id,
+                            campaign_id=km["campaign_id"],
+                            ad_group_id=km["ad_group_id"],
+                            keyword_id=km["keyword_id"],
+                            keyword_text=km.get("keyword_text", ""),
+                            match_type=km.get("match_type"),
+                            date=km["date"],
+                        )
+                        db.add(kp)
+                    kp.impressions = km.get("impressions", 0)
+                    kp.clicks = km.get("clicks", 0)
+                    kp.cost_micros = km.get("cost_micros", 0)
+                    kp.conversions = km.get("conversions", 0)
+                    kp.conversion_value = km.get("conversion_value", 0)
+                    kp.ctr = km.get("ctr", 0)
+                    kp.average_cpc_micros = km.get("average_cpc_micros", 0)
+                    kp.quality_score = km.get("quality_score")
+                    kw_perf_count += 1
+                await db.flush()
+            except Exception as kp_err:
+                logger.warning("Keyword performance sync failed", error=str(kp_err))
+
+            # Step 8: Ad performance
+            await _update_sync_progress(db, integration, "syncing", "Pulling ad performance...", 82)
+            ad_perf_count = 0
+            try:
+                ad_metrics = await client.get_ad_performance("LAST_30_DAYS")
+                for am in ad_metrics:
+                    existing_ap = await db.execute(
+                        select(AdPerformanceDaily).where(
+                            AdPerformanceDaily.tenant_id == tenant_id,
+                            AdPerformanceDaily.ad_id == am["ad_id"],
+                            AdPerformanceDaily.date == am["date"],
+                        )
+                    )
+                    ap = existing_ap.scalar_one_or_none()
+                    if not ap:
+                        ap = AdPerformanceDaily(
+                            tenant_id=tenant_id,
+                            google_customer_id=integration.customer_id,
+                            campaign_id=am["campaign_id"],
+                            ad_group_id=am["ad_group_id"],
+                            ad_id=am["ad_id"],
+                            date=am["date"],
+                        )
+                        db.add(ap)
+                    ap.impressions = am.get("impressions", 0)
+                    ap.clicks = am.get("clicks", 0)
+                    ap.cost_micros = am.get("cost_micros", 0)
+                    ap.conversions = am.get("conversions", 0)
+                    ap.conversion_value = am.get("conversion_value", 0)
+                    ap.ctr = am.get("ctr", 0)
+                    ap.average_cpc_micros = am.get("average_cpc_micros", 0)
+                    ad_perf_count += 1
+                await db.flush()
+            except Exception as ap_err:
+                logger.warning("Ad performance sync failed", error=str(ap_err))
+
+            # Step 9: Ad group performance
+            await _update_sync_progress(db, integration, "syncing", "Pulling ad group performance...", 85)
+            ag_perf_count = 0
+            try:
+                ag_metrics = await client.get_ad_group_performance("LAST_30_DAYS")
+                for agm in ag_metrics:
+                    existing_agp = await db.execute(
+                        select(AdGroupPerformanceDaily).where(
+                            AdGroupPerformanceDaily.tenant_id == tenant_id,
+                            AdGroupPerformanceDaily.ad_group_id == agm["ad_group_id"],
+                            AdGroupPerformanceDaily.date == agm["date"],
+                        )
+                    )
+                    agp = existing_agp.scalar_one_or_none()
+                    if not agp:
+                        agp = AdGroupPerformanceDaily(
+                            tenant_id=tenant_id,
+                            google_customer_id=integration.customer_id,
+                            campaign_id=agm["campaign_id"],
+                            ad_group_id=agm["ad_group_id"],
+                            date=agm["date"],
+                        )
+                        db.add(agp)
+                    agp.impressions = agm.get("impressions", 0)
+                    agp.clicks = agm.get("clicks", 0)
+                    agp.cost_micros = agm.get("cost_micros", 0)
+                    agp.conversions = agm.get("conversions", 0)
+                    agp.conversion_value = agm.get("conversion_value", 0)
+                    agp.ctr = agm.get("ctr", 0)
+                    agp.average_cpc_micros = agm.get("average_cpc_micros", 0)
+                    ag_perf_count += 1
+                await db.flush()
+            except Exception as agp_err:
+                logger.warning("Ad group performance sync failed", error=str(agp_err))
+
+            # Step 10: Search terms
+            await _update_sync_progress(db, integration, "syncing", "Pulling search terms...", 88)
+            st_count = 0
+            try:
+                search_terms = await client.get_search_terms("LAST_30_DAYS")
+                for st in search_terms:
+                    existing_st = await db.execute(
+                        select(SearchTermPerformance).where(
+                            SearchTermPerformance.tenant_id == tenant_id,
+                            SearchTermPerformance.search_term == st["search_term"],
+                            SearchTermPerformance.campaign_id == st["campaign_id"],
+                            SearchTermPerformance.date == st["date"],
+                        )
+                    )
+                    stp = existing_st.scalar_one_or_none()
+                    if not stp:
+                        stp = SearchTermPerformance(
+                            tenant_id=tenant_id,
+                            google_customer_id=integration.customer_id,
+                            campaign_id=st["campaign_id"],
+                            ad_group_id=st["ad_group_id"],
+                            keyword_id=st.get("keyword_id"),
+                            keyword_text=st.get("keyword_text"),
+                            search_term=st["search_term"],
+                            date=st["date"],
+                        )
+                        db.add(stp)
+                    stp.impressions = st.get("impressions", 0)
+                    stp.clicks = st.get("clicks", 0)
+                    stp.cost_micros = st.get("cost_micros", 0)
+                    stp.conversions = st.get("conversions", 0)
+                    stp.conversion_value = st.get("conversion_value", 0)
+                    stp.ctr = st.get("ctr", 0)
+                    stp.average_cpc_micros = st.get("average_cpc_micros", 0)
+                    st_count += 1
+                await db.flush()
+            except Exception as st_err:
+                logger.warning("Search terms sync failed", error=str(st_err))
+
+            # Step 11: Landing pages
+            await _update_sync_progress(db, integration, "syncing", "Pulling landing page data...", 91)
+            lp_count = 0
+            try:
+                landing_pages = await client.get_landing_page_performance("LAST_30_DAYS")
+                for lp in landing_pages:
+                    existing_lp = await db.execute(
+                        select(LandingPagePerformance).where(
+                            LandingPagePerformance.tenant_id == tenant_id,
+                            LandingPagePerformance.landing_page_url == lp["landing_page_url"],
+                            LandingPagePerformance.campaign_id == lp["campaign_id"],
+                            LandingPagePerformance.date == lp["date"],
+                        )
+                    )
+                    lpp = existing_lp.scalar_one_or_none()
+                    if not lpp:
+                        lpp = LandingPagePerformance(
+                            tenant_id=tenant_id,
+                            google_customer_id=integration.customer_id,
+                            campaign_id=lp["campaign_id"],
+                            ad_group_id=lp.get("ad_group_id"),
+                            landing_page_url=lp["landing_page_url"],
+                            date=lp["date"],
+                        )
+                        db.add(lpp)
+                    lpp.impressions = lp.get("impressions", 0)
+                    lpp.clicks = lp.get("clicks", 0)
+                    lpp.cost_micros = lp.get("cost_micros", 0)
+                    lpp.conversions = lp.get("conversions", 0)
+                    lpp.conversion_value = lp.get("conversion_value", 0)
+                    lpp.mobile_friendly_click_rate = lp.get("mobile_friendly_click_rate")
+                    lpp.speed_score = lp.get("speed_score")
+                    lp_count += 1
+                await db.flush()
+            except Exception as lp_err:
+                logger.warning("Landing page sync failed", error=str(lp_err))
+
+            # Step 12: Auction insights
+            await _update_sync_progress(db, integration, "syncing", "Pulling auction insights...", 94)
+            ai_count = 0
+            try:
+                for c in campaigns:
+                    insights = await client.get_auction_insights(c["campaign_id"])
+                    camp_uuid = google_id_to_uuid.get(c["campaign_id"])
+                    for ins in insights:
+                        from datetime import datetime as dt_cls
+                        ins_date = ins["date"]
+                        if isinstance(ins_date, str):
+                            ins_date = dt_cls.strptime(ins_date, "%Y-%m-%d").date()
+                        existing_ai = await db.execute(
+                            select(AuctionInsight).where(
+                                AuctionInsight.tenant_id == tenant_id,
+                                AuctionInsight.campaign_id == camp_uuid,
+                                AuctionInsight.competitor_domain == ins["competitor_domain"],
+                                AuctionInsight.date == ins_date,
+                            )
+                        )
+                        ai_obj = existing_ai.scalar_one_or_none()
+                        if not ai_obj:
+                            ai_obj = AuctionInsight(
+                                tenant_id=tenant_id,
+                                campaign_id=camp_uuid,
+                                date=ins_date,
+                                competitor_domain=ins["competitor_domain"],
+                            )
+                            db.add(ai_obj)
+                        ai_obj.impression_share = ins.get("impression_share", 0)
+                        ai_obj.overlap_rate = ins.get("overlap_rate", 0)
+                        ai_obj.outranking_share = ins.get("outranking_share", 0)
+                        ai_obj.top_of_page_rate = ins.get("top_of_page_rate", 0)
+                        ai_obj.abs_top_rate = ins.get("abs_top_rate", 0)
+                        ai_obj.position_above_rate = ins.get("position_above_rate", 0)
+                        ai_count += 1
+                await db.flush()
+            except Exception as ai_err:
+                logger.warning("Auction insights sync failed", error=str(ai_err))
+
+            # Step 13: Google recommendations
+            await _update_sync_progress(db, integration, "syncing", "Pulling Google recommendations...", 97)
+            rec_count = 0
+            try:
+                g_recs = await client.get_google_recommendations()
+                for gr in g_recs:
+                    existing_gr = await db.execute(
+                        select(GoogleRecommendation).where(
+                            GoogleRecommendation.recommendation_resource_name == gr["resource_name"]
+                        )
+                    )
+                    grobj = existing_gr.scalar_one_or_none()
+                    if not grobj:
+                        grobj = GoogleRecommendation(
+                            tenant_id=tenant_id,
+                            google_customer_id=integration.customer_id,
+                            recommendation_resource_name=gr["resource_name"],
+                            type=gr["type"],
+                            campaign_id=gr.get("campaign_id"),
+                            ad_group_id=gr.get("ad_group_id"),
+                            impact_base_metrics=gr.get("impact_base", {}),
+                            impact_potential_metrics=gr.get("impact_potential", {}),
+                            details=gr.get("details", {}),
+                        )
+                        db.add(grobj)
+                    else:
+                        grobj.impact_base_metrics = gr.get("impact_base", {})
+                        grobj.impact_potential_metrics = gr.get("impact_potential", {})
+                        grobj.details = gr.get("details", {})
+                        grobj.synced_at = datetime.now(timezone.utc)
+                    rec_count += 1
+                await db.flush()
+            except Exception as rec_err:
+                logger.warning("Google recommendations sync failed", error=str(rec_err))
+
+            # Step 14: Complete
             integration.last_sync_at = datetime.now(timezone.utc)
             integration.health_score = 85
             await _update_sync_progress(
                 db, integration, "completed",
-                f"Sync complete — {campaign_count} campaigns, {total_ag} ad groups, {total_kw} keywords, {total_ad} ads, {conv_count} conversions, {metrics_count} metric rows",
+                f"Sync complete — {campaign_count} campaigns, {total_ag} ad groups, {total_kw} keywords, "
+                f"{total_ad} ads, {conv_count} conversions, {metrics_count} campaign metrics, "
+                f"{kw_perf_count} keyword metrics, {ad_perf_count} ad metrics, {ag_perf_count} ad group metrics, "
+                f"{st_count} search terms, {lp_count} landing pages, {ai_count} auction insights, {rec_count} recommendations",
                 100,
             )
             logger.info("Ads account sync complete", tenant_id=tenant_id, integration_id=integration_id,
                         campaigns=campaign_count, ad_groups=total_ag, keywords=total_kw,
-                        ads=total_ad, conversions=conv_count, metrics=metrics_count)
+                        ads=total_ad, conversions=conv_count, metrics=metrics_count,
+                        kw_perf=kw_perf_count, ad_perf=ad_perf_count, ag_perf=ag_perf_count,
+                        search_terms=st_count, landing_pages=lp_count, auction_insights=ai_count,
+                        recommendations=rec_count)
         except Exception as e:
             await db.rollback()
             # Extract real error from RetryError wrapper
@@ -659,12 +933,172 @@ async def _generate_report_async(tenant_id: str, report_type: str, period_days: 
 
 @celery_app.task(name="app.jobs.tasks.start_experiment_task")
 def start_experiment_task(tenant_id: str, experiment_id: str):
-    logger.info("Experiment started", tenant_id=tenant_id, experiment_id=experiment_id)
+    import asyncio
+    asyncio.run(_start_experiment(tenant_id, experiment_id))
+
+
+async def _start_experiment(tenant_id: str, experiment_id: str):
+    from app.core.database import async_session_factory
+    from app.models.experiment import Experiment
+    from app.models.integration_google_ads import IntegrationGoogleAds
+    from app.integrations.google_ads.client import GoogleAdsClient
+
+    async with async_session_factory() as db:
+        exp = await db.get(Experiment, experiment_id)
+        if not exp or exp.tenant_id != tenant_id:
+            logger.error("Experiment not found", experiment_id=experiment_id)
+            return
+
+        result = await db.execute(
+            select(IntegrationGoogleAds).where(IntegrationGoogleAds.tenant_id == tenant_id)
+        )
+        integration = result.scalars().first()
+        if not integration:
+            exp.status = "failed"
+            exp.results_json = {"error": "No Google Ads integration"}
+            await db.commit()
+            return
+
+        client = GoogleAdsClient(
+            customer_id=integration.customer_id,
+            refresh_token_encrypted=integration.refresh_token_encrypted,
+            login_customer_id=integration.login_customer_id,
+        )
+
+        # Get campaign_id from entity_scope
+        campaign_id = (exp.entity_scope_json or {}).get("campaign_id")
+        if not campaign_id:
+            exp.status = "failed"
+            exp.results_json = {"error": "No campaign_id in entity_scope"}
+            await db.commit()
+            return
+
+        # Create experiment in Google Ads
+        result = await client.create_experiment(
+            name=exp.name,
+            campaign_id=campaign_id,
+            suffix="exp",
+            traffic_split_pct=50,
+        )
+
+        if result.get("status") == "error":
+            exp.status = "failed"
+            exp.results_json = {"error": result.get("error")}
+            await db.commit()
+            return
+
+        # Schedule the experiment
+        exp_resource = result.get("experiment_resource")
+        schedule_result = await client.schedule_experiment(exp_resource)
+
+        exp.status = "running"
+        exp.results_json = {
+            "google_experiment_resource": exp_resource,
+            "google_draft_resource": result.get("draft_resource"),
+            "schedule_status": schedule_result.get("status"),
+        }
+        await db.commit()
+        logger.info("Experiment started in Google Ads", experiment_id=experiment_id, resource=exp_resource)
 
 
 @celery_app.task(name="app.jobs.tasks.promote_experiment_winner_task")
 def promote_experiment_winner_task(tenant_id: str, experiment_id: str, variant_index: int):
-    logger.info("Promoting experiment winner", tenant_id=tenant_id, experiment_id=experiment_id, variant=variant_index)
+    import asyncio
+    asyncio.run(_promote_experiment(tenant_id, experiment_id, variant_index))
+
+
+async def _promote_experiment(tenant_id: str, experiment_id: str, variant_index: int):
+    from app.core.database import async_session_factory
+    from app.models.experiment import Experiment
+    from app.models.integration_google_ads import IntegrationGoogleAds
+    from app.integrations.google_ads.client import GoogleAdsClient
+
+    async with async_session_factory() as db:
+        exp = await db.get(Experiment, experiment_id)
+        if not exp or exp.tenant_id != tenant_id:
+            logger.error("Experiment not found", experiment_id=experiment_id)
+            return
+
+        result = await db.execute(
+            select(IntegrationGoogleAds).where(IntegrationGoogleAds.tenant_id == tenant_id)
+        )
+        integration = result.scalars().first()
+        if not integration:
+            return
+
+        client = GoogleAdsClient(
+            customer_id=integration.customer_id,
+            refresh_token_encrypted=integration.refresh_token_encrypted,
+            login_customer_id=integration.login_customer_id,
+        )
+
+        exp_resource = (exp.results_json or {}).get("google_experiment_resource")
+        if not exp_resource:
+            exp.results_json = {**(exp.results_json or {}), "promote_error": "No experiment resource found"}
+            await db.commit()
+            return
+
+        # Get final results before promoting
+        results = await client.get_experiment_results(exp_resource)
+
+        # Promote the experiment
+        promote_result = await client.promote_experiment(exp_resource)
+
+        exp.status = "completed"
+        exp.results_json = {
+            **(exp.results_json or {}),
+            "arms": results.get("arms", []),
+            "promoted_variant": variant_index,
+            "promote_status": promote_result.get("status"),
+        }
+        await db.commit()
+        logger.info("Experiment promoted", experiment_id=experiment_id)
+
+
+@celery_app.task(name="app.jobs.tasks.collect_experiment_results_task")
+def collect_experiment_results_task(tenant_id: str, experiment_id: str):
+    """Periodic task to collect experiment metrics from Google Ads."""
+    import asyncio
+    asyncio.run(_collect_experiment_results(tenant_id, experiment_id))
+
+
+async def _collect_experiment_results(tenant_id: str, experiment_id: str):
+    from app.core.database import async_session_factory
+    from app.models.experiment import Experiment
+    from app.models.integration_google_ads import IntegrationGoogleAds
+    from app.integrations.google_ads.client import GoogleAdsClient
+
+    async with async_session_factory() as db:
+        exp = await db.get(Experiment, experiment_id)
+        if not exp or exp.status != "running":
+            return
+
+        result = await db.execute(
+            select(IntegrationGoogleAds).where(IntegrationGoogleAds.tenant_id == tenant_id)
+        )
+        integration = result.scalars().first()
+        if not integration:
+            return
+
+        client = GoogleAdsClient(
+            customer_id=integration.customer_id,
+            refresh_token_encrypted=integration.refresh_token_encrypted,
+            login_customer_id=integration.login_customer_id,
+        )
+
+        exp_resource = (exp.results_json or {}).get("google_experiment_resource")
+        if not exp_resource:
+            return
+
+        results = await client.get_experiment_results(exp_resource)
+        exp.results_json = {
+            **(exp.results_json or {}),
+            "arms": results.get("arms", []),
+            "experiment_status": results.get("experiment", {}).get("status"),
+            "last_collected": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.commit()
+        logger.info("Experiment results collected", experiment_id=experiment_id)
 
 
 # ── SCHEDULED GLOBAL TASKS ──────────────────────────────────────────

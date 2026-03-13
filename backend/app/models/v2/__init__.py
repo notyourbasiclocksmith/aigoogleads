@@ -30,6 +30,8 @@ from app.models.v2.operator_recommendation import OperatorRecommendation
 from app.models.v2.operator_change_set import OperatorChangeSet
 from app.models.v2.operator_mutation import OperatorMutation
 from app.models.v2.creative_audit import CreativeAudit
+from app.models.v2.optimization_cycle import OptimizationCycle
+from app.models.v2.optimization_learning import OptimizationLearning
 
 __all__ = [
     "GoogleAdsAccessibleAccount", "TenantGoogleAdsBinding",
@@ -45,4 +47,5 @@ __all__ = [
     "NotificationChannel", "NotificationRule", "NotificationSent",
     "OperatorScan", "OperatorRecommendation", "OperatorChangeSet",
     "OperatorMutation", "CreativeAudit",
+    "OptimizationCycle", "OptimizationLearning",
 ]

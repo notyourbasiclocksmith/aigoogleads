@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, desc
+from sqlalchemy import select, func, and_, desc, case, literal
 from datetime import date, timedelta
 from typing import Optional
 
@@ -9,6 +9,10 @@ from app.core.deps import require_tenant, CurrentUser
 from app.models.performance_daily import PerformanceDaily
 from app.models.alert import Alert
 from app.models.campaign import Campaign
+from app.models.keyword_performance_daily import KeywordPerformanceDaily
+from app.models.search_term_performance import SearchTermPerformance
+from app.models.ad_performance_daily import AdPerformanceDaily
+from app.models.tenant import Tenant
 
 router = APIRouter()
 
@@ -138,6 +142,220 @@ async def get_campaign_summary(
     )
     rows = result.all()
     return {r.status: r.count for r in rows}
+
+
+# ── Health Check — powers dashboard widgets ──────────────────────────────────
+
+@router.get("/health-check")
+async def get_health_check(
+    days: int = Query(30, ge=7, le=90),
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Lightweight account health check. Returns:
+    - wasted spend breakdown (keywords, search terms, low-CTR ads)
+    - top money-making keywords
+    - account status summary
+    - optimizer status
+    - problem count for "Fix My Ads" button
+    """
+    start_date = date.today() - timedelta(days=days)
+    tid = user.tenant_id
+
+    # ── 1. Wasted keywords: cost > $10, 0 conversions, 10+ clicks ────────
+    kw_sub = (
+        select(
+            KeywordPerformanceDaily.keyword_id,
+            func.sum(KeywordPerformanceDaily.cost_micros).label("total_cost"),
+            func.sum(KeywordPerformanceDaily.clicks).label("total_clicks"),
+            func.sum(KeywordPerformanceDaily.conversions).label("total_conv"),
+        )
+        .where(
+            KeywordPerformanceDaily.tenant_id == tid,
+            KeywordPerformanceDaily.date >= start_date,
+        )
+        .group_by(KeywordPerformanceDaily.keyword_id)
+        .subquery()
+    )
+    wasted_kw = await db.execute(
+        select(
+            func.sum(kw_sub.c.total_cost).label("cost"),
+            func.count().label("count"),
+        ).where(
+            kw_sub.c.total_conv == 0,
+            kw_sub.c.total_clicks >= 10,
+            kw_sub.c.total_cost >= 10_000_000,  # $10 in micros
+        )
+    )
+    wk = wasted_kw.one_or_none()
+    wasted_keyword_cost = round((wk.cost or 0) / 1_000_000, 2) if wk else 0
+    wasted_keyword_count = wk.count or 0 if wk else 0
+
+    # ── 2. Wasted search terms: cost > $5, 0 conversions ─────────────────
+    st_sub = (
+        select(
+            SearchTermPerformance.search_term,
+            func.sum(SearchTermPerformance.cost_micros).label("total_cost"),
+            func.sum(SearchTermPerformance.conversions).label("total_conv"),
+        )
+        .where(
+            SearchTermPerformance.tenant_id == tid,
+            SearchTermPerformance.date >= start_date,
+        )
+        .group_by(SearchTermPerformance.search_term)
+        .subquery()
+    )
+    wasted_st = await db.execute(
+        select(
+            func.sum(st_sub.c.total_cost).label("cost"),
+            func.count().label("count"),
+        ).where(
+            st_sub.c.total_conv == 0,
+            st_sub.c.total_cost >= 5_000_000,  # $5 in micros
+        )
+    )
+    ws = wasted_st.one_or_none()
+    wasted_search_term_cost = round((ws.cost or 0) / 1_000_000, 2) if ws else 0
+    wasted_search_term_count = ws.count or 0 if ws else 0
+
+    # ── 3. Low-CTR ads: CTR < 2%, 100+ impressions ───────────────────────
+    ad_sub = (
+        select(
+            AdPerformanceDaily.ad_id,
+            func.sum(AdPerformanceDaily.cost_micros).label("total_cost"),
+            func.sum(AdPerformanceDaily.impressions).label("total_imp"),
+            func.sum(AdPerformanceDaily.clicks).label("total_clicks"),
+        )
+        .where(
+            AdPerformanceDaily.tenant_id == tid,
+            AdPerformanceDaily.date >= start_date,
+        )
+        .group_by(AdPerformanceDaily.ad_id)
+        .subquery()
+    )
+    wasted_ads = await db.execute(
+        select(
+            func.sum(ad_sub.c.total_cost).label("cost"),
+            func.count().label("count"),
+        ).where(
+            ad_sub.c.total_imp >= 100,
+            (ad_sub.c.total_clicks * 1.0 / ad_sub.c.total_imp) < 0.02,
+        )
+    )
+    wa = wasted_ads.one_or_none()
+    wasted_ad_cost = round((wa.cost or 0) / 1_000_000, 2) if wa else 0
+    wasted_ad_count = wa.count or 0 if wa else 0
+
+    # ── 4. Top money keywords (by conversion_value) ──────────────────────
+    money_kw = await db.execute(
+        select(
+            KeywordPerformanceDaily.keyword_text,
+            KeywordPerformanceDaily.keyword_id,
+            func.sum(KeywordPerformanceDaily.cost_micros).label("cost"),
+            func.sum(KeywordPerformanceDaily.conversion_value).label("revenue"),
+            func.sum(KeywordPerformanceDaily.conversions).label("conversions"),
+            func.sum(KeywordPerformanceDaily.clicks).label("clicks"),
+        )
+        .where(
+            KeywordPerformanceDaily.tenant_id == tid,
+            KeywordPerformanceDaily.date >= start_date,
+        )
+        .group_by(KeywordPerformanceDaily.keyword_text, KeywordPerformanceDaily.keyword_id)
+        .having(func.sum(KeywordPerformanceDaily.conversion_value) > 0)
+        .order_by(desc("revenue"))
+        .limit(10)
+    )
+    money_keywords = [
+        {
+            "keyword": r.keyword_text,
+            "keyword_id": r.keyword_id,
+            "spend": round(r.cost / 1_000_000, 2),
+            "revenue": round(r.revenue, 2),
+            "conversions": round(r.conversions, 1),
+            "clicks": r.clicks,
+            "roas": round(r.revenue / (r.cost / 1_000_000), 2) if r.cost > 0 else 0,
+        }
+        for r in money_kw.all()
+    ]
+
+    # ── 5. Campaign status ───────────────────────────────────────────────
+    camp_status = await db.execute(
+        select(
+            func.count().label("total"),
+            func.sum(case((Campaign.status == "ENABLED", 1), else_=0)).label("enabled"),
+        ).where(Campaign.tenant_id == tid)
+    )
+    cs = camp_status.one_or_none()
+
+    # ── 6. Optimizer status ──────────────────────────────────────────────
+    tenant = await db.get(Tenant, str(tid))
+    autonomy_mode = tenant.autonomy_mode if tenant else "suggest"
+
+    from app.models.v2.optimization_cycle import OptimizationCycle
+    last_cycle = await db.execute(
+        select(OptimizationCycle)
+        .where(OptimizationCycle.tenant_id == tid)
+        .order_by(desc(OptimizationCycle.created_at))
+        .limit(1)
+    )
+    lc = last_cycle.scalar_one_or_none()
+
+    # ── 7. Budget-limited campaigns ──────────────────────────────────────
+    # Check from PerformanceDaily if any campaign has high lost IS budget
+    # (simplified: campaigns with status ENABLED but very low impression share)
+    budget_limited_count = 0  # Will be populated from last scan if available
+    from app.models.v2.operator_scan import OperatorScan
+    from app.models.v2.operator_recommendation import OperatorRecommendation
+    last_scan = await db.execute(
+        select(OperatorScan)
+        .where(OperatorScan.tenant_id == tid, OperatorScan.status == "ready")
+        .order_by(desc(OperatorScan.created_at))
+        .limit(1)
+    )
+    ls = last_scan.scalar_one_or_none()
+    last_scan_problems = 0
+    last_scan_id = None
+    if ls:
+        last_scan_id = ls.id
+        rec_count = await db.execute(
+            select(func.count()).where(OperatorRecommendation.scan_id == ls.id)
+        )
+        last_scan_problems = rec_count.scalar() or 0
+        # Count budget-limited recs
+        bl = await db.execute(
+            select(func.count()).where(
+                OperatorRecommendation.scan_id == ls.id,
+                OperatorRecommendation.recommendation_type.in_(["INCREASE_BUDGET"]),
+            )
+        )
+        budget_limited_count = bl.scalar() or 0
+
+    # ── Problem count (for Fix My Ads button) ────────────────────────────
+    problem_count = wasted_keyword_count + wasted_search_term_count + wasted_ad_count + budget_limited_count
+    total_wasted = round(wasted_keyword_cost + wasted_search_term_cost + wasted_ad_cost, 2)
+
+    return {
+        "period_days": days,
+        "problems_found": problem_count,
+        "total_wasted_spend": total_wasted,
+        "wasted_spend": {
+            "keywords": {"cost": wasted_keyword_cost, "count": wasted_keyword_count},
+            "search_terms": {"cost": wasted_search_term_cost, "count": wasted_search_term_count},
+            "low_ctr_ads": {"cost": wasted_ad_cost, "count": wasted_ad_count},
+            "budget_limited": {"count": budget_limited_count},
+        },
+        "money_keywords": money_keywords,
+        "account_status": {
+            "campaigns_total": cs.total if cs else 0,
+            "campaigns_enabled": cs.enabled if cs else 0,
+            "autonomy_mode": autonomy_mode,
+            "last_optimization": lc.created_at.isoformat() if lc else None,
+            "last_optimization_status": lc.status if lc else None,
+            "last_scan_id": last_scan_id,
+            "last_scan_problems": last_scan_problems,
+        },
+    }
 
 
 @router.get("/campaigns")
