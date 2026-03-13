@@ -905,6 +905,16 @@ def launch_campaign_task(tenant_id: str, campaign_id: str, actor_id: str):
 
 
 async def _launch_campaign_async(tenant_id: str, campaign_id: str, actor_id: str):
+    """
+    Full campaign launch pipeline:
+      1. Create campaign + budget in Google Ads (PAUSED)
+      2. Create ad groups from settings_json.ad_groups
+      3. Create keywords per ad group
+      4. Create RSA ads per ad group
+      5. Add campaign-level negative keywords
+      6. Enable campaign
+      7. Log change for rollback
+    """
     from app.core.database import async_session_factory
     from app.models.campaign import Campaign
     from app.models.integration_google_ads import IntegrationGoogleAds
@@ -930,8 +940,13 @@ async def _launch_campaign_async(tenant_id: str, campaign_id: str, actor_id: str
         integration = integration_result.scalar_one_or_none()
         if not integration:
             campaign.status = "FAILED"
+            campaign.settings_json = {**(campaign.settings_json or {}), "launch_error": "No active Google Ads integration"}
             await db.commit()
             return
+
+        settings = campaign.settings_json or {}
+        ad_groups_data = settings.get("ad_groups", [])
+        launch_log = {"steps": []}
 
         try:
             client = GoogleAdsClient(
@@ -940,37 +955,126 @@ async def _launch_campaign_async(tenant_id: str, campaign_id: str, actor_id: str
                 login_customer_id=integration.login_customer_id,
             )
 
-            result = await client.create_campaign({
+            # ── Step 1: Create campaign + budget (PAUSED) ──
+            campaign_result = await client.create_campaign({
                 "name": campaign.name,
                 "budget_micros": campaign.budget_micros,
-                "type": campaign.type,
-                "bidding_strategy": campaign.bidding_strategy,
+                "channel_type": campaign.type or "SEARCH",
+                "bidding_strategy": campaign.bidding_strategy or "MAXIMIZE_CONVERSIONS",
+                "network": settings.get("network", "SEARCH"),
             })
 
-            if result.get("status") == "created":
-                campaign.status = "ENABLED"
-                campaign.is_draft = False
-
-                log = ChangeLog(
-                    tenant_id=tenant_id,
-                    actor_type="user",
-                    actor_id=actor_id,
-                    google_customer_id=campaign.google_customer_id,
-                    entity_type="campaign",
-                    entity_id=campaign_id,
-                    before_json={"status": "DRAFT"},
-                    after_json={"status": "ENABLED"},
-                    reason="Campaign launched via approval flow",
-                    rollback_token=str(uuid.uuid4()),
-                )
-                db.add(log)
-            else:
+            if campaign_result.get("status") != "created":
                 campaign.status = "FAILED"
+                campaign.settings_json = {**settings, "launch_error": campaign_result.get("error", "Campaign creation failed")}
+                await db.commit()
+                return
 
+            campaign_resource = campaign_result["campaign_resource"]
+            google_campaign_id = campaign_result["campaign_id"]
+            campaign.campaign_id = google_campaign_id
+            launch_log["steps"].append({"step": "campaign", "status": "created", "resource": campaign_resource})
+            logger.info("Campaign created in Google Ads", campaign_resource=campaign_resource)
+
+            # ── Step 2: Create ad groups → keywords → ads ──
+            ag_created = 0
+            kw_created = 0
+            ad_created = 0
+
+            for ag_data in ad_groups_data:
+                ag_name = ag_data.get("name", f"Ad Group {ag_created + 1}")
+
+                ag_result = await client.create_ad_group(campaign_resource, {"name": ag_name})
+                if ag_result.get("status") != "created":
+                    launch_log["steps"].append({"step": "ad_group", "name": ag_name, "status": "failed", "error": ag_result.get("error")})
+                    logger.warning("Ad group creation failed", name=ag_name, error=ag_result.get("error"))
+                    continue
+
+                ag_resource = ag_result["ad_group_resource"]
+                ag_created += 1
+                launch_log["steps"].append({"step": "ad_group", "name": ag_name, "status": "created"})
+
+                # ── Step 2a: Keywords for this ad group ──
+                keywords = ag_data.get("keywords", [])
+                if keywords:
+                    kw_result = await client.create_keywords(ag_resource, keywords)
+                    count = kw_result.get("created", 0)
+                    kw_created += count
+                    launch_log["steps"].append({"step": "keywords", "ad_group": ag_name, "count": count, "status": kw_result.get("status")})
+
+                # ── Step 2b: RSA ads for this ad group ──
+                ads = ag_data.get("ads", [])
+                for ad_data in ads:
+                    ad_result = await client.create_responsive_search_ad(ag_resource, ad_data)
+                    if ad_result.get("status") == "created":
+                        ad_created += 1
+                    launch_log["steps"].append({"step": "rsa", "ad_group": ag_name, "status": ad_result.get("status")})
+
+            # ── Step 3: Campaign-level negative keywords ──
+            neg_created = 0
+            # Collect negatives from all ad groups (they're typically the same list)
+            all_negatives = set()
+            for ag_data in ad_groups_data:
+                for neg in ag_data.get("negatives", []):
+                    neg_text = neg.get("text", neg) if isinstance(neg, dict) else str(neg)
+                    if neg_text:
+                        all_negatives.add(neg_text)
+
+            if all_negatives and google_campaign_id:
+                neg_result = await client.add_negative_keywords(google_campaign_id, list(all_negatives))
+                neg_created = neg_result.get("count", 0)
+                launch_log["steps"].append({"step": "negatives", "count": neg_created, "status": neg_result.get("status")})
+
+            # ── Step 4: Enable campaign ──
+            enable_result = await client.update_campaign_status(campaign_resource, "ENABLED")
+            launch_log["steps"].append({"step": "enable", "status": enable_result.get("status")})
+
+            # ── Update local campaign record ──
+            campaign.status = "ENABLED"
+            campaign.is_draft = False
+            campaign.settings_json = {
+                **settings,
+                "launch_log": launch_log,
+                "google_campaign_resource": campaign_resource,
+                "ad_groups_created": ag_created,
+                "keywords_created": kw_created,
+                "ads_created": ad_created,
+                "negatives_created": neg_created,
+            }
+
+            log = ChangeLog(
+                tenant_id=tenant_id,
+                actor_type="user",
+                actor_id=actor_id,
+                google_customer_id=campaign.google_customer_id,
+                entity_type="campaign",
+                entity_id=campaign_id,
+                before_json={"status": "DRAFT"},
+                after_json={
+                    "status": "ENABLED",
+                    "google_campaign_id": google_campaign_id,
+                    "ad_groups": ag_created,
+                    "keywords": kw_created,
+                    "ads": ad_created,
+                    "negatives": neg_created,
+                },
+                reason="Campaign launched via approval flow",
+                rollback_token=str(uuid.uuid4()),
+            )
+            db.add(log)
             await db.commit()
-            logger.info("Campaign launch complete", campaign_id=campaign_id, status=campaign.status)
+
+            logger.info("Campaign launch complete",
+                        campaign_id=campaign_id,
+                        google_campaign_id=google_campaign_id,
+                        ad_groups=ag_created,
+                        keywords=kw_created,
+                        ads=ad_created,
+                        negatives=neg_created)
+
         except Exception as e:
             campaign.status = "FAILED"
+            campaign.settings_json = {**settings, "launch_error": str(e), "launch_log": launch_log}
             await db.commit()
             logger.error("Campaign launch failed", campaign_id=campaign_id, error=str(e))
 

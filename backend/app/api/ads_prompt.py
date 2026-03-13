@@ -17,20 +17,13 @@ class PromptRequest(BaseModel):
     google_customer_id: Optional[str] = None
 
 
-class CampaignDraft(BaseModel):
-    campaign_name: str
-    campaign_type: str
-    objective: str
-    budget_micros: int
-    bidding_strategy: str
-    locations: List[str] = []
-    schedule: Dict[str, Any] = {}
-    ad_groups: List[Dict[str, Any]] = []
-    settings: Dict[str, Any] = {}
+class SaveDraftRequest(BaseModel):
+    draft: Dict[str, Any]
 
 
 class ApproveLaunchRequest(BaseModel):
-    draft_campaign_id: str
+    draft_campaign_id: Optional[str] = None
+    draft: Optional[Dict[str, Any]] = None
 
 
 @router.post("/generate")
@@ -94,7 +87,7 @@ async def get_prompt_context(
 
 @router.post("/save-draft")
 async def save_draft(
-    draft: CampaignDraft,
+    req: SaveDraftRequest,
     user: CurrentUser = Depends(require_analyst),
     db: AsyncSession = Depends(get_db),
 ):
@@ -103,26 +96,33 @@ async def save_draft(
         select(IntegrationGoogleAds).where(
             IntegrationGoogleAds.tenant_id == user.tenant_id,
             IntegrationGoogleAds.is_active == True,
+            IntegrationGoogleAds.customer_id != "pending",
         ).limit(1)
     )
     account = acct_result.scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=400, detail="No active Google Ads account")
 
+    d = req.draft
+    camp_data = d.get("campaign", {})
     campaign = Campaign(
         tenant_id=user.tenant_id,
         google_customer_id=account.customer_id,
-        type=draft.campaign_type,
-        name=draft.campaign_name,
+        type=camp_data.get("type", "SEARCH"),
+        name=camp_data.get("name", "AI Campaign"),
         status="DRAFT",
-        objective=draft.objective,
-        budget_micros=draft.budget_micros,
-        bidding_strategy=draft.bidding_strategy,
+        objective=camp_data.get("objective", "leads"),
+        budget_micros=camp_data.get("budget_micros", 30_000_000),
+        bidding_strategy=camp_data.get("bidding_strategy", "MAXIMIZE_CONVERSIONS"),
         settings_json={
-            "locations": draft.locations,
-            "schedule": draft.schedule,
-            "ad_groups": draft.ad_groups,
-            **draft.settings,
+            "locations": camp_data.get("locations", []),
+            "schedule": camp_data.get("schedule", {}),
+            "device_bids": camp_data.get("device_bids", {}),
+            "network": camp_data.get("settings", {}).get("network", "SEARCH"),
+            "ad_groups": d.get("ad_groups", []),
+            "extensions": d.get("extensions", {}),
+            "keyword_strategy": d.get("keyword_strategy", {}),
+            "reasoning": d.get("reasoning", {}),
         },
         is_draft=True,
     )
@@ -141,16 +141,61 @@ async def approve_and_launch(
     if user.role not in ("owner", "admin"):
         raise HTTPException(status_code=403, detail="Only owner/admin can launch campaigns")
 
-    result = await db.execute(
-        select(Campaign).where(
-            Campaign.id == req.draft_campaign_id,
-            Campaign.tenant_id == user.tenant_id,
-            Campaign.is_draft == True,
+    campaign = None
+
+    # Case 1: Existing draft in DB
+    if req.draft_campaign_id:
+        result = await db.execute(
+            select(Campaign).where(
+                Campaign.id == req.draft_campaign_id,
+                Campaign.tenant_id == user.tenant_id,
+                Campaign.is_draft == True,
+            )
         )
-    )
-    campaign = result.scalar_one_or_none()
+        campaign = result.scalar_one_or_none()
+
+    # Case 2: Inline draft — auto-save then launch
+    if not campaign and req.draft:
+        from app.models.integration_google_ads import IntegrationGoogleAds
+        acct_result = await db.execute(
+            select(IntegrationGoogleAds).where(
+                IntegrationGoogleAds.tenant_id == user.tenant_id,
+                IntegrationGoogleAds.is_active == True,
+                IntegrationGoogleAds.customer_id != "pending",
+            ).limit(1)
+        )
+        account = acct_result.scalar_one_or_none()
+        if not account:
+            raise HTTPException(status_code=400, detail="No active Google Ads account")
+
+        d = req.draft
+        camp_data = d.get("campaign", {})
+        campaign = Campaign(
+            tenant_id=user.tenant_id,
+            google_customer_id=account.customer_id,
+            type=camp_data.get("type", "SEARCH"),
+            name=camp_data.get("name", "AI Campaign"),
+            status="DRAFT",
+            objective=camp_data.get("objective", "leads"),
+            budget_micros=camp_data.get("budget_micros", 30_000_000),
+            bidding_strategy=camp_data.get("bidding_strategy", "MAXIMIZE_CONVERSIONS"),
+            settings_json={
+                "locations": camp_data.get("locations", []),
+                "schedule": camp_data.get("schedule", {}),
+                "device_bids": camp_data.get("device_bids", {}),
+                "network": camp_data.get("settings", {}).get("network", "SEARCH"),
+                "ad_groups": d.get("ad_groups", []),
+                "extensions": d.get("extensions", {}),
+                "keyword_strategy": d.get("keyword_strategy", {}),
+                "reasoning": d.get("reasoning", {}),
+            },
+            is_draft=True,
+        )
+        db.add(campaign)
+        await db.flush()
+
     if not campaign:
-        raise HTTPException(status_code=404, detail="Draft campaign not found")
+        raise HTTPException(status_code=404, detail="Draft campaign not found — provide draft_campaign_id or inline draft")
 
     from app.jobs.tasks import launch_campaign_task
     launch_campaign_task.delay(user.tenant_id, campaign.id, user.user_id)

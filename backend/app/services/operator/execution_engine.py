@@ -30,12 +30,14 @@ ACTION_HANDLERS = {
     "ADD_AD_SCHEDULE_RULE":    "_exec_add_ad_schedule",
     "INCREASE_BUDGET":         "_exec_increase_budget",
     "DECREASE_BUDGET":         "_exec_decrease_budget",
+    "ADD_BRAND_SPECIFIC_CAMPAIGN": "_exec_create_campaign",
+    "ADD_HIGH_INTENT_CAMPAIGN":    "_exec_create_campaign",
+    "CREATE_CAMPAIGN":             "_exec_create_campaign",
 }
 
 # These action types require manual execution — we log them but skip auto-apply
 MANUAL_ONLY_ACTIONS = {
-    "REWRITE_RSA", "SPLIT_AD_GROUP", "CREATE_CAMPAIGN",
-    "ADD_BRAND_SPECIFIC_CAMPAIGN", "ADD_HIGH_INTENT_CAMPAIGN",
+    "REWRITE_RSA", "SPLIT_AD_GROUP",
     "CREATE_AD_VARIANTS", "ADD_ASSETS", "ADD_SITELINKS", "ADD_CALLOUTS",
     "ADD_LOCATION", "EXCLUDE_LOCATION", "RESTRUCTURE_THEME_CLUSTER",
     "CREATE_EXPERIMENT", "POLICY_FIX", "IMAGE_REFRESH",
@@ -481,6 +483,101 @@ class ExecutionEngine:
             "reversible": True,
             "rollback": {"action": "increase_budget", "campaign_id": rec.entity_id,
                          "budget_daily": old_budget},
+        }
+
+    async def _exec_create_campaign(self, rec: OperatorRecommendation) -> Dict[str, Any]:
+        """
+        Create a full campaign from a recommendation (brand-specific, high-intent, etc.).
+        Uses CampaignGeneratorService to build the draft, saves to DB, fires launch task.
+        """
+        from app.models.business_profile import BusinessProfile
+        from app.models.campaign import Campaign
+        from app.services.campaign_generator import CampaignGeneratorService
+
+        proposed = rec.proposed_state_json or {}
+        evidence = rec.evidence_json or {}
+
+        # Get tenant_id from the change set
+        cs = await self.db.get(OperatorChangeSet, rec.change_set_id)
+        if not cs:
+            return {"ok": False, "error": "Change set not found"}
+
+        # Resolve tenant_id from integration
+        integration = await self.db.get(IntegrationGoogleAds, cs.account_id)
+        if not integration:
+            return {"ok": False, "error": "No integration for this account"}
+        tenant_id = integration.tenant_id
+
+        # Get business profile
+        bp_result = await self.db.execute(
+            select(BusinessProfile).where(BusinessProfile.tenant_id == tenant_id)
+        )
+        profile = bp_result.scalar_one_or_none()
+        if not profile:
+            return {"ok": False, "error": "No business profile — complete onboarding first"}
+
+        # Build a synthetic prompt from the recommendation context
+        brand = proposed.get("brand", evidence.get("brand", ""))
+        action = proposed.get("action", "create_campaign")
+        if "brand" in action and brand:
+            prompt = (f"Create a {brand.title()}-specific campaign. "
+                      f"Focus on {brand} related search terms with dedicated ad copy. "
+                      f"Budget based on existing {brand} search demand of ${evidence.get('spend', 50):.0f}.")
+        else:
+            prompt = (f"Create a new campaign for {rec.entity_name or 'high-intent services'}. "
+                      f"Focus on high-converting keywords with strong ad copy.")
+
+        # Generate full campaign draft via AI generator
+        generator = CampaignGeneratorService(self.db, tenant_id)
+        draft = await generator.generate_from_prompt(
+            prompt=prompt,
+            business_profile=profile,
+            google_customer_id=integration.customer_id,
+        )
+
+        # Save as Campaign record
+        camp_data = draft.get("campaign", {})
+        campaign = Campaign(
+            tenant_id=tenant_id,
+            google_customer_id=integration.customer_id,
+            type=camp_data.get("type", "SEARCH"),
+            name=camp_data.get("name", f"{brand.title()} Campaign" if brand else "AI Campaign"),
+            status="LAUNCHING",
+            objective=camp_data.get("objective", "leads"),
+            budget_micros=camp_data.get("budget_micros", 30_000_000),
+            bidding_strategy=camp_data.get("bidding_strategy", "MAXIMIZE_CONVERSIONS"),
+            settings_json={
+                "locations": camp_data.get("locations", []),
+                "schedule": camp_data.get("schedule", {}),
+                "device_bids": camp_data.get("device_bids", {}),
+                "network": camp_data.get("settings", {}).get("network", "SEARCH"),
+                "ad_groups": draft.get("ad_groups", []),
+                "extensions": draft.get("extensions", {}),
+                "keyword_strategy": draft.get("keyword_strategy", {}),
+                "reasoning": draft.get("reasoning", {}),
+                "source": "operator_recommendation",
+                "recommendation_id": rec.id,
+            },
+            is_draft=False,
+        )
+        self.db.add(campaign)
+        await self.db.flush()
+
+        # Fire async launch task
+        from app.jobs.tasks import launch_campaign_task
+        launch_campaign_task.delay(tenant_id, campaign.id, "operator")
+
+        return {
+            "ok": True,
+            "resource": f"campaigns/{campaign.id}",
+            "request": {"action": "create_campaign", "prompt": prompt, "campaign_name": campaign.name},
+            "response": {
+                "campaign_id": campaign.id,
+                "ad_groups": len(draft.get("ad_groups", [])),
+                "keywords": draft.get("keyword_strategy", {}).get("total_keywords", 0),
+            },
+            "reversible": False,
+            "rollback": {},
         }
 
     # ── Rollback Executor ──────────────────────────────────────────────

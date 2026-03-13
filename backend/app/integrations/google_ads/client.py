@@ -964,6 +964,17 @@ class GoogleAdsClient:
     # ── WRITE OPERATIONS (CHANGESETS) ────────────────────────────────
 
     async def create_campaign(self, campaign_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Create a full campaign with budget, bidding strategy, and network settings.
+
+        campaign_data keys:
+          - name (str, required)
+          - budget_micros (int, default 30M = $30/day)
+          - bidding_strategy (str): MAXIMIZE_CONVERSIONS | TARGET_CPA | MAXIMIZE_CONVERSION_VALUE | MAXIMIZE_CLICKS
+          - target_cpa_micros (int, optional): for TARGET_CPA strategy
+          - channel_type (str): SEARCH | PERFORMANCE_MAX | DISPLAY (default SEARCH)
+          - network (str): SEARCH | ALL (default SEARCH)
+        """
         await self._ensure_token()
         logger.info("Creating campaign", customer_id=self.customer_id, name=campaign_data.get("name"))
         try:
@@ -990,15 +1001,49 @@ class GoogleAdsClient:
             campaign.name = campaign_data["name"]
             campaign.campaign_budget = budget_resource
             campaign.status = client.enums.CampaignStatusEnum.PAUSED
-            campaign.advertising_channel_type = client.enums.AdvertisingChannelTypeEnum.SEARCH
+
+            # Channel type
+            channel = campaign_data.get("channel_type", "SEARCH").upper()
+            channel_map = {
+                "SEARCH": client.enums.AdvertisingChannelTypeEnum.SEARCH,
+                "DISPLAY": client.enums.AdvertisingChannelTypeEnum.DISPLAY,
+                "PERFORMANCE_MAX": client.enums.AdvertisingChannelTypeEnum.PERFORMANCE_MAX,
+            }
+            campaign.advertising_channel_type = channel_map.get(
+                channel, client.enums.AdvertisingChannelTypeEnum.SEARCH
+            )
+
+            # Network settings (Search campaigns only)
+            if channel in ("SEARCH", "CALL"):
+                network = campaign_data.get("network", "SEARCH").upper()
+                campaign.network_settings.target_google_search = True
+                campaign.network_settings.target_search_network = (network == "ALL")
+                campaign.network_settings.target_content_network = False
+
+            # Bidding strategy
+            bid_strategy = campaign_data.get("bidding_strategy", "MAXIMIZE_CONVERSIONS").upper()
+            if bid_strategy == "MAXIMIZE_CONVERSIONS":
+                campaign.maximize_conversions.target_cpa_micros = campaign_data.get("target_cpa_micros", 0)
+            elif bid_strategy == "TARGET_CPA":
+                campaign.maximize_conversions.target_cpa_micros = campaign_data.get("target_cpa_micros", 25_000_000)
+            elif bid_strategy == "MAXIMIZE_CONVERSION_VALUE":
+                campaign.maximize_conversion_value.target_roas = campaign_data.get("target_roas", 0)
+            elif bid_strategy == "MAXIMIZE_CLICKS":
+                campaign.maximize_clicks.cpc_bid_ceiling_micros = campaign_data.get("cpc_ceiling_micros", 0)
 
             campaign_response = campaign_service.mutate_campaigns(
                 customer_id=self.customer_id,
                 operations=[campaign_operation],
             )
 
+            campaign_resource = campaign_response.results[0].resource_name
+            # Extract numeric campaign ID from resource: customers/123/campaigns/456
+            campaign_id = campaign_resource.split("/")[-1]
+
             return {
-                "campaign_resource": campaign_response.results[0].resource_name,
+                "campaign_resource": campaign_resource,
+                "campaign_id": campaign_id,
+                "budget_resource": budget_resource,
                 "status": "created",
             }
         except Exception as e:
