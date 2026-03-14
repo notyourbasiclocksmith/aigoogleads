@@ -10,6 +10,7 @@ import {
   Wand2, Save, Rocket, ChevronDown, ChevronUp,
   CheckCircle2, Loader2, Brain, Search, Users, Target,
   DollarSign, Sparkles, Puzzle, Eye, EyeOff, AlertCircle,
+  MessageSquare, ArrowRight, RotateCcw, X, Lightbulb, MapPin, Tag,
 } from "lucide-react";
 
 interface LogEntry {
@@ -33,6 +34,19 @@ const STEP_ICONS: Record<string, any> = {
   error: AlertCircle,
 };
 
+interface RefinementResult {
+  original_prompt: string;
+  refined_prompt: string;
+  detected_services?: string[];
+  detected_locations?: string[];
+  detected_goal?: string;
+  detected_urgency?: string;
+  suggested_budget?: string;
+  overlap_warning?: string | null;
+  suggestions?: string[];
+  ai_powered: boolean;
+}
+
 export default function PromptPage() {
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
@@ -44,17 +58,67 @@ export default function PromptPage() {
   const [aiPromptExpanded, setAiPromptExpanded] = useState<string | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
 
+  // Refinement state
+  const [refining, setRefining] = useState(false);
+  const [refinement, setRefinement] = useState<RefinementResult | null>(null);
+  const [refinedPrompt, setRefinedPrompt] = useState("");
+
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logEntries]);
 
-  async function handleGenerate() {
+  async function handleRefine() {
     if (!prompt.trim()) return;
+    setError("");
+    setRefining(true);
+    setRefinement(null);
+    setDraft(null);
+    setLogEntries([]);
+
+    try {
+      const result = await api.post("/api/ads/prompt/refine", { prompt });
+      setRefinement(result);
+      setRefinedPrompt(result.refined_prompt || prompt);
+    } catch (err: any) {
+      setError(err.message || "Refinement failed");
+    } finally {
+      setRefining(false);
+    }
+  }
+
+  function handleUseRefined() {
+    if (refinedPrompt.trim()) {
+      setPrompt(refinedPrompt);
+      setRefinement(null);
+      setRefinedPrompt("");
+    }
+  }
+
+  function handleConfirmAndGenerate() {
+    if (refinedPrompt.trim()) {
+      setPrompt(refinedPrompt);
+      setRefinement(null);
+      setRefinedPrompt("");
+      // Trigger generation after state updates
+      setTimeout(() => {
+        handleGenerateWithPrompt(refinedPrompt);
+      }, 0);
+    }
+  }
+
+  function handleDismissRefinement() {
+    setRefinement(null);
+    setRefinedPrompt("");
+  }
+
+  async function handleGenerateWithPrompt(promptText: string) {
+    if (!promptText.trim()) return;
     setError("");
     setLoading(true);
     setDraft(null);
     setLogEntries([]);
     setShowLog(true);
+    setRefinement(null);
 
     const token = api.getToken();
 
@@ -65,7 +129,7 @@ export default function PromptPage() {
           "Content-Type": "application/json",
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ prompt: promptText }),
       });
 
       if (!res.ok) {
@@ -112,6 +176,10 @@ export default function PromptPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleGenerate() {
+    handleGenerateWithPrompt(prompt);
   }
 
   async function handleSave() {
@@ -163,7 +231,22 @@ export default function PromptPage() {
                 className="w-full min-h-[120px] rounded-lg border border-input bg-background px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none"
               />
               <div className="flex items-center gap-3">
-                <Button onClick={handleGenerate} disabled={loading || !prompt.trim()}>
+                <Button
+                  variant="outline"
+                  onClick={handleRefine}
+                  disabled={loading || refining || !prompt.trim()}
+                >
+                  {refining ? (
+                    <span className="flex items-center gap-2">
+                      <Loader2 className="w-4 h-4 animate-spin" /> Refining...
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-2">
+                      <MessageSquare className="w-4 h-4" /> Refine with AI
+                    </span>
+                  )}
+                </Button>
+                <Button onClick={handleGenerate} disabled={loading || refining || !prompt.trim()}>
                   {loading ? (
                     <span className="flex items-center gap-2">
                       <Loader2 className="w-4 h-4 animate-spin" /> Generating...
@@ -175,13 +258,148 @@ export default function PromptPage() {
                   )}
                 </Button>
                 <span className="text-xs text-muted-foreground">
-                  AI will analyze your business profile, competitors, and industry data
+                  Refine first to let AI expand your idea, or generate directly
                 </span>
               </div>
               {error && <p className="text-sm text-destructive">{error}</p>}
             </div>
           </CardContent>
         </Card>
+
+        {/* AI Refinement Panel */}
+        {refinement && (
+          <Card className="border-blue-200 bg-gradient-to-br from-blue-50/50 to-indigo-50/30">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Brain className="w-5 h-5 text-blue-600" />
+                  <CardTitle className="text-base text-blue-900">AI Refined Campaign Brief</CardTitle>
+                  {refinement.ai_powered && (
+                    <Badge className="text-xs bg-blue-100 text-blue-700 border-blue-200">
+                      AI Powered
+                    </Badge>
+                  )}
+                </div>
+                <Button variant="ghost" size="sm" onClick={handleDismissRefinement}>
+                  <X className="w-4 h-4" />
+                </Button>
+              </div>
+              <p className="text-sm text-blue-700 mt-1">
+                Review and edit the expanded prompt below. When you're happy, confirm to generate.
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Editable refined prompt */}
+              <div>
+                <label className="text-xs font-semibold text-blue-800 uppercase tracking-wide mb-1 block">
+                  Campaign Brief (editable)
+                </label>
+                <textarea
+                  value={refinedPrompt}
+                  onChange={(e) => setRefinedPrompt(e.target.value)}
+                  className="w-full min-h-[100px] rounded-lg border border-blue-200 bg-white px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 resize-none"
+                />
+              </div>
+
+              {/* Detected metadata */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {refinement.detected_services && refinement.detected_services.length > 0 && (
+                  <div className="bg-white rounded-lg border p-2.5">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <Tag className="w-3.5 h-3.5 text-slate-500" />
+                      <span className="text-[11px] font-semibold text-slate-500 uppercase">Services</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {refinement.detected_services.map((s, i) => (
+                        <span key={i} className="text-xs bg-slate-100 rounded px-1.5 py-0.5">{s}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {refinement.detected_locations && refinement.detected_locations.length > 0 && (
+                  <div className="bg-white rounded-lg border p-2.5">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <MapPin className="w-3.5 h-3.5 text-slate-500" />
+                      <span className="text-[11px] font-semibold text-slate-500 uppercase">Locations</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {refinement.detected_locations.map((l, i) => (
+                        <span key={i} className="text-xs bg-slate-100 rounded px-1.5 py-0.5">{l}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {refinement.detected_goal && (
+                  <div className="bg-white rounded-lg border p-2.5">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <Target className="w-3.5 h-3.5 text-slate-500" />
+                      <span className="text-[11px] font-semibold text-slate-500 uppercase">Goal</span>
+                    </div>
+                    <span className="text-xs font-medium capitalize">{refinement.detected_goal}</span>
+                  </div>
+                )}
+                {refinement.suggested_budget && (
+                  <div className="bg-white rounded-lg border p-2.5">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <DollarSign className="w-3.5 h-3.5 text-slate-500" />
+                      <span className="text-[11px] font-semibold text-slate-500 uppercase">Budget</span>
+                    </div>
+                    <span className="text-xs font-medium">{refinement.suggested_budget}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Overlap warning */}
+              {refinement.overlap_warning && (
+                <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                  <AlertCircle className="w-4 h-4 text-amber-600 mt-0.5 flex-shrink-0" />
+                  <p className="text-sm text-amber-800">{refinement.overlap_warning}</p>
+                </div>
+              )}
+
+              {/* Suggestions */}
+              {refinement.suggestions && refinement.suggestions.length > 0 && (
+                <div className="bg-white border rounded-lg p-3">
+                  <div className="flex items-center gap-1.5 mb-2">
+                    <Lightbulb className="w-4 h-4 text-amber-500" />
+                    <span className="text-xs font-semibold text-slate-600 uppercase">Suggestions</span>
+                  </div>
+                  <ul className="space-y-1">
+                    {refinement.suggestions.map((s, i) => (
+                      <li key={i} className="text-sm text-slate-700 flex items-start gap-2">
+                        <span className="text-blue-400 mt-1">-</span>
+                        {s}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Action buttons */}
+              <div className="flex items-center gap-3 pt-2">
+                <Button onClick={handleConfirmAndGenerate} disabled={loading || !refinedPrompt.trim()}>
+                  <span className="flex items-center gap-2">
+                    <Wand2 className="w-4 h-4" /> Confirm & Generate
+                  </span>
+                </Button>
+                <Button variant="outline" onClick={handleUseRefined}>
+                  <span className="flex items-center gap-2">
+                    <ArrowRight className="w-4 h-4" /> Use as Prompt
+                  </span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  onClick={() => { setRefinedPrompt(refinedPrompt); handleRefine(); }}
+                  disabled={refining}
+                >
+                  <span className="flex items-center gap-2">
+                    <RotateCcw className="w-4 h-4" /> Re-refine
+                  </span>
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Process Log */}
         {logEntries.length > 0 && (
