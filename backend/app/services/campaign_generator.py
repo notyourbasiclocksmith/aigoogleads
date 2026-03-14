@@ -764,6 +764,8 @@ and tiered bidding by intent level. You respond ONLY with valid JSON."""
         urgency = intent.get("urgency", "normal")
         learnings_summary = json.dumps(learnings[:5], default=str)[:800] if learnings else "None"
 
+        raw_prompt = intent.get("raw_prompt", "")
+
         user_msg = f"""Build a comprehensive Google Ads keyword strategy.
 
 INDUSTRY: {industry}
@@ -771,45 +773,53 @@ SERVICES TO ADVERTISE: {json.dumps(services)}
 TARGET LOCATIONS: {json.dumps(locations)}
 URGENCY LEVEL: {urgency}
 CONVERSION GOAL: {intent.get('goal', 'leads')}
+USER'S ORIGINAL PROMPT: "{raw_prompt}"
 
 CROSS-TENANT LEARNINGS (what works for similar businesses):
 {learnings_summary}
 
-Generate keywords in these tiers:
+CRITICAL RULE — KEYWORD SEGMENTATION BY AD GROUP:
+Each service listed above will become its own ad group. Keywords MUST be unique
+per service. NO keyword should appear in more than one service's list.
+This prevents internal keyword competition and improves Quality Score.
+
+For each service, generate keywords across these tiers:
 
 TIER 1 — EMERGENCY (highest intent, highest bid):
   Searchers in immediate need. "emergency [service]", "24/7 [service]", "[problem] help now"
   Match type: EXACT. Bid adjustment: +30%.
-  Generate 8-12 keywords.
+  Generate 6-10 keywords PER SERVICE, unique to that service's theme.
 
 TIER 2 — HIGH COMMERCIAL INTENT:
   Ready to buy/hire. "[service] near me", "[service] service", "hire [service]"
   Match type: EXACT + add "near me" variants.
-  Generate 10-15 keywords.
+  Generate 8-12 keywords PER SERVICE, unique to that service.
 
 TIER 3 — MEDIUM INTENT:
   Researching options. "best [service]", "affordable [service]", "[service] cost"
   Match type: PHRASE.
-  Generate 8-10 keywords.
+  Generate 5-8 keywords PER SERVICE.
 
 TIER 4 — LOCAL (geo-modified):
   Location-specific. "[service] in [city]", "[city] [service]"
   Match type: EXACT.
-  Generate keywords for each location × top services (max 20).
+  Generate 3-5 keywords per service per location.
 
 TIER 5 — SERVICE-SPECIFIC:
-  Each individual service as a keyword + variants.
+  Problem-specific keywords the searcher would actually type.
+  Use the user's original prompt for clues about pain points and exact terminology.
+  Example: if user mentions "no key detected" → include "jaguar no key detected fix"
   Match type: PHRASE.
 
 NEGATIVES:
-  Generate 20-30 negative keywords to block irrelevant traffic.
+  Generate 20-30 negative keywords to block irrelevant traffic (shared across all ad groups).
   Include: DIY, jobs/careers, training/schools, free, complaints, tools/supplies.
   Also include industry-specific negatives.
 
 Return JSON:
 {{
   "keywords": [
-    {{"text": "keyword", "match_type": "EXACT"|"PHRASE"|"BROAD", "tier": "emergency"|"high"|"medium"|"local"|"service", "bid_adj": "+30%"|null}},
+    {{"text": "keyword", "match_type": "EXACT"|"PHRASE"|"BROAD", "tier": "emergency"|"high"|"medium"|"local"|"service", "bid_adj": "+30%"|null, "service": "exact service name from the list above"}},
     ...
   ],
   "negatives": [
@@ -825,10 +835,13 @@ Return JSON:
     "local": N,
     "service": N
   }},
-  "keyword_rationale": "Brief explanation of your keyword strategy"
-}}"""
+  "keyword_rationale": "Brief explanation of your keyword strategy and how keywords are segmented across ad groups"
+}}
 
-        result = await self._call_openai_json(system, user_msg, temperature=0.6, max_tokens=3000)
+IMPORTANT: Every keyword object MUST have a "service" field set to exactly one of: {json.dumps(services)}.
+Keywords must NOT overlap between services. Each ad group must have its own unique set."""
+
+        result = await self._call_openai_json(system, user_msg, temperature=0.6, max_tokens=4000)
         if result:
             raw = result.pop("_raw", None)
             # Validate structure
@@ -1096,11 +1109,11 @@ Return JSON:
                 keywords.append({"text": f"{base} {loc.lower()}", "match_type": "EXACT", "tier": "local"})
                 keywords.append({"text": f"{base} in {loc.lower()}", "match_type": "EXACT", "tier": "local"})
 
-        # Service-specific keywords from business profile
+        # Service-specific keywords from business profile (tagged with service for segmentation)
         for svc in services:
-            keywords.append({"text": svc.lower(), "match_type": "PHRASE", "tier": "service"})
-            keywords.append({"text": f"{svc.lower()} near me", "match_type": "EXACT", "tier": "service"})
-            keywords.append({"text": f"{svc.lower()} service", "match_type": "PHRASE", "tier": "service"})
+            keywords.append({"text": svc.lower(), "match_type": "PHRASE", "tier": "service", "service": svc})
+            keywords.append({"text": f"{svc.lower()} near me", "match_type": "EXACT", "tier": "service", "service": svc})
+            keywords.append({"text": f"{svc.lower()} service", "match_type": "PHRASE", "tier": "service", "service": svc})
 
         # Apply learnings: inject proven keywords from same-industry tenants
         learning_kws = []
@@ -1178,16 +1191,68 @@ Return JSON:
             campaign_name = f"{campaign_name} ({str(uuid.uuid4())[:4]})"
 
         # Build TIGHTLY themed ad groups per service (SKAG-style)
+        # Keywords are segmented per service — NO overlap between ad groups
         all_keywords = keyword_strategy["keywords"]
         all_negatives = keyword_strategy["negatives"]
 
+        # Pre-segment keywords by service using the "service" tag from AI
+        svc_lower_map = {svc.lower(): svc for svc in services[:5]}
+        keywords_by_service: Dict[str, list] = {svc: [] for svc in services[:5]}
+        unassigned_keywords: list = []
+
+        for kw in all_keywords:
+            kw_service = (kw.get("service") or "").lower()
+            matched = False
+            # Try exact match on service field
+            for svc_lower, svc_original in svc_lower_map.items():
+                if kw_service == svc_lower or svc_lower in kw_service:
+                    keywords_by_service[svc_original].append(kw)
+                    matched = True
+                    break
+            if not matched:
+                # Fuzzy: assign to whichever service name appears in keyword text
+                kw_text = kw.get("text", "").lower()
+                for svc_lower, svc_original in svc_lower_map.items():
+                    # Check if any significant word from service name is in keyword
+                    svc_words = [w for w in svc_lower.split() if len(w) > 3]
+                    if any(w in kw_text for w in svc_words):
+                        keywords_by_service[svc_original].append(kw)
+                        matched = True
+                        break
+            if not matched:
+                unassigned_keywords.append(kw)
+
+        # Distribute any unassigned keywords round-robin to ad groups that have fewer
+        if unassigned_keywords:
+            sorted_svcs = sorted(keywords_by_service.keys(),
+                                 key=lambda s: len(keywords_by_service[s]))
+            for idx, kw in enumerate(unassigned_keywords):
+                target = sorted_svcs[idx % len(sorted_svcs)]
+                keywords_by_service[target].append(kw)
+
+        # Deduplicate: if a keyword text appears in multiple ad groups, keep it only in first
+        seen_kw_texts: set = set()
+        for svc in services[:5]:
+            deduped = []
+            for kw in keywords_by_service.get(svc, []):
+                kw_key = kw.get("text", "").lower().strip()
+                if kw_key not in seen_kw_texts:
+                    seen_kw_texts.add(kw_key)
+                    deduped.append(kw)
+            keywords_by_service[svc] = deduped
+
         ad_groups = []
         for i, svc in enumerate(services[:5]):
-            # Each service gets its own tightly themed ad group
-            svc_keywords = [k for k in all_keywords
-                            if svc.lower() in k["text"] or k.get("tier") in ("emergency", "high")]
+            svc_keywords = keywords_by_service.get(svc, [])
             if not svc_keywords:
-                svc_keywords = all_keywords[:15]
+                # Last resort: generate basic keywords for this service
+                svc_keywords = [
+                    {"text": svc.lower(), "match_type": "PHRASE", "tier": "service"},
+                    {"text": f"{svc.lower()} near me", "match_type": "EXACT", "tier": "high"},
+                    {"text": f"{svc.lower()} service", "match_type": "PHRASE", "tier": "high"},
+                ]
+                for loc in locations[:2]:
+                    svc_keywords.append({"text": f"{svc.lower()} {loc.lower()}", "match_type": "EXACT", "tier": "local"})
 
             # --- LLM-powered ad copy (falls back to templates) ---
             llm_copy = await self._generate_ad_copy_llm(
@@ -1203,6 +1268,7 @@ Return JSON:
                 campaign_type=campaign_type,
                 business_name=business_name,
                 website=website,
+                raw_prompt=intent.get("raw_prompt", ""),
             )
             ai_prompt_used = None
             ai_raw_response = None
@@ -1312,6 +1378,7 @@ Return JSON:
         campaign_type: str,
         business_name: str,
         website: str,
+        raw_prompt: str = "",
     ) -> Optional[Dict[str, Any]]:
         """
         Use OpenAI to generate expert-quality Google Ads RSA copy.
@@ -1376,6 +1443,17 @@ Target service: {service}
 Campaign type:  {campaign_type}
 Urgency level:  {'HIGH — emergency/immediate-need searchers' if is_emergency else urgency or 'standard'}
 Primary KW:     "{service.lower()}" and close variants
+
+── USER'S ORIGINAL REQUEST (mine this for pain triggers!) ──────
+"{raw_prompt}"
+
+IMPORTANT: Extract specific pain points, price comparisons, and emotional triggers
+from the user's request above. For example:
+- If they mention "dealer charges $4-5k" → use "Avoid $4k+ Dealer Bill" as a headline
+- If they mention a specific problem like "no key detected" → use it in headlines
+- If they mention "fix on site" → highlight "On-Site Repair" in headlines
+These SPECIFIC pain triggers dramatically increase CTR because they match the
+searcher's exact situation. Generic copy like "Quality Service" will NOT work.
 
 USPs (use these — they are REAL differentiators):
 {usp_block}
