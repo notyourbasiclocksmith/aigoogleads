@@ -84,6 +84,74 @@ class ApiClient {
   delete<T = any>(path: string) {
     return this.fetch<T>(path, { method: "DELETE" });
   }
+
+  /**
+   * Stream SSE events from a POST endpoint.
+   * Calls onEvent for each parsed SSE data line.
+   */
+  async streamPost(
+    path: string,
+    body: any,
+    onEvent: (event: any) => void,
+  ): Promise<void> {
+    const token = this.getToken();
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+
+    const res = await fetch(`${API_URL}${path}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+
+    if (res.status === 401) {
+      this.setToken(null);
+      if (typeof window !== "undefined") window.location.href = "/login";
+      throw new Error("Unauthorized");
+    }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: "Request failed" }));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error("No readable stream");
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith("data: ")) {
+          try {
+            const data = JSON.parse(trimmed.slice(6));
+            onEvent(data);
+          } catch {
+            // skip malformed lines
+          }
+        }
+      }
+    }
+
+    // Process remaining buffer
+    if (buffer.trim().startsWith("data: ")) {
+      try {
+        onEvent(JSON.parse(buffer.trim().slice(6)));
+      } catch {
+        // skip
+      }
+    }
+  }
 }
 
 export const api = new ApiClient();

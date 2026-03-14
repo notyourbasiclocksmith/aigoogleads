@@ -93,6 +93,7 @@ class StrategistOrchestrator:
         self.db = db
         self.tenant_id = tenant_id
         self.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY) if settings.OPENAI_API_KEY else None
+        self._progress_queue = None  # optional asyncio.Queue for SSE streaming
 
     async def process_message(
         self,
@@ -920,6 +921,7 @@ Audit and improve this intent extraction. Return complete improved JSON."""
         if bp_obj:
             draft = await generator.generate_from_prompt(
                 prompt, bp_obj, campaign_type_override=campaign_type_override,
+                progress_queue=self._progress_queue,
             )
         else:
             draft = {

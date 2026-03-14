@@ -18,6 +18,13 @@ interface QuickAction {
   action: string;
 }
 
+interface BuildStep {
+  step: string;
+  status: "running" | "done";
+  detail?: string;
+  elapsed_ms?: number;
+}
+
 interface ChatMsg {
   role: "user" | "assistant";
   content: string;
@@ -29,6 +36,7 @@ interface ChatMsg {
   expansions?: any[];
   bulk_task_id?: string;
   search_mining?: any;
+  build_steps?: BuildStep[];
 }
 
 export default function StrategistPage() {
@@ -51,6 +59,9 @@ export default function StrategistPage() {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
+  // Ref to track streaming assistant message index
+  const streamingIdx = useRef<number>(-1);
+
   async function sendMessage(text?: string, action?: string) {
     const msg = (text || input).trim();
     if (!msg && !action) return;
@@ -58,54 +69,101 @@ export default function StrategistPage() {
 
     const userMsg: ChatMsg = { role: "user", content: msg || action || "" };
     const updated = [...messages, userMsg];
-    setMessages(updated);
+    // Add a placeholder assistant message for streaming
+    const assistantMsg: ChatMsg = { role: "assistant", content: "", build_steps: [] };
+    const withAssistant = [...updated, assistantMsg];
+    streamingIdx.current = withAssistant.length - 1;
+
+    setMessages(withAssistant);
     setInput("");
     setLoading(true);
     setError("");
 
     try {
       const history = updated.map((m) => ({ role: m.role, content: m.content }));
-      const result = await api.post("/api/v2/strategist/chat", {
-        message: msg,
-        action: action || undefined,
-        session_state: sessionState,
-        conversation_history: history,
-      });
 
-      // Update session state
-      if (result.session_state) setSessionState(result.session_state);
+      await api.streamPost(
+        "/api/v2/strategist/chat/stream",
+        {
+          message: msg,
+          action: action || undefined,
+          session_state: sessionState,
+          conversation_history: history,
+        },
+        (event) => {
+          const idx = streamingIdx.current;
+          if (idx < 0) return;
 
-      const assistantMsg: ChatMsg = {
-        role: "assistant",
-        content: result.reply || "I'm processing your request...",
-        quick_actions: result.quick_actions || [],
-        campaign_draft: result.campaign_draft || undefined,
-        landing_page: result.landing_page || undefined,
-        campaign_audit: result.campaign_audit || undefined,
-        lp_audit: result.lp_audit || undefined,
-        expansions: result.expansions || undefined,
-        bulk_task_id: result.bulk_task_id || undefined,
-        search_mining: result.search_mining || undefined,
-      };
+          if (event.type === "step") {
+            // Real-time build step from campaign generator pipeline
+            setMessages((prev) => {
+              const next = [...prev];
+              const am = { ...next[idx] };
+              const steps = [...(am.build_steps || [])];
+              // Update existing step or add new one
+              const existing = steps.findIndex((s) => s.step === event.step);
+              if (existing >= 0 && event.status === "done") {
+                steps[existing] = { ...steps[existing], status: "done", detail: event.detail, elapsed_ms: event.elapsed_ms };
+              } else if (existing < 0) {
+                steps.push({ step: event.step, status: event.status, detail: event.detail, elapsed_ms: event.elapsed_ms });
+              }
+              am.build_steps = steps;
+              next[idx] = am;
+              return next;
+            });
+          } else if (event.type === "text") {
+            // Progressive text chunk — typewriter effect
+            setMessages((prev) => {
+              const next = [...prev];
+              const am = { ...next[idx] };
+              am.content = (am.content || "") + event.content;
+              next[idx] = am;
+              return next;
+            });
+          } else if (event.type === "complete") {
+            // Final result — populate structured data
+            const result = event.data || {};
+            if (result.session_state) setSessionState(result.session_state);
 
-      setMessages([...updated, assistantMsg]);
+            setMessages((prev) => {
+              const next = [...prev];
+              const am = { ...next[idx] };
+              // If no text was streamed, use the full reply
+              if (!am.content && result.reply) am.content = result.reply;
+              am.quick_actions = result.quick_actions || [];
+              am.campaign_draft = result.campaign_draft || undefined;
+              am.landing_page = result.landing_page || undefined;
+              am.campaign_audit = result.campaign_audit || undefined;
+              am.lp_audit = result.lp_audit || undefined;
+              am.expansions = result.expansions || undefined;
+              am.bulk_task_id = result.bulk_task_id || undefined;
+              am.search_mining = result.search_mining || undefined;
+              next[idx] = am;
+              return next;
+            });
 
-      // Auto-show side panels for rich content
-      if (result.campaign_draft) {
-        setActiveDraft(result.campaign_draft);
-        setShowDraft(true);
-      }
-      if (result.landing_page) {
-        setActiveLp(result.landing_page);
-        setShowLp(true);
-      }
-      if (result.campaign_audit) {
-        setActiveAudit(result.campaign_audit);
-        setShowAudit(true);
-      }
+            // Auto-show side panels
+            if (result.campaign_draft) {
+              setActiveDraft(result.campaign_draft);
+              setShowDraft(true);
+            }
+            if (result.landing_page) {
+              setActiveLp(result.landing_page);
+              setShowLp(true);
+            }
+            if (result.campaign_audit) {
+              setActiveAudit(result.campaign_audit);
+              setShowAudit(true);
+            }
+          } else if (event.type === "error") {
+            setError(event.message || "Campaign generation failed");
+          }
+        },
+      );
     } catch (err: any) {
       setError(err.message || "Failed to process message");
     } finally {
+      streamingIdx.current = -1;
       setLoading(false);
     }
   }
@@ -226,16 +284,43 @@ export default function StrategistPage() {
                     </div>
 
                     <div className={`flex-1 max-w-[85%] ${msg.role === "user" ? "text-right" : ""}`}>
-                      {/* Message bubble */}
-                      <div className={`inline-block text-left rounded-2xl px-4 py-3 text-sm ${
-                        msg.role === "user"
-                          ? "bg-slate-800 text-white rounded-tr-sm"
-                          : "bg-slate-50 text-slate-700 rounded-tl-sm"
-                      }`}>
-                        <div className="whitespace-pre-wrap prose prose-sm prose-slate max-w-none"
-                          dangerouslySetInnerHTML={{ __html: formatMarkdown(msg.content) }}
-                        />
-                      </div>
+                      {/* Message bubble — hide empty assistant bubble during streaming */}
+                      {(msg.role === "user" || msg.content) && (
+                        <div className={`inline-block text-left rounded-2xl px-4 py-3 text-sm ${
+                          msg.role === "user"
+                            ? "bg-slate-800 text-white rounded-tr-sm"
+                            : "bg-slate-50 text-slate-700 rounded-tl-sm"
+                        }`}>
+                          <div className="whitespace-pre-wrap prose prose-sm prose-slate max-w-none"
+                            dangerouslySetInnerHTML={{ __html: formatMarkdown(msg.content) }}
+                          />
+                        </div>
+                      )}
+
+                      {/* Build steps indicator — real-time pipeline progress */}
+                      {msg.role === "assistant" && msg.build_steps && msg.build_steps.length > 0 && (
+                        <div className="mt-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 space-y-1">
+                          <div className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">
+                            <Zap className="w-3 h-3" />
+                            AI Pipeline
+                          </div>
+                          {msg.build_steps.map((step, si) => (
+                            <div key={si} className="flex items-center gap-2 text-xs">
+                              {step.status === "running" ? (
+                                <Loader2 className="w-3 h-3 animate-spin text-blue-500 flex-shrink-0" />
+                              ) : (
+                                <CheckCircle className="w-3 h-3 text-emerald-500 flex-shrink-0" />
+                              )}
+                              <span className={step.status === "running" ? "text-blue-700 font-medium" : "text-slate-600"}>
+                                {step.step}
+                              </span>
+                              {step.status === "done" && step.elapsed_ms != null && (
+                                <span className="text-slate-400 text-[10px] ml-auto">{(step.elapsed_ms / 1000).toFixed(1)}s</span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
 
                       {/* Rich content cards */}
                       {msg.role === "assistant" && (
@@ -354,8 +439,12 @@ export default function StrategistPage() {
                   </div>
                 ))}
 
-                {/* Loading */}
-                {loading && (
+                {/* Loading — only show if streaming message hasn't received any content yet */}
+                {loading && messages.length > 0 && (() => {
+                  const last = messages[messages.length - 1];
+                  const hasContent = last?.role === "assistant" && (last.content || (last.build_steps && last.build_steps.length > 0));
+                  return !hasContent;
+                })() && (
                   <div className="flex items-start gap-3">
                     <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center flex-shrink-0">
                       <Brain className="w-4 h-4 text-white" />
@@ -363,7 +452,7 @@ export default function StrategistPage() {
                     <div className="bg-slate-50 rounded-2xl rounded-tl-sm px-4 py-3">
                       <div className="flex items-center gap-2 text-sm text-slate-500">
                         <Loader2 className="w-4 h-4 animate-spin" />
-                        <span>Thinking...</span>
+                        <span>Connecting...</span>
                       </div>
                     </div>
                   </div>

@@ -42,11 +42,12 @@ class BuilderLog:
     see exactly what the AI did and why.
     """
 
-    def __init__(self):
+    def __init__(self, progress_queue=None):
         self._entries: List[Dict[str, Any]] = []
         self._start = time.monotonic()
         self._step_start: Optional[float] = None
         self._started_at = datetime.now(timezone.utc).isoformat()
+        self._queue = progress_queue  # optional asyncio.Queue for SSE streaming
 
     def step_start(self, step: str, detail: str = ""):
         """Mark the beginning of a pipeline step."""
@@ -59,6 +60,8 @@ class BuilderLog:
             "elapsed_ms": None,
             "result_summary": None,
         })
+        if self._queue:
+            self._queue.put_nowait({"type": "step", "step": step, "status": "running", "detail": detail})
 
     def step_end(self, result_summary: str = "", extra: Optional[Dict] = None):
         """Mark the end of the current pipeline step."""
@@ -71,6 +74,8 @@ class BuilderLog:
         entry["result_summary"] = result_summary
         if extra:
             entry["extra"] = extra
+        if self._queue:
+            self._queue.put_nowait({"type": "step", "step": entry["step"], "status": "done", "detail": result_summary, "elapsed_ms": elapsed})
 
     def step_error(self, error: str):
         """Mark the current step as failed."""
@@ -130,8 +135,9 @@ class CampaignGeneratorService:
         business_profile: BusinessProfile,
         google_customer_id: Optional[str] = None,
         campaign_type_override: Optional[str] = None,
+        progress_queue=None,
     ) -> Dict[str, Any]:
-        blog = BuilderLog()
+        blog = BuilderLog(progress_queue=progress_queue)
         industry = (business_profile.industry_classification or "general").lower()
 
         # ══════════════════════════════════════════════════════════════════
