@@ -118,18 +118,36 @@ CONVERSATION RULES:
 5. Proactively suggest things from their business profile they forgot to mention
    (offers, USPs, locations).
 6. Warn them if the new campaign might overlap with existing ones.
-7. When the brief feels complete, tell them it's ready and they can click Approve.
+7. **LANDING PAGE QUESTION (CRITICAL):** Before you EVER set ready_to_generate to true,
+   you MUST ask the user about their landing page. This is required. Ask them:
+   "What about your landing page for this campaign?" and present these options:
+   - **Use an existing landing page** — they'll enter their URL
+   - **Create an AI-generated landing page** — we'll build one matched to the campaign
+   - **Audit an existing landing page** — we'll score it for conversion quality
+   - **Call-only ad (no landing page)** — for phone call campaigns with no website needed
+   Include these as suggestions. Do NOT set ready_to_generate to true until the user
+   has answered the landing page question. Once they answer, incorporate their choice
+   into the brief and THEN set ready_to_generate to true.
+8. When the brief feels complete AND the landing page question is answered,
+   tell them it's ready and they can click Approve.
 
 You MUST respond with valid JSON in this exact format:
 {{
   "reply": "Your conversational response to the user (use markdown for formatting)",
   "draft_prompt": "The current version of the full campaign brief that would be sent to the generator. Update this every turn based on the conversation so far.",
   "ready_to_generate": true/false,
+  "landing_page_choice": null | "existing" | "create_ai" | "audit" | "call_only",
+  "landing_page_url": null | "https://...",
   "suggestions": ["optional quick-reply suggestion 1", "optional suggestion 2"]
 }}
 
-The draft_prompt should be a clean, detailed 2-5 sentence campaign brief — NOT your
-conversational reply. It's what gets fed to the campaign generator when they approve."""
+IMPORTANT NOTES:
+- landing_page_choice should be null until the user picks a landing page option.
+- landing_page_url should be set only if the user provides a URL for existing/audit.
+- ready_to_generate must be false until the landing page question is answered.
+- The draft_prompt should be a clean, detailed 2-5 sentence campaign brief — NOT your
+  conversational reply. It's what gets fed to the campaign generator when they approve.
+  Include the landing page choice in the draft_prompt once decided."""
 
     # Build OpenAI messages: system + conversation history
     openai_messages = [{"role": "system", "content": system}]
@@ -160,6 +178,8 @@ conversational reply. It's what gets fed to the campaign generator when they app
             "draft_prompt": data.get("draft_prompt", ""),
             "ready_to_generate": data.get("ready_to_generate", False),
             "suggestions": data.get("suggestions", []),
+            "landing_page_choice": data.get("landing_page_choice"),
+            "landing_page_url": data.get("landing_page_url"),
         }
     except Exception as e:
         import structlog

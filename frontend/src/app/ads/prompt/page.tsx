@@ -100,6 +100,14 @@ export default function PromptPage() {
       setChatMessages([...updatedMessages, assistantMsg]);
       if (result.draft_prompt) setDraftPrompt(result.draft_prompt);
       if (result.ready_to_generate !== undefined) setReadyToGenerate(result.ready_to_generate);
+      // Track LP decision from chat
+      if (result.landing_page_choice) {
+        const choiceMap: Record<string, string> = {
+          existing: "existing", create_ai: "create", audit: "audit", call_only: "call_only",
+        };
+        setLpChoice(choiceMap[result.landing_page_choice] || result.landing_page_choice);
+      }
+      if (result.landing_page_url) setLpUrl(result.landing_page_url);
     } catch (err: any) {
       setError(err.message || "Chat failed");
     } finally {
@@ -439,6 +447,24 @@ export default function PromptPage() {
                 <div className="bg-white border rounded-lg p-3 text-sm text-slate-700 whitespace-pre-wrap min-h-[80px]">
                   {draftPrompt}
                 </div>
+
+                {/* Landing page choice indicator */}
+                {lpChoice ? (
+                  <div className={`flex items-center gap-2 text-xs rounded-lg px-3 py-2 ${
+                    lpChoice === "call_only" ? "bg-green-50 text-green-700" :
+                    lpChoice === "create" ? "bg-purple-50 text-purple-700" :
+                    "bg-blue-50 text-blue-700"
+                  }`}>
+                    {lpChoice === "existing" && <><Link2 className="w-3 h-3" /> Landing page: Use existing{lpUrl ? ` (${lpUrl})` : ""}</>}
+                    {lpChoice === "create" && <><Sparkles className="w-3 h-3" /> Landing page: Create AI page</>}
+                    {lpChoice === "audit" && <><Shield className="w-3 h-3" /> Landing page: Audit{lpUrl ? ` (${lpUrl})` : ""}</>}
+                    {lpChoice === "call_only" && <><Phone className="w-3 h-3" /> Call-only ad (no LP)</>}
+                  </div>
+                ) : readyToGenerate ? null : (
+                  <div className="flex items-center gap-2 text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2">
+                    <Globe className="w-3 h-3" /> Landing page choice pending — AI will ask during chat
+                  </div>
+                )}
 
                 <Button
                   onClick={handleApproveGenerate}
