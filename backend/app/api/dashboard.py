@@ -423,7 +423,7 @@ async def get_health_check(
     last_cycle = await db.execute(
         select(OptimizationCycle)
         .where(OptimizationCycle.tenant_id == tid)
-        .order_by(desc(OptimizationCycle.created_at))
+        .order_by(desc(OptimizationCycle.started_at))
         .limit(1)
     )
     lc = last_cycle.scalar_one_or_none()

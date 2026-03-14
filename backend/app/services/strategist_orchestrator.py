@@ -324,11 +324,35 @@ class StrategistOrchestrator:
             }
         elif any(w in msg_lower for w in ["create", "generate", "build", "new page", "ai page", "lp_create"]):
             state["lp_choice"] = "create"
-            return await self._generate_campaign_and_lp(profile, state)
+            draft = await self._generate_campaign_only(profile, state)
+            reply = f"**Campaign Built!**\n\n{self._format_draft_summary(draft)}\n\n"
+            reply += "---\n\nNow I'll **generate your AI landing page**. Click below to continue."
+            state["phase"] = PHASE_CAMPAIGN_READY
+            return {
+                "reply": reply,
+                "phase": PHASE_CAMPAIGN_READY,
+                "campaign_draft": draft,
+                "session_state": state,
+                "quick_actions": [
+                    {"label": "Generate Landing Page Now", "action": "generate_lp"},
+                    {"label": "Audit Campaign First", "action": "audit_campaign"},
+                    {"label": "Skip LP \u2014 Launch Campaign", "action": "launch"},
+                ],
+            }
         else:
             # Default: skip LP, just build campaign
             state["lp_choice"] = "skip"
-            return await self._generate_campaign_only(profile, state)
+            draft = await self._generate_campaign_only(profile, state)
+            reply = f"**Campaign Built!**\n\n{self._format_draft_summary(draft)}\n\n"
+            reply += "**What would you like to do next?**"
+            state["phase"] = PHASE_CAMPAIGN_READY
+            return {
+                "reply": reply,
+                "phase": PHASE_CAMPAIGN_READY,
+                "campaign_draft": draft,
+                "session_state": state,
+                "quick_actions": self._post_campaign_actions(),
+            }
 
     async def _handle_lp_decision(
         self, message: str, profile: Optional[Dict], state: Dict
@@ -338,9 +362,27 @@ class StrategistOrchestrator:
 
         if lp_choice == "existing" and message.strip().startswith("http"):
             state["landing_page_url"] = message.strip()
-            return await self._generate_campaign_with_audit(message.strip(), profile, state)
 
-        return await self._build_campaign_and_auto_audit(profile, state)
+        # Just build the campaign — don't chain audit+expansion in one request
+        draft = await self._generate_campaign_only(profile, state)
+        reply = f"**Campaign Built!**\n\n{self._format_draft_summary(draft)}\n\n"
+        if state.get("landing_page_url"):
+            reply += f"\u2705 Landing page URL saved: `{state['landing_page_url']}`\n\n"
+        reply += "**What would you like to do next?**"
+        state["phase"] = PHASE_CAMPAIGN_READY
+
+        actions = []
+        if state.get("landing_page_url"):
+            actions.append({"label": "Audit Landing Page", "action": "audit_all"})
+        actions.extend(self._post_campaign_actions())
+
+        return {
+            "reply": reply,
+            "phase": PHASE_CAMPAIGN_READY,
+            "campaign_draft": draft,
+            "session_state": state,
+            "quick_actions": actions,
+        }
 
     async def _handle_post_campaign(
         self, message: str, profile: Optional[Dict], state: Dict
@@ -438,11 +480,51 @@ class StrategistOrchestrator:
 
     async def _action_lp_create(self, msg: str, action: str, profile: Optional[Dict], state: Dict) -> Dict:
         state["lp_choice"] = "create"
-        return await self._build_campaign_lp_audit_expand(profile, state)
+        # Step 1: Just build the campaign first (don't chain everything)
+        draft = await self._generate_campaign_only(profile, state)
+        reply = f"**Campaign Built!**\n\n{self._format_draft_summary(draft)}\n\n"
+        if draft.get("error"):
+            return self._reply(
+                reply + f"\n⚠️ {draft['error']}",
+                PHASE_CAMPAIGN_READY, state,
+                campaign_draft=draft,
+                quick_actions=self._post_campaign_actions(),
+            )
+        reply += "---\n\nNow I'll **generate your AI landing page**. Click below to continue."
+        state["phase"] = PHASE_CAMPAIGN_READY
+        return {
+            "reply": reply,
+            "phase": PHASE_CAMPAIGN_READY,
+            "campaign_draft": draft,
+            "session_state": state,
+            "quick_actions": [
+                {"label": "Generate Landing Page Now", "action": "generate_lp"},
+                {"label": "Audit Campaign First", "action": "audit_campaign"},
+                {"label": "Skip LP — Launch Campaign", "action": "launch"},
+            ],
+        }
 
     async def _action_lp_skip(self, msg: str, action: str, profile: Optional[Dict], state: Dict) -> Dict:
         state["lp_choice"] = "skip"
-        return await self._build_campaign_and_auto_audit(profile, state)
+        # Step 1: Just build the campaign (don't chain audit+expansion)
+        draft = await self._generate_campaign_only(profile, state)
+        reply = f"**Campaign Built!**\n\n{self._format_draft_summary(draft)}\n\n"
+        if draft.get("error"):
+            return self._reply(
+                reply + f"\n⚠️ {draft['error']}",
+                PHASE_CAMPAIGN_READY, state,
+                campaign_draft=draft,
+                quick_actions=self._post_campaign_actions(),
+            )
+        reply += "**What would you like to do next?**"
+        state["phase"] = PHASE_CAMPAIGN_READY
+        return {
+            "reply": reply,
+            "phase": PHASE_CAMPAIGN_READY,
+            "campaign_draft": draft,
+            "session_state": state,
+            "quick_actions": self._post_campaign_actions(),
+        }
 
     async def _action_adjust(self, msg: str, action: str, profile: Optional[Dict], state: Dict) -> Dict:
         return self._reply(
