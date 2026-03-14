@@ -10,7 +10,8 @@ import {
   Wand2, Save, Rocket, ChevronDown, ChevronUp,
   CheckCircle2, Loader2, Brain, Search, Users, Target,
   DollarSign, Sparkles, Puzzle, Eye, EyeOff, AlertCircle,
-  Send, RotateCcw, FileText, CheckCheck,
+  Send, RotateCcw, FileText, CheckCheck, Globe, Shield,
+  Phone, Link2, ExternalLink,
 } from "lucide-react";
 
 interface LogEntry {
@@ -58,6 +59,13 @@ export default function PromptPage() {
   const [showLog, setShowLog] = useState(true);
   const [aiPromptExpanded, setAiPromptExpanded] = useState<string | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
+
+  // Landing page decision state
+  const [lpChoice, setLpChoice] = useState<string | null>(null); // 'existing' | 'create' | 'audit' | 'call_only' | null
+  const [lpUrl, setLpUrl] = useState("");
+  const [lpLoading, setLpLoading] = useState(false);
+  const [lpResult, setLpResult] = useState<any>(null); // generated LP or audit result
+  const [lpError, setLpError] = useState("");
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -114,6 +122,72 @@ export default function PromptPage() {
     setDraft(null);
     setLogEntries([]);
     setError("");
+    setLpChoice(null);
+    setLpUrl("");
+    setLpResult(null);
+    setLpError("");
+  }
+
+  // ── Landing Page Handlers ─────────────────────────────────
+  async function handleLpAudit() {
+    if (!lpUrl.trim()) return;
+    setLpLoading(true);
+    setLpError("");
+    setLpResult(null);
+    try {
+      // Extract keywords and headlines from the draft for alignment scoring
+      const keywords: string[] = [];
+      const headlines: string[] = [];
+      const service = draft?.campaign?.name || draftPrompt.slice(0, 80);
+      for (const ag of (draft?.ad_groups || [])) {
+        for (const kw of (ag.keywords || [])) {
+          keywords.push(typeof kw === "string" ? kw : kw.text);
+        }
+        for (const ad of (ag.ads || [])) {
+          headlines.push(...(ad.headlines || []));
+        }
+      }
+      const result = await api.post("/api/v2/strategist/landing-pages/audit", {
+        url: lpUrl.trim(),
+        campaign_keywords: keywords.slice(0, 20),
+        campaign_headlines: headlines.slice(0, 10),
+        service,
+      });
+      setLpResult(result);
+    } catch (err: any) {
+      setLpError(err.message || "Audit failed");
+    } finally {
+      setLpLoading(false);
+    }
+  }
+
+  async function handleLpCreate() {
+    setLpLoading(true);
+    setLpError("");
+    setLpResult(null);
+    try {
+      const keywords: string[] = [];
+      const headlines: string[] = [];
+      const service = draft?.campaign?.name || draftPrompt.slice(0, 80);
+      for (const ag of (draft?.ad_groups || [])) {
+        for (const kw of (ag.keywords || [])) {
+          keywords.push(typeof kw === "string" ? kw : kw.text);
+        }
+        for (const ad of (ag.ads || [])) {
+          headlines.push(...(ad.headlines || []));
+        }
+      }
+      const result = await api.post("/api/v2/strategist/landing-pages/generate", {
+        service,
+        campaign_keywords: keywords.slice(0, 20),
+        campaign_headlines: headlines.slice(0, 10),
+      });
+      setLpResult(result);
+    } catch (err: any) {
+      setLpError(err.message || "Landing page generation failed");
+    } finally {
+      setLpLoading(false);
+    }
   }
 
   // ── Approve & Generate ─────────────────────────────────────
@@ -737,6 +811,224 @@ export default function PromptPage() {
                 </CardContent>
               </Card>
             )}
+
+            {/* ════════════════════════════════════════════════════════
+                LANDING PAGE DECISION
+                ════════════════════════════════════════════════════════ */}
+            <Card className="border-blue-200 bg-gradient-to-b from-blue-50/40 to-white">
+              <CardHeader>
+                <div className="flex items-center gap-2">
+                  <Globe className="w-5 h-5 text-blue-600" />
+                  <CardTitle className="text-base">Landing Page Setup</CardTitle>
+                </div>
+                <CardDescription>
+                  Campaigns with matched landing pages convert 2-3x better. What would you like to do?
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {/* Choice buttons — show when no choice made yet */}
+                {!lpChoice && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      onClick={() => setLpChoice("existing")}
+                      className="flex flex-col items-center gap-2 p-4 rounded-xl border-2 border-blue-200 bg-white hover:border-blue-400 hover:bg-blue-50 transition text-center"
+                    >
+                      <Link2 className="w-6 h-6 text-blue-600" />
+                      <span className="text-sm font-semibold text-slate-800">Use Existing Landing Page</span>
+                      <span className="text-[11px] text-slate-500">Enter URL &amp; auto-audit for campaign alignment</span>
+                    </button>
+                    <button
+                      onClick={() => { setLpChoice("create"); handleLpCreate(); }}
+                      className="flex flex-col items-center gap-2 p-4 rounded-xl border-2 border-purple-200 bg-white hover:border-purple-400 hover:bg-purple-50 transition text-center"
+                    >
+                      <Sparkles className="w-6 h-6 text-purple-600" />
+                      <span className="text-sm font-semibold text-slate-800">Create AI Landing Page</span>
+                      <span className="text-[11px] text-slate-500">Generate 3 high-converting variants with AI</span>
+                    </button>
+                    <button
+                      onClick={() => setLpChoice("audit")}
+                      className="flex flex-col items-center gap-2 p-4 rounded-xl border-2 border-amber-200 bg-white hover:border-amber-400 hover:bg-amber-50 transition text-center"
+                    >
+                      <Shield className="w-6 h-6 text-amber-600" />
+                      <span className="text-sm font-semibold text-slate-800">Audit My Landing Page</span>
+                      <span className="text-[11px] text-slate-500">Score your page on conversion factors</span>
+                    </button>
+                    <button
+                      onClick={() => setLpChoice("call_only")}
+                      className="flex flex-col items-center gap-2 p-4 rounded-xl border-2 border-green-200 bg-white hover:border-green-400 hover:bg-green-50 transition text-center"
+                    >
+                      <Phone className="w-6 h-6 text-green-600" />
+                      <span className="text-sm font-semibold text-slate-800">Call-Only Ad</span>
+                      <span className="text-[11px] text-slate-500">No landing page needed — drive calls directly</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* Existing LP / Audit — URL input */}
+                {(lpChoice === "existing" || lpChoice === "audit") && !lpResult && (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                      {lpChoice === "existing" ? (
+                        <><Link2 className="w-4 h-4 text-blue-600" /> Enter your landing page URL</>
+                      ) : (
+                        <><Shield className="w-4 h-4 text-amber-600" /> Enter the URL to audit</>
+                      )}
+                    </div>
+                    <div className="flex gap-2">
+                      <input
+                        type="url"
+                        value={lpUrl}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setLpUrl(e.target.value)}
+                        placeholder="https://yoursite.com/service-page"
+                        className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      />
+                      <Button
+                        onClick={handleLpAudit}
+                        disabled={lpLoading || !lpUrl.trim()}
+                        className={lpChoice === "existing" ? "bg-blue-600 hover:bg-blue-700" : "bg-amber-600 hover:bg-amber-700"}
+                      >
+                        {lpLoading ? (
+                          <><Loader2 className="w-4 h-4 animate-spin mr-1" /> Auditing...</>
+                        ) : (
+                          <><Shield className="w-4 h-4 mr-1" /> Audit Page</>
+                        )}
+                      </Button>
+                    </div>
+                    <button
+                      onClick={() => { setLpChoice(null); setLpUrl(""); }}
+                      className="text-xs text-slate-400 hover:text-slate-600"
+                    >
+                      ← Back to options
+                    </button>
+                  </div>
+                )}
+
+                {/* Audit result display */}
+                {(lpChoice === "existing" || lpChoice === "audit") && lpResult && (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-semibold text-slate-800">Landing Page Audit Result</h4>
+                      <Badge className={`text-xs ${
+                        (lpResult.overall_score || 0) >= 80 ? "bg-green-100 text-green-700" :
+                        (lpResult.overall_score || 0) >= 60 ? "bg-amber-100 text-amber-700" :
+                        "bg-red-100 text-red-700"
+                      }`}>
+                        {lpResult.overall_score || 0}/100 ({lpResult.grade || "?"})
+                      </Badge>
+                    </div>
+                    <div className="text-xs text-slate-600 bg-slate-50 rounded-lg p-3 space-y-1">
+                      {lpResult.top_issues && lpResult.top_issues.length > 0 && (
+                        <div>
+                          <span className="font-semibold text-red-600">Issues:</span>
+                          {lpResult.top_issues.slice(0, 3).map((issue: string, idx: number) => (
+                            <p key={idx} className="ml-2">• {issue}</p>
+                          ))}
+                        </div>
+                      )}
+                      {lpResult.top_recommendations && lpResult.top_recommendations.length > 0 && (
+                        <div className="mt-2">
+                          <span className="font-semibold text-blue-600">Recommendations:</span>
+                          {lpResult.top_recommendations.slice(0, 3).map((rec: string, idx: number) => (
+                            <p key={idx} className="ml-2">• {rec}</p>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {(lpResult.overall_score || 0) < 70 && (
+                      <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800">
+                        <strong>Score below 70.</strong> Consider creating an AI-optimized landing page instead for better conversions.
+                        <Button
+                          size="sm"
+                          className="mt-2 bg-purple-600 hover:bg-purple-700 text-xs"
+                          onClick={() => { setLpChoice("create"); setLpResult(null); handleLpCreate(); }}
+                        >
+                          <Sparkles className="w-3 h-3 mr-1" /> Create AI Page Instead
+                        </Button>
+                      </div>
+                    )}
+                    <button
+                      onClick={() => { setLpChoice(null); setLpResult(null); setLpUrl(""); }}
+                      className="text-xs text-slate-400 hover:text-slate-600"
+                    >
+                      ← Back to options
+                    </button>
+                  </div>
+                )}
+
+                {/* Creating AI landing page */}
+                {lpChoice === "create" && lpLoading && (
+                  <div className="flex flex-col items-center gap-3 py-6">
+                    <Loader2 className="w-8 h-8 animate-spin text-purple-500" />
+                    <p className="text-sm text-slate-600 font-medium">Generating AI landing page with 3 variants...</p>
+                    <p className="text-xs text-slate-400">This may take 30-60 seconds</p>
+                  </div>
+                )}
+
+                {/* AI LP created result */}
+                {lpChoice === "create" && !lpLoading && lpResult && (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="w-5 h-5 text-green-500" />
+                      <h4 className="text-sm font-semibold text-slate-800">AI Landing Page Generated!</h4>
+                    </div>
+                    {lpResult.slug && (
+                      <p className="text-xs text-slate-600">
+                        Slug: <code className="bg-slate-100 px-1 rounded">{lpResult.slug}</code>
+                      </p>
+                    )}
+                    {lpResult.variants && lpResult.variants.length > 0 && (
+                      <div className="space-y-1">
+                        {lpResult.variants.map((v: any, vi: number) => (
+                          <div key={vi} className="flex items-center gap-2 text-xs bg-purple-50 rounded-lg px-3 py-2">
+                            <Sparkles className="w-3 h-3 text-purple-500" />
+                            <span className="font-medium text-purple-800">
+                              Variant {v.key || vi + 1}: {v.name || "Untitled"}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <p className="text-xs text-slate-500">
+                      View and manage your landing pages in <strong>Manage Ads → Landing Pages</strong>
+                    </p>
+                    <button
+                      onClick={() => { setLpChoice(null); setLpResult(null); }}
+                      className="text-xs text-slate-400 hover:text-slate-600"
+                    >
+                      ← Back to options
+                    </button>
+                  </div>
+                )}
+
+                {/* Call-only confirmation */}
+                {lpChoice === "call_only" && (
+                  <div className="flex items-start gap-3 bg-green-50 rounded-lg p-4">
+                    <Phone className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
+                    <div className="text-sm">
+                      <p className="font-semibold text-green-800">Call-Only Ad Selected</p>
+                      <p className="text-green-700 text-xs mt-1">
+                        Your ad will drive phone calls directly — no landing page needed.
+                        Make sure your call tracking is set up in <strong>Settings</strong>.
+                      </p>
+                      <button
+                        onClick={() => setLpChoice(null)}
+                        className="text-xs text-green-600 hover:text-green-800 mt-2 underline"
+                      >
+                        Change my mind
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* LP error */}
+                {lpError && (
+                  <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-sm text-red-700 flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4" />
+                    {lpError}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           </>
         )}
       </div>
