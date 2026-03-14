@@ -329,6 +329,69 @@ async def apply_change_set(
     return {"change_set_id": cs.id, "status": "applying"}
 
 
+# ── GET /change-set/{id}/status — poll apply + sync progress ─────────────────
+
+@router.get("/change-set/{change_set_id}/status")
+async def get_change_set_status(
+    change_set_id: str,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    cs = await db.get(OperatorChangeSet, change_set_id)
+    if not cs or str(cs.tenant_id) != str(user.tenant_id):
+        raise HTTPException(404, "Change set not found")
+
+    # Get account sync status
+    account = await db.get(IntegrationGoogleAds, str(cs.account_id))
+    sync_status = "idle"
+    sync_progress = 0
+    sync_message = None
+    if account:
+        sync_status = getattr(account, "sync_status", "idle") or "idle"
+        sync_progress = getattr(account, "sync_progress", 0) or 0
+        sync_message = getattr(account, "sync_message", None)
+
+    # Determine overall phase
+    # applying → applied (then sync starts) → syncing → done
+    if cs.status == "applying":
+        phase = "applying"
+        overall_progress = 25
+    elif cs.status in ("applied", "partially_applied"):
+        if sync_status == "syncing":
+            phase = "syncing"
+            overall_progress = 50 + int(sync_progress * 0.5)
+        elif sync_status == "idle" and account and account.last_sync_at and cs.applied_at:
+            # Sync completed after apply
+            if account.last_sync_at > cs.applied_at:
+                phase = "complete"
+                overall_progress = 100
+            else:
+                phase = "waiting_sync"
+                overall_progress = 50
+        else:
+            phase = "waiting_sync"
+            overall_progress = 50
+    elif cs.status == "failed":
+        phase = "failed"
+        overall_progress = 0
+    else:
+        phase = cs.status
+        overall_progress = 100
+
+    return {
+        "change_set_id": cs.id,
+        "change_set_status": cs.status,
+        "apply_summary": cs.apply_summary_json,
+        "error_message": cs.error_message,
+        "applied_at": cs.applied_at.isoformat() if cs.applied_at else None,
+        "phase": phase,
+        "overall_progress": overall_progress,
+        "sync_status": sync_status,
+        "sync_progress": sync_progress,
+        "sync_message": sync_message,
+    }
+
+
 # ── POST /change-set/{id}/rollback ──────────────────────────────────────────
 
 @router.post("/change-set/{change_set_id}/rollback")

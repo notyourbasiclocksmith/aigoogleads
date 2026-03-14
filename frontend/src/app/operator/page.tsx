@@ -11,7 +11,7 @@ import {
   ChevronDown, ChevronRight, DollarSign, TrendingUp, TrendingDown,
   Target, Shield, Zap, BarChart3, Palette, Clock, MapPin,
   Megaphone, Search, Users, FileText, ArrowRight, RotateCcw,
-  Sparkles, Eye, Download, Filter, Check, X,
+  Sparkles, Eye, Download, Filter, Check, X, RefreshCw,
 } from "lucide-react";
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -133,6 +133,13 @@ export default function OperatorPage() {
   const [showApplyModal, setShowApplyModal] = useState(false);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Apply + Sync progress tracking
+  const [applyPhase, setApplyPhase] = useState<string>("");
+  const [applyProgress, setApplyProgress] = useState(0);
+  const [applySyncMessage, setApplySyncMessage] = useState("");
+  const [applyChangeSetId, setApplyChangeSetId] = useState<string | null>(null);
+  const applyPollingRef = useRef<NodeJS.Timeout | null>(null);
+
   // ── Load accounts on mount ──────────────────────────────────────────────
   useEffect(() => {
     api.get("/api/ads/accounts").then((accts: any) => {
@@ -242,24 +249,68 @@ export default function OperatorPage() {
     });
   };
 
+  // ── Poll apply + sync status ───────────────────────────────────────────
+  const pollApplyStatus = useCallback(async (csId: string) => {
+    try {
+      const s = await api.get(`/api/v2/operator/change-set/${csId}/status`);
+      setApplyPhase(s.phase);
+      setApplyProgress(s.overall_progress);
+      setApplySyncMessage(s.sync_message || "");
+
+      if (s.phase === "complete") {
+        if (applyPollingRef.current) clearInterval(applyPollingRef.current);
+        setApplySyncMessage("All changes applied and synced!");
+      } else if (s.phase === "failed") {
+        if (applyPollingRef.current) clearInterval(applyPollingRef.current);
+        setError(s.error_message || "Apply failed");
+        setApplySyncMessage("");
+      }
+    } catch {
+      // silently retry
+    }
+  }, []);
+
+  // Cleanup apply polling on unmount
+  useEffect(() => {
+    return () => { if (applyPollingRef.current) clearInterval(applyPollingRef.current); };
+  }, []);
+
   // ── Apply changes ─────────────────────────────────────────────────────
   const applyChanges = async () => {
     if (selectedRecs.size === 0 || !scanId) return;
     setApplying(true);
     setError("");
+    setApplyPhase("applying");
+    setApplyProgress(10);
+    setApplySyncMessage("Creating change set...");
     try {
       const cs = await api.post("/api/v2/operator/change-set", {
         scan_id: scanId,
         selected_recommendation_ids: Array.from(selectedRecs),
       });
+      setApplyChangeSetId(cs.change_set_id);
+      setApplyProgress(15);
+      setApplySyncMessage("Validating changes...");
+
       // Validate
       await api.post(`/api/v2/operator/change-set/${cs.change_set_id}/validate`);
-      // Apply
+      setApplyProgress(20);
+      setApplySyncMessage("Applying to Google Ads...");
+
+      // Apply (async — kicks off Celery task)
       await api.post(`/api/v2/operator/change-set/${cs.change_set_id}/apply`);
       setApplyResult(cs);
       setShowApplyModal(false);
+      setApplyProgress(25);
+      setApplySyncMessage("Changes submitted, applying to Google Ads...");
+
+      // Start polling for apply + sync status
+      applyPollingRef.current = setInterval(() => pollApplyStatus(cs.change_set_id), 3000);
     } catch (e: any) {
       setError(e.message || "Failed to apply changes");
+      setApplyPhase("");
+      setApplyProgress(0);
+      setApplySyncMessage("");
     }
     setApplying(false);
   };
@@ -684,18 +735,81 @@ export default function OperatorPage() {
               </Card>
             )}
 
-            {/* ── Apply Result ────────────────────────────────────────── */}
+            {/* ── Apply + Sync Progress Tracker ─────────────────────── */}
             {applyResult && (
-              <Card className="p-6 bg-emerald-50 border-emerald-200">
-                <div className="flex items-start gap-3">
-                  <CheckCircle2 className="w-6 h-6 text-emerald-600 flex-shrink-0" />
-                  <div>
-                    <h3 className="text-sm font-semibold text-emerald-800">Changes Applied</h3>
-                    <p className="text-sm text-emerald-700 mt-1">
-                      {applyResult.selected_count} changes have been queued for application.
-                      Changes will be applied to your Google Ads account shortly.
-                    </p>
+              <Card className={`p-6 border ${
+                applyPhase === "complete"
+                  ? "bg-emerald-50 border-emerald-200"
+                  : applyPhase === "failed"
+                  ? "bg-red-50 border-red-200"
+                  : "bg-blue-50 border-blue-200"
+              }`}>
+                <div className="space-y-4">
+                  {/* Header */}
+                  <div className="flex items-start gap-3">
+                    {applyPhase === "complete" ? (
+                      <CheckCircle2 className="w-6 h-6 text-emerald-600 flex-shrink-0" />
+                    ) : applyPhase === "failed" ? (
+                      <XCircle className="w-6 h-6 text-red-600 flex-shrink-0" />
+                    ) : (
+                      <RefreshCw className="w-6 h-6 text-blue-600 flex-shrink-0 animate-spin" />
+                    )}
+                    <div className="flex-1">
+                      <h3 className={`text-sm font-semibold ${
+                        applyPhase === "complete" ? "text-emerald-800" :
+                        applyPhase === "failed" ? "text-red-800" : "text-blue-800"
+                      }`}>
+                        {applyPhase === "complete" ? "Changes Applied & Synced" :
+                         applyPhase === "failed" ? "Apply Failed" :
+                         applyPhase === "applying" ? "Applying Changes to Google Ads..." :
+                         applyPhase === "syncing" ? "Syncing Updated Data..." :
+                         applyPhase === "waiting_sync" ? "Waiting for Sync..." :
+                         "Processing Changes..."}
+                      </h3>
+                      <p className={`text-sm mt-1 ${
+                        applyPhase === "complete" ? "text-emerald-700" :
+                        applyPhase === "failed" ? "text-red-700" : "text-blue-700"
+                      }`}>
+                        {applyPhase === "complete"
+                          ? `${applyResult.selected_count} changes applied successfully. Your campaigns page is now up to date.`
+                          : applySyncMessage || `${applyResult.selected_count} changes being processed...`}
+                      </p>
+                    </div>
                   </div>
+
+                  {/* Progress bar */}
+                  {applyPhase !== "complete" && applyPhase !== "failed" && (
+                    <div className="space-y-2">
+                      <div className="h-2 bg-blue-100 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-blue-500 rounded-full transition-all duration-700 ease-out"
+                          style={{ width: `${applyProgress}%` }}
+                        />
+                      </div>
+                      {/* Step indicators */}
+                      <div className="flex justify-between text-[11px]">
+                        <span className={applyProgress >= 10 ? "text-blue-700 font-medium" : "text-blue-400"}>
+                          ● Submit
+                        </span>
+                        <span className={applyProgress >= 25 ? "text-blue-700 font-medium" : "text-blue-400"}>
+                          ● Apply to Google
+                        </span>
+                        <span className={applyProgress >= 50 ? "text-blue-700 font-medium" : "text-blue-400"}>
+                          ● Sync Data
+                        </span>
+                        <span className={applyProgress >= 100 ? "text-blue-700 font-medium" : "text-blue-400"}>
+                          ● Done
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Complete: show green checkmark bar */}
+                  {applyPhase === "complete" && (
+                    <div className="h-2 bg-emerald-200 rounded-full overflow-hidden">
+                      <div className="h-full bg-emerald-500 rounded-full w-full" />
+                    </div>
+                  )}
                 </div>
               </Card>
             )}

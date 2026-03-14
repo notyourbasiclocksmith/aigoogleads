@@ -201,8 +201,10 @@ async def _apply_changes(change_set_id: str):
     """
     Execute mutations for a change set via the ExecutionEngine.
     Converts OperatorRecommendations into real Google Ads API calls.
+    After successful apply, triggers a Google Ads sync to pull fresh data.
     """
     from app.services.operator.execution_engine import ExecutionEngine
+    from app.models.v2.operator_change_set import OperatorChangeSet
     eng, factory = _make_task_session()
     try:
         async with factory() as db:
@@ -210,5 +212,18 @@ async def _apply_changes(change_set_id: str):
             result = await execution_engine.execute_change_set(change_set_id)
             logger.info("Change set execution result",
                          change_set_id=change_set_id, result=result)
+
+            # Trigger a sync after successful apply so new data appears immediately
+            if result.get("status") in ("applied", "partially_applied"):
+                cs = await db.get(OperatorChangeSet, change_set_id)
+                if cs:
+                    from app.jobs.tasks import sync_ads_account_task
+                    logger.info("Triggering post-apply sync",
+                                change_set_id=change_set_id,
+                                tenant_id=str(cs.tenant_id),
+                                account_id=str(cs.account_id))
+                    sync_ads_account_task.delay(
+                        str(cs.tenant_id), str(cs.account_id), False
+                    )
     finally:
         await eng.dispose()
