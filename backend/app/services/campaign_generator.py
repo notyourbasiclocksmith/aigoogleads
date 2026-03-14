@@ -479,29 +479,40 @@ class CampaignGeneratorService:
     #  Reusable OpenAI JSON helper
     # ══════════════════════════════════════════════════════════════════════
 
-    async def _call_openai_json(self, system: str, user_prompt: str, temperature: float = 0.7, max_tokens: int = 2000) -> Optional[Dict]:
-        """Call OpenAI and parse JSON response. Returns None on any failure."""
+    async def _call_openai_json(self, system: str, user_prompt: str, temperature: float = 0.7, max_tokens: int = 2000, retries: int = 3) -> Optional[Dict]:
+        """Call OpenAI and parse JSON response. Retries up to `retries` times with backoff."""
         if not settings.OPENAI_API_KEY:
             return None
-        try:
-            client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-            resp = await client.chat.completions.create(
-                model=settings.OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_prompt},
-                ],
-                response_format={"type": "json_object"},
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            content = resp.choices[0].message.content
-            if not content:
-                return None
-            return {"_raw": content, **json.loads(content)}
-        except Exception as e:
-            logger.error("OpenAI call failed", error=str(e))
-            return None
+        import asyncio
+        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        last_error = None
+        for attempt in range(retries):
+            try:
+                resp = await client.chat.completions.create(
+                    model=settings.OPENAI_MODEL,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                content = resp.choices[0].message.content
+                if not content:
+                    last_error = "Empty response"
+                    continue
+                return {"_raw": content, **json.loads(content)}
+            except json.JSONDecodeError as e:
+                last_error = f"JSON parse error: {e}"
+                logger.warning("OpenAI returned invalid JSON, retrying", attempt=attempt + 1, error=str(e))
+            except Exception as e:
+                last_error = str(e)
+                logger.warning("OpenAI call failed, retrying", attempt=attempt + 1, error=str(e))
+            if attempt < retries - 1:
+                await asyncio.sleep(1.5 * (attempt + 1))
+        logger.error("OpenAI call failed after all retries", retries=retries, last_error=last_error)
+        return None
 
     # ══════════════════════════════════════════════════════════════════════
     #  Step 1: AI-Powered Intent Parsing
@@ -579,8 +590,26 @@ Return JSON:
             result["_ai_generated"] = True
             return result
 
-        # Fallback to rule-based
-        logger.warning("AI intent parsing failed — falling back to rule-based")
+        # Retry with simpler prompt before falling back to rules
+        logger.warning("AI intent parsing failed — retrying with simpler prompt")
+        simple_system = "You are a Google Ads strategist. Parse the campaign request. Respond ONLY with valid JSON."
+        simple_msg = f"""Parse this into campaign intent:
+Prompt: "{prompt}"
+Business services: {json.dumps(svc_names[:5])}
+Business locations: {json.dumps(loc_names[:5])}
+
+Return JSON: {{"services": [...], "locations": [...], "offers": [], "usps": [], "urgency": "high"|"normal", "goal": "calls"|"leads"|"awareness", "objective": "calls", "campaign_type": "SEARCH"|"CALL", "campaign_type_reasoning": "...", "raw_prompt": "{prompt}"}}"""
+        retry = await self._call_openai_json(simple_system, simple_msg, temperature=0.3, retries=2)
+        if retry:
+            retry.pop("_raw", None)
+            retry.setdefault("services", svc_names[:5])
+            retry.setdefault("locations", loc_names[:5])
+            retry.setdefault("raw_prompt", prompt)
+            retry["_ai_generated"] = True
+            return retry
+
+        # Absolute last resort — rule-based (no API key or total AI failure)
+        logger.error("All AI intent parsing attempts failed — using emergency rule-based fallback")
         return self._parse_intent(prompt, profile)
 
     # ══════════════════════════════════════════════════════════════════════
@@ -625,6 +654,18 @@ Return JSON:
             result.pop("_raw", None)
             result["_ai_generated"] = True
             return result
+
+        # Retry with simpler prompt
+        logger.warning("AI overlap analysis failed — retrying with simpler prompt")
+        simple_system = "You are a Google Ads account strategist. Respond ONLY with valid JSON."
+        simple_msg = f"""Do these existing campaigns overlap with a new campaign for {json.dumps(intent.get('services', [])[:3])}?
+Existing: {json.dumps([c['name'] for c in existing[:10]])}
+Return JSON: {{"has_overlap": true/false, "overlap_severity": "none"|"low"|"medium"|"high", "recommendation": "...", "overlapping_campaigns": [...]}}"""
+        retry = await self._call_openai_json(simple_system, simple_msg, temperature=0.3, retries=2)
+        if retry:
+            retry.pop("_raw", None)
+            retry["_ai_generated"] = True
+            return retry
 
         return {"has_overlap": False, "recommendation": f"Found {len(existing)} existing campaigns.", "overlapping_campaigns": []}
 
@@ -685,6 +726,24 @@ Return JSON:
             result["_ai_generated"] = True
             return result
 
+        # Retry with simpler prompt
+        logger.warning("AI strategy synthesis failed — retrying with simpler prompt")
+        simple_system = "You are a Google Ads strategist. Respond ONLY with valid JSON."
+        simple_msg = f"""Create a campaign strategy for a {industry} business.
+Services: {json.dumps(intent.get('services', [])[:3])}
+Goal: {intent.get('goal', 'leads')}
+
+Return JSON: {{"recommended_structure": "...", "top_messaging_themes": [...], "bidding_recommendation": "...", "mistakes_to_avoid": [...], "key_insights": [...], "confidence_level": "medium"}}"""
+        retry = await self._call_openai_json(simple_system, simple_msg, temperature=0.4, retries=2)
+        if retry:
+            retry.pop("_raw", None)
+            retry["has_playbook"] = playbook is not None
+            retry["learnings_count"] = len(learnings)
+            retry["_ai_generated"] = True
+            return retry
+
+        # Absolute last resort — static (no API key or total AI failure)
+        logger.error("All AI strategy synthesis failed — using minimal static fallback")
         return {
             "has_playbook": playbook is not None,
             "learnings_count": len(learnings),
@@ -745,7 +804,20 @@ Return JSON:
             result["_ai_generated"] = True
             return result
 
-        # Fallback to rule-based
+        # Retry with simpler prompt
+        logger.warning("AI competitor analysis failed — retrying with simpler prompt")
+        simple_system = "You are a Google Ads competitor analyst. Respond ONLY with valid JSON."
+        simple_msg = f"""Analyze competitors for a {industry} business offering {json.dumps(intent.get('services', [])[:3])}.
+Competitor data: {json.dumps(competitors[:5], default=str)[:1000] if competitors else 'No data'}
+Return JSON: {{"common_themes": [...], "weaknesses": [...], "gaps": [...], "differentiation_angles": [...], "displacement_tactics": [...], "confidence_level": "medium"}}"""
+        retry = await self._call_openai_json(simple_system, simple_msg, temperature=0.4, retries=2)
+        if retry:
+            retry.pop("_raw", None)
+            retry["_ai_generated"] = True
+            return retry
+
+        # Emergency fallback — rule-based (no API key or total AI failure)
+        logger.error("All AI competitor analysis failed — using emergency rule-based fallback")
         return self._extract_competitor_insights(competitors, intent)
 
     # ══════════════════════════════════════════════════════════════════════
@@ -878,8 +950,43 @@ Keywords must NOT overlap between services. Each ad group must have its own uniq
                 result["_ai_generated"] = True
                 return result
 
-        # Fallback to rule-based
-        logger.warning("AI keyword strategy failed — falling back to rule-based")
+        # Retry with simpler prompt
+        logger.warning("AI keyword strategy failed — retrying with simpler prompt")
+        simple_system = "You are a Google Ads keyword expert. Respond ONLY with valid JSON."
+        simple_msg = f"""Generate keywords for a {industry} business.
+Services: {json.dumps(services)}
+Locations: {json.dumps(locations)}
+User prompt: "{intent.get('raw_prompt', '')}"
+
+CRITICAL: Each keyword MUST have a "service" field matching exactly one service above.
+No keyword overlap between services.
+
+Return JSON: {{"keywords": [{{"text": "...", "match_type": "EXACT"|"PHRASE", "tier": "high"|"medium"|"local"|"service", "service": "exact service name"}}], "negatives": [{{"text": "...", "match_type": "PHRASE"}}], "total_keywords": N, "total_negatives": N, "tiers": {{}}, "keyword_rationale": "..."}}"""
+        retry = await self._call_openai_json(simple_system, simple_msg, temperature=0.5, max_tokens=3000, retries=2)
+        if retry:
+            raw = retry.pop("_raw", None)
+            kws = retry.get("keywords", [])
+            if isinstance(kws, list) and len(kws) >= 3:
+                clean_kws = [k for k in kws if isinstance(k, dict) and "text" in k]
+                for k in clean_kws:
+                    k.setdefault("match_type", "PHRASE")
+                    k.setdefault("tier", "medium")
+                negs = retry.get("negatives", [])
+                clean_negs = []
+                for n in negs:
+                    if isinstance(n, dict) and "text" in n:
+                        clean_negs.append(n)
+                    elif isinstance(n, str):
+                        clean_negs.append({"text": n, "match_type": "PHRASE"})
+                retry["keywords"] = clean_kws
+                retry["negatives"] = clean_negs
+                retry["total_keywords"] = len(clean_kws)
+                retry["total_negatives"] = len(clean_negs)
+                retry["_ai_generated"] = True
+                return retry
+
+        # Absolute last resort — rule-based (no API key or total AI failure)
+        logger.error("All AI keyword strategy attempts failed — using emergency rule-based fallback")
         return self._build_keyword_strategy(intent, industry, learnings, playbook)
 
     # ══════════════════════════════════════════════════════════════════════
@@ -969,7 +1076,32 @@ Return JSON:
             result["_ai_generated"] = True
             return result
 
-        # Fallback to rule-based
+        # Retry with simpler prompt
+        logger.warning("AI budget/bidding failed — retrying with simpler prompt")
+        simple_system = "You are a Google Ads budget strategist. Respond ONLY with valid JSON."
+        simple_msg = f"""Recommend budget and bidding for a {industry} {campaign_type} campaign.
+Monthly budget constraint: {"$" + str(monthly_budget) if monthly_budget else "recommend based on industry"}
+Goal: {intent.get('goal', 'leads')}
+
+Return JSON: {{
+  "budget": {{"daily_usd": N, "daily_micros": N, "monthly_estimate_usd": N, "reasoning": "..."}},
+  "bidding": {{"strategy": "MAXIMIZE_CONVERSIONS"|"TARGET_CPA"|"MAXIMIZE_CLICKS", "reasoning": "..."}},
+  "schedule": {{"all_day": true, "reasoning": "24/7 coverage"}},
+  "device_bids": {{"mobile": "+20%", "desktop": "0%", "tablet": "-10%", "reasoning": "..."}}
+}}"""
+        retry = await self._call_openai_json(simple_system, simple_msg, temperature=0.3, retries=2)
+        if retry:
+            retry.pop("_raw", None)
+            budget = retry.get("budget", {})
+            if "daily_usd" in budget and "daily_micros" not in budget:
+                budget["daily_micros"] = int(budget["daily_usd"] * 1_000_000)
+            if "daily_usd" in budget and "monthly_estimate_usd" not in budget:
+                budget["monthly_estimate_usd"] = round(budget["daily_usd"] * 30, 2)
+            retry["_ai_generated"] = True
+            return retry
+
+        # Absolute last resort — rule-based (no API key or total AI failure)
+        logger.error("All AI budget/bidding attempts failed — using emergency rule-based fallback")
         playbook = await self._get_playbook(industry, intent.get("goal"))
         return {
             "budget": self._calculate_budget(profile, playbook, intent),
@@ -1254,7 +1386,7 @@ Return JSON:
                 for loc in locations[:2]:
                     svc_keywords.append({"text": f"{svc.lower()} {loc.lower()}", "match_type": "EXACT", "tier": "local"})
 
-            # --- LLM-powered ad copy (falls back to templates) ---
+            # --- AI-powered ad copy (retry with simpler prompt if first attempt fails) ---
             llm_copy = await self._generate_ad_copy_llm(
                 service=svc,
                 locations=locations,
@@ -1270,6 +1402,12 @@ Return JSON:
                 website=website,
                 raw_prompt=intent.get("raw_prompt", ""),
             )
+            if not llm_copy:
+                logger.warning("Primary AI ad copy failed, retrying with simplified prompt", service=svc)
+                llm_copy = await self._generate_ad_copy_llm_simple(
+                    service=svc, locations=locations, industry=industry,
+                    business_name=business_name, raw_prompt=intent.get("raw_prompt", ""),
+                )
             ai_prompt_used = None
             ai_raw_response = None
             ad_pinning = {}
@@ -1286,6 +1424,8 @@ Return JSON:
                 ad_callouts = llm_copy.get("callouts", [])
                 ad_rationale = llm_copy.get("rationale", "")
             else:
+                # Absolute last resort — only if OpenAI API key is missing or all retries exhausted
+                logger.error("All AI ad copy attempts failed — using emergency template fallback", service=svc)
                 headlines = self._generate_expert_headlines(
                     svc, locations, offers, usps, phone, tone, industry,
                     intent.get("urgency"), competitor_insights
@@ -1319,8 +1459,8 @@ Return JSON:
             }
             ad_groups.append(ad_group)
 
-        extensions = self._generate_expert_extensions(
-            business_profile, services, offers, usps, competitor_insights
+        extensions = await self._generate_extensions_ai(
+            business_profile, services, offers, usps, competitor_insights, intent
         )
 
         return {
@@ -1644,6 +1784,155 @@ description_pins: maps Position (1/2) to description INDEX (0-3).
         except Exception as e:
             logger.error("OpenAI ad copy generation failed — using template fallback", error=str(e))
             return None
+
+    async def _generate_ad_copy_llm_simple(
+        self,
+        service: str,
+        locations: List[str],
+        industry: str,
+        business_name: str,
+        raw_prompt: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """Simplified AI ad copy generation — used as retry when the full prompt fails."""
+        loc = locations[0] if locations else "local area"
+
+        system = """You are a Google Ads expert. Generate RSA ad copy. Respond ONLY with valid JSON.
+Headlines must be ≤30 characters. Descriptions must be ≤90 characters. Count carefully."""
+
+        prompt = f"""Generate Google Ads copy for:
+Business: {business_name or 'Local Service'}
+Service: {service}
+Industry: {industry}
+Location: {loc}
+User request: "{raw_prompt}"
+
+Extract pain points from the user request (prices, problems, urgency) and use them in headlines.
+
+Return JSON:
+{{
+  "headlines": ["H1", "H2", ..., "H15"],
+  "descriptions": ["D1", "D2", "D3", "D4"],
+  "pinning": {{"headline_pins": {{"1": 0}}, "description_pins": {{"1": 0}}}},
+  "sitelinks": [{{"text": "...", "desc1": "...", "desc2": "..."}}],
+  "callouts": ["...", "...", "...", "...", "...", "..."],
+  "rationale": "Brief strategy explanation"
+}}"""
+
+        result = await self._call_openai_json(system, prompt, temperature=0.7, max_tokens=2000)
+        if not result:
+            return None
+
+        content = result.pop("_raw", "")
+        headlines = [h[:30] for h in result.get("headlines", []) if isinstance(h, str) and h.strip()]
+        descriptions = [d[:90] for d in result.get("descriptions", []) if isinstance(d, str) and d.strip()]
+
+        # Deduplicate headlines
+        seen = set()
+        unique = []
+        for h in headlines:
+            if h.lower().strip() not in seen:
+                seen.add(h.lower().strip())
+                unique.append(h)
+
+        if len(unique) < 5 or len(descriptions) < 2:
+            return None
+
+        sitelinks = [s for s in result.get("sitelinks", []) if isinstance(s, dict) and "text" in s][:4]
+        callouts = [c[:25] for c in result.get("callouts", []) if isinstance(c, str) and c.strip()][:8]
+
+        return {
+            "headlines": unique[:15],
+            "descriptions": descriptions[:4],
+            "pinning": result.get("pinning", {}),
+            "sitelinks": sitelinks,
+            "callouts": callouts,
+            "rationale": result.get("rationale", ""),
+            "ai_prompt": prompt,
+            "ai_raw_response": content,
+        }
+
+    async def _generate_extensions_ai(
+        self,
+        profile: BusinessProfile,
+        services: List[str],
+        offers: List[str],
+        usps: List[str],
+        competitor_insights: Dict,
+        intent: Dict,
+    ) -> Dict[str, Any]:
+        """AI-powered extensions generation — sitelinks, callouts, structured snippets."""
+        website = profile.website_url or ""
+        industry = (profile.industry_classification or "service").lower()
+        phone = profile.phone or ""
+        raw_prompt = intent.get("raw_prompt", "")
+        loc = ", ".join(intent.get("locations", [])[:3]) or "local area"
+        usp_block = ", ".join(usps[:5]) if usps else "none"
+        offer_block = ", ".join(offers[:3]) if offers else "none"
+        comp_gaps = ", ".join(competitor_insights.get("gaps", competitor_insights.get("differentiation_angles", []))) or "none"
+
+        system = """You are a Google Ads extensions specialist. Generate high-performing ad extensions
+that boost CTR and Quality Score. You respond ONLY with valid JSON.
+Sitelink text: ≤25 chars. Sitelink descriptions: ≤35 chars each.
+Callout text: ≤25 chars each. Structured snippet values: ≤25 chars each."""
+
+        user_msg = f"""Generate Google Ads extensions for:
+
+Business: {profile.business_name if hasattr(profile, 'business_name') else 'Local Service'}
+Industry: {industry}
+Website: {website or 'N/A'}
+Phone: {phone or 'N/A'}
+Services: {json.dumps(services[:5])}
+Locations: {loc}
+USPs: {usp_block}
+Offers: {offer_block}
+Competitor gaps to exploit: {comp_gaps}
+User's original request: "{raw_prompt}"
+
+Generate:
+1. 6 sitelinks — link to key pages (services, reviews, about, contact, service areas, emergency)
+2. 8-10 callouts — trust signals, differentiators, speed, guarantees
+3. 1-2 structured snippets — services list, service types
+
+Use pain points from the user's request in the extensions where relevant.
+
+Return JSON:
+{{
+  "sitelinks": [
+    {{"text": "≤25 chars", "desc1": "≤35 chars", "desc2": "≤35 chars", "url": "{website}/page"}},
+    ...
+  ],
+  "callouts": ["≤25 chars", ...],
+  "structured_snippets": [
+    {{"header": "Services"|"Types"|"Amenities", "values": ["val1", "val2", ...]}},
+    ...
+  ]
+}}"""
+
+        result = await self._call_openai_json(system, user_msg, temperature=0.6, max_tokens=1500)
+        if result:
+            result.pop("_raw", None)
+            sitelinks = [s for s in result.get("sitelinks", []) if isinstance(s, dict) and "text" in s]
+            for s in sitelinks:
+                s["text"] = s["text"][:25]
+            callouts = [c[:25] for c in result.get("callouts", []) if isinstance(c, str) and c.strip()]
+            snippets = result.get("structured_snippets", [])
+
+            ext: Dict[str, Any] = {
+                "sitelinks": sitelinks[:6],
+                "callouts": callouts[:10],
+                "structured_snippets": snippets[:3],
+                "recommended": ["call_extension", "location_extension", "sitelink", "callout", "structured_snippet"],
+                "ai_generated": True,
+            }
+            if phone:
+                ext["call_extension"] = {"phone": phone, "call_conversion_reporting": True, "call_only": False}
+            if offers:
+                ext["promotion_extension"] = {"promotion_target": services[0] if services else "Service", "discount_modifier": offers[0][:30]}
+            return ext
+
+        # Fallback to template extensions only if AI completely fails
+        logger.warning("AI extensions failed — using template fallback")
+        return self._generate_expert_extensions(profile, services, offers, usps, competitor_insights)
 
     def _generate_expert_headlines(
         self, service: str, locations: List[str], offers: List[str], usps: List[str],
