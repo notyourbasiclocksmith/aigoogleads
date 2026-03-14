@@ -139,12 +139,12 @@ export default function ExpandServicesPage() {
         )}
 
         {/* Suggestions */}
-        {(result?.suggestions?.length ?? 0) > 0 && (
+        {result?.suggestions && result.suggestions.length > 0 && (
           <div className="space-y-4">
             <h2 className="text-lg font-semibold text-slate-800">
               Expansion Opportunities ({result.suggestions.length})
             </h2>
-            {result.suggestions.map((s, i) => (
+            {result.suggestions.map((s: any, i: number) => (
               <Card
                 key={i}
                 className={`transition hover:shadow-md ${
