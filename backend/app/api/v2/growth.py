@@ -147,9 +147,17 @@ async def generate_expansion_campaign(
 ):
     """Generate a campaign for an expanded service using the AI-generated prompt."""
     from app.services.campaign_generator import CampaignGeneratorService
+    from app.models.business_profile import BusinessProfile
+
+    bp_result = await db.execute(
+        select(BusinessProfile).where(BusinessProfile.tenant_id == user.tenant_id)
+    )
+    profile = bp_result.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(400, "Business profile required. Complete onboarding first.")
 
     generator = CampaignGeneratorService(db, str(user.tenant_id))
-    draft = await generator.generate(req.campaign_prompt)
+    draft = await generator.generate_from_prompt(req.campaign_prompt, profile)
     return {
         "service_name": req.service_name,
         "draft": draft,

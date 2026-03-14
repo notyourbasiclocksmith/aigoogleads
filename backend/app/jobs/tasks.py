@@ -1742,7 +1742,7 @@ async def _bulk_generate_async(task_ref, tenant_id: str, service_variants: list,
                         prompt = f"{base_prompt} — focus on {variant}"
 
                     generator = CampaignGeneratorService(db, tenant_id)
-                    draft = await generator.generate(prompt)
+                    draft = await generator.generate_from_prompt(prompt, profile)
                     results.append({
                         "service": variant,
                         "status": "success",

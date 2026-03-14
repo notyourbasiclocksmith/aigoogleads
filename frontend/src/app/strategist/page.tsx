@@ -10,7 +10,7 @@ import {
   Brain, Send, RotateCcw, Loader2, Rocket, Sparkles,
   Shield, Zap, Globe, FileText, CheckCircle, AlertCircle,
   ChevronDown, ChevronUp, ExternalLink, Eye, Megaphone,
-  Target, TrendingUp, Star, Wand2,
+  Target, TrendingUp, Star, Wand2, Search,
 } from "lucide-react";
 
 interface QuickAction {
@@ -28,6 +28,7 @@ interface ChatMsg {
   lp_audit?: any;
   expansions?: any[];
   bulk_task_id?: string;
+  search_mining?: any;
 }
 
 export default function StrategistPage() {
@@ -84,6 +85,7 @@ export default function StrategistPage() {
         lp_audit: result.lp_audit || undefined,
         expansions: result.expansions || undefined,
         bulk_task_id: result.bulk_task_id || undefined,
+        search_mining: result.search_mining || undefined,
       };
 
       setMessages([...updated, assistantMsg]);
@@ -294,6 +296,36 @@ export default function StrategistPage() {
                               <div className="flex items-center gap-2">
                                 <Rocket className="w-4 h-4" />
                                 <span className="font-medium">Bulk generation started — Track progress in Growth AI → Bulk Campaigns</span>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Search Mining Results */}
+                          {msg.search_mining && msg.search_mining.status === "complete" && (
+                            <div className="bg-cyan-50 border border-cyan-200 rounded-lg px-3 py-2 text-sm text-cyan-800">
+                              <div className="flex items-center gap-2">
+                                <Search className="w-4 h-4" />
+                                <span className="font-medium">
+                                  Search Mining: {msg.search_mining.analyzed_terms || 0} terms analyzed
+                                  {msg.search_mining.wasted_spend > 0 && (
+                                    <> • ${msg.search_mining.wasted_spend.toFixed(2)} wasted spend found</>
+                                  )}
+                                </span>
+                              </div>
+                              <div className="mt-1 flex gap-3 text-xs text-cyan-700">
+                                <span>+{msg.search_mining.add_as_keyword?.length || 0} keywords</span>
+                                <span>-{msg.search_mining.add_as_negative?.length || 0} negatives</span>
+                                <span>{msg.search_mining.new_ad_group_themes?.length || 0} new themes</span>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Expansion opportunities count */}
+                          {msg.expansions && msg.expansions.length > 0 && (
+                            <div className="bg-orange-50 border border-orange-200 rounded-lg px-3 py-2 text-sm text-orange-800">
+                              <div className="flex items-center gap-2">
+                                <TrendingUp className="w-4 h-4" />
+                                <span className="font-medium">{msg.expansions.length} expansion opportunities ready for bulk generation</span>
                               </div>
                             </div>
                           )}
@@ -644,6 +676,10 @@ function actionStyle(action: string): string {
     return "bg-purple-50 border-purple-200 text-purple-700 hover:bg-purple-100";
   if (action.includes("audit"))
     return "bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100";
+  if (action.includes("mine") || action.includes("optimize") || action.includes("search"))
+    return "bg-cyan-50 border-cyan-200 text-cyan-700 hover:bg-cyan-100";
+  if (action.includes("what_next") || action.includes("regenerate"))
+    return "bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100";
   return "bg-white border-blue-200 text-blue-700 hover:bg-blue-50";
 }
 

@@ -43,7 +43,7 @@ async def strategist_chat(
 
     orchestrator = StrategistOrchestrator(db, str(user.tenant_id))
 
-    # If an action button was clicked, translate to message
+    # If an action button was clicked, translate to fallback message
     message = req.message
     if req.action and not message:
         action_messages = {
@@ -55,16 +55,23 @@ async def strategist_chat(
             "audit_all": "Audit everything",
             "expand_makes": "Show me expansion opportunities for similar makes",
             "expand_services": "Show me related service expansions",
+            "expand": "Find expansion opportunities",
             "expand_5": "Generate the top 5 expansions",
             "expand_10": "Generate the top 10 expansions",
             "expand_25": "Generate the top 25 expansions",
             "expand_all": "Generate all expansions",
             "skip_expansion": "Skip expansions",
             "bulk_10": "Create 10 more campaigns",
+            "bulk_25": "Create 25 more campaigns",
+            "bulk_50": "Create 50 more campaigns",
+            "bulk_custom": "Create campaigns for all expansions",
             "new_campaign": "I want to build a new campaign",
             "launch": "Approve and launch this campaign",
             "regenerate": "Fix the issues and regenerate",
             "adjust": "I want to adjust the campaign details",
+            "mine_search_terms": "Run search term mining",
+            "optimize": "Optimize my campaigns",
+            "what_next": "What should I do next?",
         }
         message = action_messages.get(req.action, req.action)
 
@@ -72,6 +79,7 @@ async def strategist_chat(
         user_message=message,
         conversation_history=req.conversation_history,
         session_state=req.session_state,
+        action=req.action,
     )
 
     # If bulk generate was triggered, kick off the Celery task
