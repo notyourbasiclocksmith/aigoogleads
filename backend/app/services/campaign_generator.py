@@ -124,6 +124,18 @@ class CampaignGeneratorService:
         else:
             draft = await self._build_campaign_draft(**build_args)
 
+        # --- Step 8: Compliance Validation + Auto-Heal ---
+        from app.services.campaign_compliance import CampaignComplianceEngine
+        compliance = CampaignComplianceEngine()
+        draft, compliance_report = await compliance.validate_and_heal(draft, max_rounds=2)
+        logger.info(
+            "Campaign compliance check complete",
+            score=compliance_report["score"],
+            grade=compliance_report["grade"],
+            issues=compliance_report["total_issues"],
+            critical=compliance_report["critical"],
+        )
+
         # Inject AI analysis into draft
         draft["ai_analysis"] = {
             "intent": {k: v for k, v in intent.items() if k != "_ai_generated"},
@@ -131,6 +143,7 @@ class CampaignGeneratorService:
             "strategy_insights": strategy_insights,
             "competitor_insights": competitor_insights,
             "keyword_rationale": keyword_strategy.get("keyword_rationale"),
+            "compliance": compliance_report,
         }
         return draft
 

@@ -960,6 +960,18 @@ Audit and improve this intent extraction. Return complete improved JSON."""
             elif camp_type == "DISPLAY":
                 lines.append("- **Targeting:** Audience-based (in-market + custom intent)")
 
+        # Compliance score
+        compliance = draft.get("compliance", {})
+        if not compliance:
+            compliance = draft.get("ai_analysis", {}).get("compliance", {})
+        if compliance.get("score") is not None:
+            grade = compliance.get("grade", "N/A")
+            score = compliance.get("score", 0)
+            grade_emoji = {"EXCELLENT": "🟢", "GOOD": "🟡", "AVERAGE": "🟠", "POOR": "🔴"}.get(grade, "⚪")
+            lines.append(f"- **Google Ad Strength:** {grade_emoji} {grade} ({score}/100)")
+            if compliance.get("critical", 0) > 0:
+                lines.append(f"  - ⚠️ {compliance['critical']} critical issue(s) remaining")
+
         reasoning = draft.get("reasoning", {})
         if reasoning.get("campaign_type"):
             lines.append(f"\n> {reasoning['campaign_type']}")
