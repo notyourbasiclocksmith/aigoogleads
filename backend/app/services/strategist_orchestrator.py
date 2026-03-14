@@ -25,6 +25,7 @@ import structlog
 from app.core.config import settings
 from app.models.business_profile import BusinessProfile as BPModel
 from app.models.campaign import Campaign
+from app.models.tenant import Tenant
 
 logger = structlog.get_logger()
 
@@ -145,6 +146,13 @@ class StrategistOrchestrator:
         p = result.scalar_one_or_none()
         if not p:
             return None
+
+        # Get business name from Tenant (not on BusinessProfile model)
+        tenant_result = await self.db.execute(
+            select(Tenant.name).where(Tenant.id == self.tenant_id)
+        )
+        tenant_name = tenant_result.scalar_one_or_none() or ""
+
         services = p.services_json if isinstance(p.services_json, list) else []
         svc_names = [s if isinstance(s, str) else s.get("name", "") for s in services]
         locations = p.locations_json if isinstance(p.locations_json, list) else []
@@ -154,7 +162,7 @@ class StrategistOrchestrator:
         offers = p.offers_json if isinstance(p.offers_json, list) else []
         offer_texts = [o if isinstance(o, str) else o.get("text", "") for o in offers]
         return {
-            "business_name": p.business_name or "",
+            "business_name": tenant_name,
             "industry": p.industry_classification or "",
             "phone": p.phone or "",
             "website": p.website_url or "",
