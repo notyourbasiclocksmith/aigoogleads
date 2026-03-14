@@ -139,7 +139,7 @@ export default function ExpandServicesPage() {
         )}
 
         {/* Suggestions */}
-        {result?.suggestions?.length > 0 && (
+        {(result?.suggestions?.length ?? 0) > 0 && (
           <div className="space-y-4">
             <h2 className="text-lg font-semibold text-slate-800">
               Expansion Opportunities ({result.suggestions.length})
@@ -171,7 +171,7 @@ export default function ExpandServicesPage() {
                         )}
                       </div>
                       <p className="text-sm text-slate-600 mt-2">{s.why_good_fit}</p>
-                      {s.suggested_keywords?.length > 0 && (
+                      {(s.suggested_keywords?.length ?? 0) > 0 && (
                         <div className="flex flex-wrap gap-1 mt-3">
                           {s.suggested_keywords.slice(0, 6).map((kw, j) => (
                             <span

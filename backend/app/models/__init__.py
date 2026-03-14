@@ -36,6 +36,7 @@ from app.models.landing_page_performance import LandingPagePerformance
 from app.models.google_recommendation import GoogleRecommendation
 from app.models.lsa_lead import LSALead
 from app.models.lsa_conversation import LSAConversation
+from app.models.landing_page import LandingPage, LandingPageVariant, LandingPageEvent, ExpansionRecommendation, AIGenerationLog
 
 __all__ = [
     "Tenant", "User", "TenantUser", "IntegrationGoogleAds",
@@ -49,6 +50,8 @@ __all__ = [
     "AdPerformanceDaily", "AdGroupPerformanceDaily",
     "LandingPagePerformance", "GoogleRecommendation",
     "LSALead", "LSAConversation",
+    "LandingPage", "LandingPageVariant", "LandingPageEvent",
+    "ExpansionRecommendation", "AIGenerationLog",
 ]
 
 # V2 Models — imported so Alembic/ORM can discover them
