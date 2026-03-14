@@ -18,6 +18,7 @@ from app.models.recommendation import Recommendation
 from app.models.change_log import ChangeLog
 from app.models.alert import Alert
 from app.models.business_profile import BusinessProfile
+from app.models.tenant import Tenant
 
 logger = structlog.get_logger()
 
@@ -210,8 +211,13 @@ class ReportService:
         profile = result.scalar_one_or_none()
         if not profile:
             return {}
+        # Get business name from Tenant (not on BusinessProfile)
+        tenant_result = await self.db.execute(
+            select(Tenant.name).where(Tenant.id == self.tenant_id)
+        )
+        tenant_name = tenant_result.scalar_one_or_none() or ""
         return {
-            "business_name": getattr(profile, "business_name", ""),
+            "business_name": tenant_name,
             "industry": (profile.industry_classification or "general").lower(),
             "conversion_goal": profile.primary_conversion_goal or "calls",
             "website": profile.website_url or "",

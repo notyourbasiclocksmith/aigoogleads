@@ -15,8 +15,9 @@ logger = structlog.get_logger()
 
 
 class CreativeService:
-    def __init__(self, profile: Optional[BusinessProfile] = None):
+    def __init__(self, profile: Optional[BusinessProfile] = None, business_name: str = ""):
         self.profile = profile
+        self.business_name = business_name
 
     async def generate_ad_copy(
         self,
@@ -72,7 +73,7 @@ class CreativeService:
         services_list: List[str] = []
         trust_signals: List[str] = []
         if self.profile:
-            biz_name = getattr(self.profile, "business_name", "") or ""
+            biz_name = self.business_name or ""
             industry = (self.profile.industry_classification or "local service").lower()
             phone = self.profile.phone or ""
             website = self.profile.website_url or ""

@@ -302,8 +302,13 @@ class DiagnosticEngine:
         profile = result.scalar_one_or_none()
         if not profile:
             return {}
+        # Get business name from Tenant (not on BusinessProfile)
+        tenant_result = await self.db.execute(
+            select(Tenant.name).where(Tenant.id == self.tenant_id)
+        )
+        tenant_name = tenant_result.scalar_one_or_none() or ""
         return {
-            "business_name": getattr(profile, "business_name", ""),
+            "business_name": tenant_name,
             "industry": (profile.industry_classification or "general").lower(),
             "conversion_goal": profile.primary_conversion_goal or "calls",
         }

@@ -32,6 +32,7 @@ logger = structlog.get_logger()
 
 # Chat phases the orchestrator tracks
 PHASE_INTENT = "intent_parsed"
+PHASE_CAMPAIGN_TYPE = "campaign_type_decision"
 PHASE_LP_DECISION = "landing_page_decision"
 PHASE_GENERATING = "generating_campaign"
 PHASE_CAMPAIGN_READY = "campaign_ready"
@@ -57,6 +58,10 @@ class StrategistOrchestrator:
 
     # Action keys that quick-action buttons can send
     ACTION_MAP = {
+        "type_call_only": "_action_type_call_only",
+        "type_search": "_action_type_search",
+        "type_pmax": "_action_type_pmax",
+        "type_display": "_action_type_display",
         "lp_existing": "_action_lp_existing",
         "lp_create": "_action_lp_create",
         "lp_skip": "_action_lp_skip",
@@ -114,6 +119,9 @@ class StrategistOrchestrator:
 
         elif phase == PHASE_INTENT:
             return await self._handle_post_intent(user_message, profile, session_state)
+
+        elif phase == PHASE_CAMPAIGN_TYPE:
+            return await self._handle_campaign_type_decision(user_message, profile, session_state)
 
         elif phase == PHASE_LP_DECISION:
             return await self._handle_lp_decision(user_message, profile, session_state)
@@ -178,13 +186,23 @@ class StrategistOrchestrator:
     async def _handle_intent_parsing(
         self, message: str, profile: Optional[Dict], state: Dict
     ) -> Dict[str, Any]:
-        """Parse user's campaign idea into structured intent."""
+        """Parse user's campaign idea into structured intent, then audit the
+        response quality before sending.  Uses the AI-generated funnel
+        recommendation instead of hardcoded rules."""
         intent = await self._parse_campaign_intent(message, profile)
 
+        # ── Run response quality audit (second AI pass) ──────────────
+        audited_intent = await self._audit_parsed_intent(intent, message, profile)
+        if audited_intent:
+            intent = audited_intent
+
+        # ── Build rich reply ─────────────────────────────────────────
         reply_parts = [
             f"**Got it!** Here's what I understand:\n",
             f"- **Service:** {intent.get('service', 'N/A')}",
         ]
+        if intent.get("service_category"):
+            reply_parts.append(f"- **Category:** {intent['service_category']}")
         if intent.get("brand"):
             reply_parts.append(f"- **Brand/Make:** {intent['brand']}")
         reply_parts.extend([
@@ -193,6 +211,10 @@ class StrategistOrchestrator:
             f"- **Goal:** {intent.get('goal', 'phone calls')}",
             f"- **Urgency:** {intent.get('urgency', 'standard')}",
         ])
+        if intent.get("estimated_ticket_value"):
+            reply_parts.append(f"- **Estimated Ticket Value:** {intent['estimated_ticket_value']}")
+        if intent.get("customer_journey"):
+            reply_parts.append(f"- **Customer Journey:** {intent['customer_journey']}")
 
         if intent.get("key_selling_points"):
             reply_parts.append(f"\n**Key selling points extracted:**")
@@ -204,37 +226,82 @@ class StrategistOrchestrator:
         if intent.get("expansion_potential"):
             reply_parts.append(f"**Expansion potential:** {', '.join(intent['expansion_potential'][:5])}")
 
-        # Funnel recommendation
-        funnel = await self._recommend_funnel(intent)
-        if funnel:
-            intent["recommended_funnel"] = funnel
-            reply_parts.append(f"\n---\n**Recommended Funnel: {funnel['type_label']}**")
-            reply_parts.append(f"**Why:** {funnel['reason']}")
+        if intent.get("ad_angle"):
+            reply_parts.append(f"\n**Ad angle:** {intent['ad_angle']}")
 
-        # If user pasted a landing page reference, acknowledge it
+        if intent.get("competitive_insights"):
+            reply_parts.append(f"**Competitive landscape:** {intent['competitive_insights']}")
+
+        # ── AI-powered funnel recommendation (from the enhanced parse) ──
+        funnel = intent.get("recommended_funnel")
+        if funnel and isinstance(funnel, dict):
+            reply_parts.append(f"\n---\n**Recommended Funnel: {funnel.get('type_label', funnel.get('type', 'N/A'))}**")
+            reply_parts.append(f"**Why:** {funnel.get('reason', '')}")
+            if funnel.get("alternative"):
+                reply_parts.append(f"**Alternative:** {funnel['alternative']}")
+        else:
+            # Fallback if AI didn't include funnel
+            funnel = self._recommend_funnel_fallback(intent)
+            if funnel:
+                intent["recommended_funnel"] = funnel
+                reply_parts.append(f"\n---\n**Recommended Funnel: {funnel['type_label']}**")
+                reply_parts.append(f"**Why:** {funnel['reason']}")
+
+        # ── Quality self-audit warnings ──────────────────────────────
+        quality = intent.get("quality_score", {})
+        gaps = quality.get("gaps_found", [])
+        missing_info = intent.get("missing_info", [])
+        if missing_info:
+            reply_parts.append(f"\n**To improve campaign quality, I'd also want to know:**")
+            for mi in missing_info[:3]:
+                reply_parts.append(f"- {mi}")
+
+        # ── Negative keywords preview ────────────────────────────────
+        neg_kws = intent.get("negative_keywords", [])
+        if neg_kws:
+            reply_parts.append(f"\n**Pre-loaded negative keywords:** {', '.join(neg_kws[:8])}")
+
+        # ── If user pasted a landing page reference, note it ─────────
         lp_ref = intent.get("landing_page_reference_url")
         if lp_ref:
             reply_parts.append(
-                f"\n---\n**Landing page reference detected!** I see you provided content from "
-                f"an existing page. I'll use it as a reference and audit it for campaign alignment."
+                f"\n**Landing page reference detected!** I'll use it as a reference "
+                f"and audit it for campaign alignment."
             )
             state["landing_page_url"] = lp_ref
-            quick_actions = [
-                {"label": "Audit & Use This Landing Page", "action": "lp_existing"},
-                {"label": "Create Improved AI Landing Page", "action": "lp_create"},
-                {"label": "Skip Landing Page", "action": "lp_skip"},
-                {"label": "Adjust Campaign Details", "action": "adjust"},
-            ]
-        else:
-            reply_parts.append(
-                "\n---\n**Before I build your campaign, do you have a landing page for this service?**"
-            )
-            quick_actions = [
-                {"label": "Use Existing Landing Page", "action": "lp_existing"},
-                {"label": "Create AI Landing Page", "action": "lp_create"},
-                {"label": "Skip Landing Page", "action": "lp_skip"},
-                {"label": "Adjust Campaign Details", "action": "adjust"},
-            ]
+
+        # ── Campaign type selection ──────────────────────────────────
+        # Determine which type the AI recommends so we can highlight it
+        funnel_type = ""
+        if funnel and isinstance(funnel, dict):
+            funnel_type = funnel.get("type", "")
+
+        reply_parts.append(
+            "\n---\n**What type of campaign would you like to create?**"
+        )
+
+        # Build type descriptions with AI-recommended badge
+        type_options = []
+        rec_badge = " (Recommended)" if funnel_type == "call_only" else ""
+        type_options.append(f"- **Call-Only Ad{rec_badge}** — Your phone number shows directly in the ad. No landing page needed. Best for emergencies and simple services.")
+
+        rec_badge = " (Recommended)" if funnel_type in ("lp_call", "lp_form", "lp_booking") else ""
+        type_options.append(f"- **Search Ad{rec_badge}** — Standard text ad that links to a landing page. Best for high-ticket services needing trust/explanation.")
+
+        rec_badge = " (Recommended)" if funnel_type == "pmax" else ""
+        type_options.append(f"- **Performance Max{rec_badge}** — AI-optimized across Search, Display, YouTube, Maps, and Gmail. Best for broad reach and brand awareness.")
+
+        rec_badge = " (Recommended)" if funnel_type == "display" else ""
+        type_options.append(f"- **Display Ad{rec_badge}** — Visual banner ads on websites. Best for remarketing and brand awareness.")
+
+        reply_parts.extend(type_options)
+
+        quick_actions = [
+            {"label": "Call-Only Ad", "action": "type_call_only"},
+            {"label": "Search Ad", "action": "type_search"},
+            {"label": "Performance Max", "action": "type_pmax"},
+            {"label": "Adjust Details", "action": "adjust"},
+        ]
 
         return {
             "reply": "\n".join(reply_parts),
@@ -244,23 +311,109 @@ class StrategistOrchestrator:
             "session_state": {**state, "phase": PHASE_INTENT, "intent": intent},
         }
 
-    async def _recommend_funnel(self, intent: Dict) -> Optional[Dict]:
-        """Recommend the best funnel based on parsed intent."""
+    async def _audit_parsed_intent(
+        self, intent: Dict, original_message: str, profile: Optional[Dict]
+    ) -> Optional[Dict]:
+        """Second AI pass: audit the parsed intent for quality and completeness.
+
+        Reviews the extraction for:
+        - Missed or misclassified information
+        - Generic vs specific selling points
+        - Keyword quality and coverage
+        - Funnel recommendation appropriateness
+        - Expansion opportunity realism
+
+        Returns an improved intent dict, or None if audit is skipped/fails.
+        """
+        if not self.client:
+            return None
+
+        # Skip audit if the initial parse failed (no AI data)
+        if not intent.get("_ai_parsed"):
+            return None
+
+        quality = intent.get("quality_score", {})
+        overall_score = quality.get("overall", 10)
+        # Skip audit if self-assessed quality is already high
+        if overall_score >= 9 and not quality.get("gaps_found"):
+            logger.info("Intent quality self-score high, skipping audit pass",
+                        score=overall_score)
+            return None
+
+        system = """You are a senior QA reviewer for a Google Ads campaign strategist AI.
+Your job is to audit another AI's campaign intent extraction and IMPROVE it.
+
+You receive the original user message and the AI's parsed intent. You must:
+
+1. CHECK ACCURACY — Is the service correctly identified? Is urgency right?
+   Is the funnel recommendation appropriate for this specific service?
+2. IMPROVE SPECIFICITY — Replace generic selling points with specific ones.
+   Replace broad keywords with long-tail high-intent variants.
+3. FIX GAPS — Add any missing information that's obviously implied.
+4. VALIDATE FUNNEL — Is the recommended funnel actually the best choice?
+   Consider: ticket value, urgency, customer sophistication, competition level.
+5. ENHANCE EXPANSION — Are expansion suggestions realistic for this business
+   type and geographic area?
+
+Return the COMPLETE improved intent as valid JSON. Keep all original fields,
+only modify what needs improvement. Add "_audit_improvements" listing changes."""
+
+        audit_prompt = f"""ORIGINAL USER MESSAGE:
+{original_message[:2000]}
+
+AI'S PARSED INTENT:
+{json.dumps({k: v for k, v in intent.items() if k != 'original_prompt'}, default=str, indent=2)[:3000]}
+
+BUSINESS PROFILE:
+{json.dumps(profile, default=str)[:800] if profile else 'None'}
+
+Audit and improve this intent extraction. Return complete improved JSON."""
+
+        try:
+            resp = await self.client.chat.completions.create(
+                model=settings.OPENAI_MODEL,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": audit_prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.3,
+                max_tokens=2500,
+                timeout=30,
+            )
+            content = resp.choices[0].message.content
+            if content:
+                audited = json.loads(content)
+                # Preserve original prompt and AI flags
+                audited["original_prompt"] = intent.get("original_prompt", original_message)
+                audited["_ai_parsed"] = True
+                audited["_audited"] = True
+                improvements = audited.get("_audit_improvements", [])
+                if improvements:
+                    logger.info("Intent audit improved response",
+                                improvements=len(improvements),
+                                details=improvements[:3])
+                return audited
+        except Exception as e:
+            logger.warning("Intent audit pass failed, using original",
+                           error=str(e))
+
+        return None
+
+    def _recommend_funnel_fallback(self, intent: Dict) -> Optional[Dict]:
+        """Rule-based funnel recommendation — used only when AI funnel is missing."""
         service = intent.get("service", "").lower()
         urgency = intent.get("urgency", "standard")
         goal = intent.get("goal", "phone calls")
-        industry = intent.get("industry", "").lower()
 
-        # Emergency/urgent → call-only
         if urgency == "emergency":
             return {
                 "type": "call_only",
                 "type_label": "Call-Only Ad",
-                "reason": "Emergency service — customers need help NOW and will call the first number they see. A landing page adds friction.",
+                "reason": "Emergency service — customers need help NOW and will call the first number they see.",
                 "confidence": "high",
             }
 
-        # High-ticket / complex → LP + call
         high_ticket_keywords = [
             "repair", "replacement", "remodel", "install", "module", "programming",
             "bcm", "kvm", "ecu", "frm", "esl", "airbag", "transmission", "engine",
@@ -270,34 +423,31 @@ class StrategistOrchestrator:
             return {
                 "type": "lp_call",
                 "type_label": "Landing Page + Call",
-                "reason": f"High-ticket/complex service requiring trust and explanation before the customer calls. A landing page showcasing expertise and pricing comparison drives higher conversion.",
+                "reason": "High-ticket/complex service — a landing page builds trust before the call.",
                 "confidence": "high",
             }
 
-        # Research/comparison → LP + form
         if urgency == "research" or goal == "form leads":
             return {
                 "type": "lp_form",
                 "type_label": "Landing Page + Form",
-                "reason": "Customers are comparison-shopping and prefer submitting info to multiple providers. A form captures lead details for follow-up.",
+                "reason": "Comparison-shopping customers prefer submitting info to multiple providers.",
                 "confidence": "medium",
             }
 
-        # Appointment-based → LP + booking
         if goal == "bookings":
             return {
                 "type": "lp_booking",
                 "type_label": "Landing Page + Booking",
-                "reason": "Appointment-based service — customers prefer self-service scheduling. Reduces phone tag and increases conversion.",
+                "reason": "Appointment-based service — self-service scheduling increases conversion.",
                 "confidence": "medium",
             }
 
-        # Default for phone call goal → LP + call
         if goal == "phone calls":
             return {
                 "type": "lp_call",
                 "type_label": "Landing Page + Call",
-                "reason": "Phone call campaigns benefit from a landing page that builds trust before the customer dials.",
+                "reason": "Phone call campaigns benefit from a landing page that builds trust.",
                 "confidence": "medium",
             }
 
@@ -306,53 +456,209 @@ class StrategistOrchestrator:
     async def _handle_post_intent(
         self, message: str, profile: Optional[Dict], state: Dict
     ) -> Dict[str, Any]:
-        """Handle response after intent parsing — LP decision or adjustment."""
+        """Handle response after intent parsing — campaign type selection or adjustment."""
         msg_lower = message.lower().strip()
-        intent = state.get("intent", {})
 
         # Check if user wants to adjust
         if any(w in msg_lower for w in ["adjust", "change", "modify", "edit", "wrong", "no"]):
             return await self._handle_intent_parsing(message, profile, state)
 
-        # Route to LP decision
-        if any(w in msg_lower for w in ["existing", "have a page", "url", "my page"]):
-            return {
-                "reply": "Please paste the URL of your existing landing page and I'll audit it for campaign alignment.",
-                "phase": PHASE_LP_DECISION,
-                "session_state": {**state, "phase": PHASE_LP_DECISION, "lp_choice": "existing"},
-                "quick_actions": [],
-            }
-        elif any(w in msg_lower for w in ["create", "generate", "build", "new page", "ai page", "lp_create"]):
-            state["lp_choice"] = "create"
-            draft = await self._generate_campaign_only(profile, state)
-            reply = f"**Campaign Built!**\n\n{self._format_draft_summary(draft)}\n\n"
-            reply += "---\n\nNow I'll **generate your AI landing page**. Click below to continue."
-            state["phase"] = PHASE_CAMPAIGN_READY
+        # Route campaign type selections from free text
+        if any(w in msg_lower for w in ["call only", "call-only", "phone ad"]):
+            return await self._action_type_call_only(message, "type_call_only", profile, state)
+        elif any(w in msg_lower for w in ["search ad", "search campaign", "text ad"]):
+            return await self._action_type_search(message, "type_search", profile, state)
+        elif any(w in msg_lower for w in ["performance max", "pmax", "p-max"]):
+            return await self._action_type_pmax(message, "type_pmax", profile, state)
+        elif any(w in msg_lower for w in ["display", "banner"]):
+            return await self._action_type_display(message, "type_display", profile, state)
+
+        # Default: re-show the campaign type options
+        return self._reply(
+            "Please select a campaign type above, or tell me which type you'd like:\n\n"
+            "- **Call-Only Ad** — phone number in the ad, no landing page needed\n"
+            "- **Search Ad** — text ad with landing page\n"
+            "- **Performance Max** — AI-optimized across all Google channels\n"
+            "- **Display Ad** — visual banner ads",
+            PHASE_INTENT, state,
+            quick_actions=[
+                {"label": "Call-Only Ad", "action": "type_call_only"},
+                {"label": "Search Ad", "action": "type_search"},
+                {"label": "Performance Max", "action": "type_pmax"},
+                {"label": "Adjust Details", "action": "adjust"},
+            ],
+        )
+
+    # ── CAMPAIGN TYPE ACTION HANDLERS ─────────────────────────────────
+
+    async def _action_type_call_only(
+        self, msg: str, action: str, profile: Optional[Dict], state: Dict
+    ) -> Dict:
+        """Call-Only selected — no landing page needed, go straight to build."""
+        state["campaign_type"] = "CALL"
+        state["lp_choice"] = "skip"
+        intent = state.get("intent", {})
+        intent["campaign_type_override"] = "CALL"
+        state["intent"] = intent
+
+        reply = (
+            "**Call-Only Ad selected!**\n\n"
+            "No landing page needed — your phone number will show directly in the ad. "
+            "Customers tap to call instantly.\n\n"
+            "Building your campaign now..."
+        )
+        draft = await self._generate_campaign_only(profile, state)
+        reply += f"\n\n{self._format_draft_summary(draft)}\n\n"
+        if draft.get("error"):
+            reply += f"\n\u26a0\ufe0f {draft['error']}"
+        reply += "**What would you like to do next?**"
+
+        state["phase"] = PHASE_CAMPAIGN_READY
+        return {
+            "reply": reply,
+            "phase": PHASE_CAMPAIGN_READY,
+            "campaign_draft": draft,
+            "session_state": state,
+            "quick_actions": [
+                {"label": "Audit Campaign", "action": "audit_campaign"},
+                {"label": "Find Expansions", "action": "expand"},
+                {"label": "Approve & Launch", "action": "launch"},
+                {"label": "Build Another Campaign", "action": "new_campaign"},
+            ],
+        }
+
+    async def _action_type_search(
+        self, msg: str, action: str, profile: Optional[Dict], state: Dict
+    ) -> Dict:
+        """Search Ad selected — needs a landing page, ask about it."""
+        state["campaign_type"] = "SEARCH"
+        intent = state.get("intent", {})
+        intent["campaign_type_override"] = "SEARCH"
+        state["intent"] = intent
+        state["phase"] = PHASE_CAMPAIGN_TYPE
+
+        # Check if they already provided an LP reference
+        if state.get("landing_page_url"):
+            reply = (
+                "**Search Ad selected!**\n\n"
+                f"I see you already provided a landing page reference. "
+                f"Would you like me to audit it, or create an AI-optimized page?"
+            )
             return {
                 "reply": reply,
-                "phase": PHASE_CAMPAIGN_READY,
-                "campaign_draft": draft,
+                "phase": PHASE_CAMPAIGN_TYPE,
                 "session_state": state,
                 "quick_actions": [
-                    {"label": "Generate Landing Page Now", "action": "generate_lp"},
-                    {"label": "Audit Campaign First", "action": "audit_campaign"},
-                    {"label": "Skip LP \u2014 Launch Campaign", "action": "launch"},
+                    {"label": "Audit & Use This Page", "action": "lp_existing"},
+                    {"label": "Create AI Landing Page", "action": "lp_create"},
+                    {"label": "Skip Landing Page", "action": "lp_skip"},
                 ],
             }
-        else:
-            # Default: skip LP, just build campaign
-            state["lp_choice"] = "skip"
-            draft = await self._generate_campaign_only(profile, state)
-            reply = f"**Campaign Built!**\n\n{self._format_draft_summary(draft)}\n\n"
-            reply += "**What would you like to do next?**"
-            state["phase"] = PHASE_CAMPAIGN_READY
-            return {
-                "reply": reply,
-                "phase": PHASE_CAMPAIGN_READY,
-                "campaign_draft": draft,
-                "session_state": state,
-                "quick_actions": self._post_campaign_actions(),
-            }
+
+        reply = (
+            "**Search Ad selected!**\n\n"
+            "Search ads need a landing page to drive traffic to. "
+            "A good landing page can **double your conversion rate**.\n\n"
+            "**Do you have a landing page for this service?**"
+        )
+        return {
+            "reply": reply,
+            "phase": PHASE_CAMPAIGN_TYPE,
+            "session_state": state,
+            "quick_actions": [
+                {"label": "Use Existing Landing Page", "action": "lp_existing"},
+                {"label": "Create AI Landing Page", "action": "lp_create"},
+                {"label": "Skip Landing Page", "action": "lp_skip"},
+            ],
+        }
+
+    async def _action_type_pmax(
+        self, msg: str, action: str, profile: Optional[Dict], state: Dict
+    ) -> Dict:
+        """Performance Max selected — ask about assets/LP."""
+        state["campaign_type"] = "PERFORMANCE_MAX"
+        intent = state.get("intent", {})
+        intent["campaign_type_override"] = "PERFORMANCE_MAX"
+        state["intent"] = intent
+        state["phase"] = PHASE_CAMPAIGN_TYPE
+
+        reply = (
+            "**Performance Max selected!**\n\n"
+            "PMax campaigns run across Search, Display, YouTube, Gmail, and Maps — "
+            "Google's AI optimizes placement automatically.\n\n"
+            "A landing page is **highly recommended** for PMax to maximize conversions.\n\n"
+            "**Do you have a landing page for this service?**"
+        )
+        return {
+            "reply": reply,
+            "phase": PHASE_CAMPAIGN_TYPE,
+            "session_state": state,
+            "quick_actions": [
+                {"label": "Use Existing Landing Page", "action": "lp_existing"},
+                {"label": "Create AI Landing Page", "action": "lp_create"},
+                {"label": "Skip Landing Page", "action": "lp_skip"},
+            ],
+        }
+
+    async def _action_type_display(
+        self, msg: str, action: str, profile: Optional[Dict], state: Dict
+    ) -> Dict:
+        """Display Ad selected — needs LP and creative assets."""
+        state["campaign_type"] = "DISPLAY"
+        intent = state.get("intent", {})
+        intent["campaign_type_override"] = "DISPLAY"
+        state["intent"] = intent
+        state["phase"] = PHASE_CAMPAIGN_TYPE
+
+        reply = (
+            "**Display Ad selected!**\n\n"
+            "Display ads show visual banners across the Google Display Network. "
+            "Great for remarketing and brand awareness.\n\n"
+            "A landing page is **required** for Display campaigns.\n\n"
+            "**Do you have a landing page for this service?**"
+        )
+        return {
+            "reply": reply,
+            "phase": PHASE_CAMPAIGN_TYPE,
+            "session_state": state,
+            "quick_actions": [
+                {"label": "Use Existing Landing Page", "action": "lp_existing"},
+                {"label": "Create AI Landing Page", "action": "lp_create"},
+                {"label": "Skip Landing Page", "action": "lp_skip"},
+            ],
+        }
+
+    async def _handle_campaign_type_decision(
+        self, message: str, profile: Optional[Dict], state: Dict
+    ) -> Dict[str, Any]:
+        """Handle free-text response to campaign type / LP question in PHASE_CAMPAIGN_TYPE."""
+        msg_lower = message.lower().strip()
+
+        # Route LP choices from free text
+        if any(w in msg_lower for w in ["existing", "have a page", "url", "my page", "yes"]):
+            return await self._action_lp_existing(message, "lp_existing", profile, state)
+        elif any(w in msg_lower for w in ["create", "generate", "ai page", "build page", "new page"]):
+            return await self._action_lp_create(message, "lp_create", profile, state)
+        elif any(w in msg_lower for w in ["skip", "no page", "don't have", "no lp", "no landing"]):
+            return await self._action_lp_skip(message, "lp_skip", profile, state)
+        elif message.strip().startswith("http"):
+            # User pasted a URL directly
+            state["landing_page_url"] = message.strip()
+            return await self._action_lp_existing(message, "lp_existing", profile, state)
+
+        # Default: re-prompt
+        return self._reply(
+            "Please choose a landing page option:\n\n"
+            "- **Use Existing** — paste your landing page URL and I'll audit it\n"
+            "- **Create AI Page** — I'll build a conversion-optimized page\n"
+            "- **Skip** — proceed without a landing page",
+            PHASE_CAMPAIGN_TYPE, state,
+            quick_actions=[
+                {"label": "Use Existing Landing Page", "action": "lp_existing"},
+                {"label": "Create AI Landing Page", "action": "lp_create"},
+                {"label": "Skip Landing Page", "action": "lp_skip"},
+            ],
+        )
 
     async def _handle_lp_decision(
         self, message: str, profile: Optional[Dict], state: Dict
@@ -1282,7 +1588,9 @@ class StrategistOrchestrator:
 
     async def _parse_campaign_intent(self, message: str, profile: Optional[Dict]) -> Dict:
         """Use AI to extract structured intent from user's campaign description.
-        
+
+        Enhanced with self-audit quality checks: the AI validates its own extraction
+        for completeness, flags gaps, and enriches with competitive intelligence.
         Handles long messages (e.g. pasted landing page content) by truncating
         to a reasonable size for the AI while preserving the full original prompt.
         """
@@ -1290,7 +1598,6 @@ class StrategistOrchestrator:
             return {"service": message, "original_prompt": message}
 
         # Truncate very long messages (users may paste entire landing pages)
-        # Keep enough for the AI to extract intent, but avoid token overflow
         truncated = message[:3000] if len(message) > 3000 else message
         was_truncated = len(message) > 3000
 
@@ -1301,38 +1608,83 @@ BUSINESS PROFILE:
 - Name: {profile.get('business_name', '')}
 - Industry: {profile.get('industry', '')}
 - Services: {json.dumps(profile.get('services', [])[:10])}
-- Locations: {json.dumps(profile.get('locations', [])[:5])}"""
+- Locations: {json.dumps(profile.get('locations', [])[:5])}
+- USPs: {json.dumps(profile.get('usps', [])[:5])}
+- Offers: {json.dumps(profile.get('offers', [])[:3])}
+- Conversion goal: {profile.get('conversion_goal', 'calls')}
+- Website: {profile.get('website', '')}
+- Phone: {profile.get('phone', '')}"""
 
-        system = """You are an expert Google Ads campaign strategist. Parse the user's campaign
-description into structured data. Identify the core service, brand/make if any,
-location, industry, urgency level, goal, and expansion potential.
-The user may paste landing page content as reference — extract the key service,
-brand, location, phone, and selling points from it.
+        system = """You are a senior Google Ads strategist with 15+ years managing $100M+ in
+local service ad spend. You specialize in high-intent local campaigns (locksmith,
+HVAC, plumbing, legal, auto repair, roofing, etc.).
+
+Your job is to DEEPLY parse a business owner's campaign request into precise,
+actionable campaign intelligence. You must:
+
+1. EXTRACT — Pull every detail from the user's message: service, brand, location,
+   urgency signals, competitive differentiators, pricing clues, audience signals.
+2. ENRICH — Add industry knowledge the user didn't explicitly say but is critical
+   for campaign success (seasonal factors, typical CPCs, competitor landscape,
+   common search patterns for this service).
+3. SELF-AUDIT — After extraction, check your own work:
+   - Did I miss any services implied but not stated?
+   - Are my keyword suggestions specific enough (long-tail > generic)?
+   - Are expansion opportunities realistic for this business?
+   - Did I correctly gauge urgency from context clues?
+   - Are my selling points actually differentiating or just generic?
+4. RECOMMEND FUNNEL — Based on the service type, urgency, ticket price, and
+   customer journey for this specific industry, recommend the optimal conversion
+   funnel with detailed reasoning.
+
 Respond ONLY with valid JSON."""
 
         truncation_note = "\n\n(Content was truncated — extract what you can from above)" if was_truncated else ""
 
-        prompt = f"""Parse this campaign request:
+        prompt = f"""Parse this campaign request with DEEP analysis:
 
 {truncated}
 {truncation_note}
 {profile_ctx}
 
-Return JSON:
+Return JSON with ALL of these fields:
 {{
-  "service": "core service name",
+  "service": "core service name (be specific, e.g. 'Jaguar BCM repair' not just 'car repair')",
+  "service_category": "broader category (e.g. 'automotive locksmith', 'emergency plumbing')",
   "brand": "brand/make if mentioned, or null",
   "industry": "detected industry",
   "location": "location/area",
+  "service_area_radius": "estimated service radius if mentioned (e.g. '25 miles')",
   "goal": "phone calls" | "form leads" | "bookings" | "store visits",
   "urgency": "emergency" | "urgent" | "standard" | "research",
   "intent_level": "high" | "medium" | "low",
-  "suggested_keywords": ["keyword1", "keyword2", ...],
-  "related_services": ["related service 1", "related service 2", ...],
-  "expansion_potential": ["make/brand expansion 1", "make/brand expansion 2", ...],
+  "estimated_ticket_value": "low (<$100)" | "medium ($100-500)" | "high ($500-2000)" | "premium ($2000+)",
+  "customer_journey": "immediate (call now)" | "short (same day research)" | "considered (multi-day comparison)",
+  "suggested_keywords": ["15-25 specific long-tail keywords for this exact service"],
+  "negative_keywords": ["5-10 negative keywords to exclude waste"],
+  "related_services": ["closely related services this business likely offers"],
+  "expansion_potential": ["specific makes/brands/variations for expansion campaigns"],
   "landing_page_needed": true | false,
   "landing_page_reference_url": "URL if user pasted LP content or mentioned a URL, else null",
-  "key_selling_points": ["extracted USP 1", "USP 2", ...]
+  "key_selling_points": ["extracted USPs — must be SPECIFIC differentiators, not generic"],
+  "missing_info": ["information I'd want to ask the business owner for better campaigns"],
+  "competitive_insights": "brief note on typical competitor landscape for this service",
+  "seasonal_factors": "any time-of-year relevance, or null",
+  "recommended_funnel": {{
+    "type": "call_only" | "lp_call" | "lp_form" | "lp_booking" | "direct_call",
+    "type_label": "human-readable label",
+    "reason": "detailed explanation of WHY this funnel is best for THIS specific service, customer journey, and urgency level — reference real conversion data patterns",
+    "confidence": "high" | "medium" | "low",
+    "alternative": "second-best funnel option and when it would be better"
+  }},
+  "ad_angle": "the primary emotional/logical angle for ad copy (e.g. 'trust + expertise' or 'speed + availability')",
+  "quality_score": {{
+    "extraction_completeness": 1-10,
+    "keyword_specificity": 1-10,
+    "expansion_realism": 1-10,
+    "overall": 1-10,
+    "gaps_found": ["any gaps in the extraction that could hurt campaign quality"]
+  }}
 }}"""
 
         try:
@@ -1344,13 +1696,14 @@ Return JSON:
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.4,
-                max_tokens=1500,
-                timeout=30,
+                max_tokens=2500,
+                timeout=45,
             )
             content = resp.choices[0].message.content
             if content:
                 result = json.loads(content)
                 result["original_prompt"] = message
+                result["_ai_parsed"] = True
                 return result
         except Exception as e:
             logger.error("Intent parsing failed", error=str(e), msg_len=len(message))

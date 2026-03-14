@@ -15,6 +15,7 @@ from app.models.v2.operator_recommendation import OperatorRecommendation
 from app.models.v2.operator_change_set import OperatorChangeSet
 from app.models.v2.creative_audit import CreativeAudit
 from app.models import IntegrationGoogleAds, BusinessProfile
+from app.models.tenant import Tenant
 from app.core.security import decrypt_token
 
 from app.services.operator.schemas import (
@@ -313,6 +314,12 @@ async def _get_business_context(db: AsyncSession, tenant_id: str) -> Dict[str, A
     )
     bp = result.scalar_one_or_none()
     if bp:
+        # Get business name from Tenant (not on BusinessProfile)
+        tenant_result = await db.execute(
+            select(Tenant.name).where(Tenant.id == tenant_id)
+        )
+        tenant_name = tenant_result.scalar_one_or_none() or ""
+
         # Extract city from locations_json if available
         city = ""
         if bp.locations_json:
@@ -322,7 +329,7 @@ async def _get_business_context(db: AsyncSession, tenant_id: str) -> Dict[str, A
                 city = first.get("city", "") if isinstance(first, dict) else str(first)
 
         return {
-            "business_name": bp.description[:80] if bp.description else "",
+            "business_name": tenant_name,
             "business_type": bp.industry_classification or "local service business",
             "city": city,
             "services": bp.services_json if bp.services_json else [],

@@ -47,8 +47,13 @@ async def generate_copy(
     )
     profile = result.scalar_one_or_none()
 
+    # Get business name from Tenant (not on BusinessProfile)
+    from app.models.tenant import Tenant
+    tenant = await db.get(Tenant, str(user.tenant_id))
+    biz_name = tenant.name if tenant else ""
+
     from app.services.creative_service import CreativeService
-    svc = CreativeService(profile)
+    svc = CreativeService(profile, business_name=biz_name)
     variants = await svc.generate_ad_copy(
         service=req.service,
         location=req.location,
