@@ -186,27 +186,114 @@ class StrategistOrchestrator:
             f"- **Urgency:** {intent.get('urgency', 'standard')}",
         ])
 
+        if intent.get("key_selling_points"):
+            reply_parts.append(f"\n**Key selling points extracted:**")
+            for usp in intent["key_selling_points"][:5]:
+                reply_parts.append(f"- {usp}")
+
         if intent.get("related_services"):
             reply_parts.append(f"\n**Related services detected:** {', '.join(intent['related_services'][:5])}")
         if intent.get("expansion_potential"):
             reply_parts.append(f"**Expansion potential:** {', '.join(intent['expansion_potential'][:5])}")
 
-        reply_parts.append(
-            "\n---\n**Before I build your campaign, do you have a landing page for this service?**"
-        )
+        # Funnel recommendation
+        funnel = await self._recommend_funnel(intent)
+        if funnel:
+            intent["recommended_funnel"] = funnel
+            reply_parts.append(f"\n---\n**Recommended Funnel: {funnel['type_label']}**")
+            reply_parts.append(f"**Why:** {funnel['reason']}")
+
+        # If user pasted a landing page reference, acknowledge it
+        lp_ref = intent.get("landing_page_reference_url")
+        if lp_ref:
+            reply_parts.append(
+                f"\n---\n**Landing page reference detected!** I see you provided content from "
+                f"an existing page. I'll use it as a reference and audit it for campaign alignment."
+            )
+            state["landing_page_url"] = lp_ref
+            quick_actions = [
+                {"label": "Audit & Use This Landing Page", "action": "lp_existing"},
+                {"label": "Create Improved AI Landing Page", "action": "lp_create"},
+                {"label": "Skip Landing Page", "action": "lp_skip"},
+                {"label": "Adjust Campaign Details", "action": "adjust"},
+            ]
+        else:
+            reply_parts.append(
+                "\n---\n**Before I build your campaign, do you have a landing page for this service?**"
+            )
+            quick_actions = [
+                {"label": "Use Existing Landing Page", "action": "lp_existing"},
+                {"label": "Create AI Landing Page", "action": "lp_create"},
+                {"label": "Skip Landing Page", "action": "lp_skip"},
+                {"label": "Adjust Campaign Details", "action": "adjust"},
+            ]
 
         return {
             "reply": "\n".join(reply_parts),
             "phase": PHASE_INTENT,
             "intent": intent,
-            "quick_actions": [
-                {"label": "Use Existing Landing Page", "action": "lp_existing"},
-                {"label": "Create AI Landing Page", "action": "lp_create"},
-                {"label": "Skip Landing Page", "action": "lp_skip"},
-                {"label": "Adjust Campaign Details", "action": "adjust"},
-            ],
+            "quick_actions": quick_actions,
             "session_state": {**state, "phase": PHASE_INTENT, "intent": intent},
         }
+
+    async def _recommend_funnel(self, intent: Dict) -> Optional[Dict]:
+        """Recommend the best funnel based on parsed intent."""
+        service = intent.get("service", "").lower()
+        urgency = intent.get("urgency", "standard")
+        goal = intent.get("goal", "phone calls")
+        industry = intent.get("industry", "").lower()
+
+        # Emergency/urgent → call-only
+        if urgency == "emergency":
+            return {
+                "type": "call_only",
+                "type_label": "Call-Only Ad",
+                "reason": "Emergency service — customers need help NOW and will call the first number they see. A landing page adds friction.",
+                "confidence": "high",
+            }
+
+        # High-ticket / complex → LP + call
+        high_ticket_keywords = [
+            "repair", "replacement", "remodel", "install", "module", "programming",
+            "bcm", "kvm", "ecu", "frm", "esl", "airbag", "transmission", "engine",
+            "hvac", "roof", "foundation", "commercial", "custom",
+        ]
+        if any(kw in service for kw in high_ticket_keywords):
+            return {
+                "type": "lp_call",
+                "type_label": "Landing Page + Call",
+                "reason": f"High-ticket/complex service requiring trust and explanation before the customer calls. A landing page showcasing expertise and pricing comparison drives higher conversion.",
+                "confidence": "high",
+            }
+
+        # Research/comparison → LP + form
+        if urgency == "research" or goal == "form leads":
+            return {
+                "type": "lp_form",
+                "type_label": "Landing Page + Form",
+                "reason": "Customers are comparison-shopping and prefer submitting info to multiple providers. A form captures lead details for follow-up.",
+                "confidence": "medium",
+            }
+
+        # Appointment-based → LP + booking
+        if goal == "bookings":
+            return {
+                "type": "lp_booking",
+                "type_label": "Landing Page + Booking",
+                "reason": "Appointment-based service — customers prefer self-service scheduling. Reduces phone tag and increases conversion.",
+                "confidence": "medium",
+            }
+
+        # Default for phone call goal → LP + call
+        if goal == "phone calls":
+            return {
+                "type": "lp_call",
+                "type_label": "Landing Page + Call",
+                "reason": "Phone call campaigns benefit from a landing page that builds trust before the customer dials.",
+                "confidence": "medium",
+            }
+
+        return None
 
     async def _handle_post_intent(
         self, message: str, profile: Optional[Dict], state: Dict
@@ -1104,9 +1191,18 @@ class StrategistOrchestrator:
     # ── AI HELPERS ─────────────────────────────────────────────────────
 
     async def _parse_campaign_intent(self, message: str, profile: Optional[Dict]) -> Dict:
-        """Use AI to extract structured intent from user's campaign description."""
+        """Use AI to extract structured intent from user's campaign description.
+        
+        Handles long messages (e.g. pasted landing page content) by truncating
+        to a reasonable size for the AI while preserving the full original prompt.
+        """
         if not self.client:
             return {"service": message, "original_prompt": message}
+
+        # Truncate very long messages (users may paste entire landing pages)
+        # Keep enough for the AI to extract intent, but avoid token overflow
+        truncated = message[:3000] if len(message) > 3000 else message
+        was_truncated = len(message) > 3000
 
         profile_ctx = ""
         if profile:
@@ -1120,11 +1216,16 @@ BUSINESS PROFILE:
         system = """You are an expert Google Ads campaign strategist. Parse the user's campaign
 description into structured data. Identify the core service, brand/make if any,
 location, industry, urgency level, goal, and expansion potential.
+The user may paste landing page content as reference — extract the key service,
+brand, location, phone, and selling points from it.
 Respond ONLY with valid JSON."""
+
+        truncation_note = "\n\n(Content was truncated — extract what you can from above)" if was_truncated else ""
 
         prompt = f"""Parse this campaign request:
 
-"{message}"
+{truncated}
+{truncation_note}
 {profile_ctx}
 
 Return JSON:
@@ -1140,7 +1241,8 @@ Return JSON:
   "related_services": ["related service 1", "related service 2", ...],
   "expansion_potential": ["make/brand expansion 1", "make/brand expansion 2", ...],
   "landing_page_needed": true | false,
-  "original_prompt": "{message}"
+  "landing_page_reference_url": "URL if user pasted LP content or mentioned a URL, else null",
+  "key_selling_points": ["extracted USP 1", "USP 2", ...]
 }}"""
 
         try:
@@ -1152,7 +1254,8 @@ Return JSON:
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.4,
-                max_tokens=1000,
+                max_tokens=1500,
+                timeout=30,
             )
             content = resp.choices[0].message.content
             if content:
@@ -1160,9 +1263,9 @@ Return JSON:
                 result["original_prompt"] = message
                 return result
         except Exception as e:
-            logger.error("Intent parsing failed", error=str(e))
+            logger.error("Intent parsing failed", error=str(e), msg_len=len(message))
 
-        return {"service": message, "original_prompt": message}
+        return {"service": message[:200], "original_prompt": message}
 
     async def _smart_route(
         self, message: str, history: List[Dict], profile: Optional[Dict], state: Dict
