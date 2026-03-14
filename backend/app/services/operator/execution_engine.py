@@ -556,6 +556,8 @@ class ExecutionEngine:
                 "extensions": draft.get("extensions", {}),
                 "keyword_strategy": draft.get("keyword_strategy", {}),
                 "reasoning": draft.get("reasoning", {}),
+                "builder_log": draft.get("builder_log", {}),
+                "compliance": draft.get("compliance", {}),
                 "source": "operator_recommendation",
                 "recommendation_id": rec.id,
             },

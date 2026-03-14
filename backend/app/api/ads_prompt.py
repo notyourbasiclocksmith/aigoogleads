@@ -389,6 +389,8 @@ async def save_draft(
             "extensions": d.get("extensions", {}),
             "keyword_strategy": d.get("keyword_strategy", {}),
             "reasoning": d.get("reasoning", {}),
+            "builder_log": d.get("builder_log", {}),
+            "compliance": d.get("compliance", {}),
         },
         is_draft=True,
     )
@@ -455,6 +457,8 @@ async def approve_and_launch(
                 "extensions": d.get("extensions", {}),
                 "keyword_strategy": d.get("keyword_strategy", {}),
                 "reasoning": d.get("reasoning", {}),
+                "builder_log": d.get("builder_log", {}),
+                "compliance": d.get("compliance", {}),
             },
             is_draft=True,
         )
@@ -471,3 +475,33 @@ async def approve_and_launch(
     await db.flush()
 
     return {"id": campaign.id, "status": "launching"}
+
+
+@router.get("/builder-log/{campaign_id}")
+async def get_builder_log(
+    campaign_id: str,
+    user: CurrentUser = Depends(require_analyst),
+    db: AsyncSession = Depends(get_db),
+):
+    """Retrieve the AI builder log for a campaign — shows every step the AI took."""
+    result = await db.execute(
+        select(Campaign).where(
+            Campaign.id == campaign_id,
+            Campaign.tenant_id == user.tenant_id,
+        )
+    )
+    campaign = result.scalar_one_or_none()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    settings = campaign.settings_json or {}
+    builder_log = settings.get("builder_log", {})
+    compliance = settings.get("compliance", {})
+
+    return {
+        "campaign_id": campaign_id,
+        "campaign_name": campaign.name,
+        "campaign_type": campaign.type,
+        "builder_log": builder_log,
+        "compliance": compliance,
+    }

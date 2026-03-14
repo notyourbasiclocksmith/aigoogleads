@@ -15,7 +15,9 @@ Pipeline:
 """
 import uuid
 import json
+import time
 import structlog
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,6 +32,64 @@ from app.models.competitor_profile import CompetitorProfile
 from app.models.tenant import Tenant
 
 logger = structlog.get_logger()
+
+
+class BuilderLog:
+    """
+    Collects timestamped, human-readable log entries for every AI step
+    during campaign generation. Embedded in the draft so the user can
+    see exactly what the AI did and why.
+    """
+
+    def __init__(self):
+        self._entries: List[Dict[str, Any]] = []
+        self._start = time.monotonic()
+        self._step_start: Optional[float] = None
+        self._started_at = datetime.now(timezone.utc).isoformat()
+
+    def step_start(self, step: str, detail: str = ""):
+        """Mark the beginning of a pipeline step."""
+        self._step_start = time.monotonic()
+        self._entries.append({
+            "step": step,
+            "status": "running",
+            "detail": detail,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "elapsed_ms": None,
+            "result_summary": None,
+        })
+
+    def step_end(self, result_summary: str = "", extra: Optional[Dict] = None):
+        """Mark the end of the current pipeline step."""
+        if not self._entries:
+            return
+        entry = self._entries[-1]
+        elapsed = round((time.monotonic() - (self._step_start or self._start)) * 1000)
+        entry["status"] = "done"
+        entry["elapsed_ms"] = elapsed
+        entry["result_summary"] = result_summary
+        if extra:
+            entry["extra"] = extra
+
+    def step_error(self, error: str):
+        """Mark the current step as failed."""
+        if not self._entries:
+            return
+        entry = self._entries[-1]
+        elapsed = round((time.monotonic() - (self._step_start or self._start)) * 1000)
+        entry["status"] = "error"
+        entry["elapsed_ms"] = elapsed
+        entry["result_summary"] = f"ERROR: {error}"
+
+    def to_dict(self) -> Dict[str, Any]:
+        total_ms = round((time.monotonic() - self._start) * 1000)
+        return {
+            "started_at": self._started_at,
+            "total_elapsed_ms": total_ms,
+            "total_elapsed_sec": round(total_ms / 1000, 1),
+            "steps": self._entries,
+            "step_count": len(self._entries),
+        }
 
 
 class CampaignGeneratorService:
@@ -55,10 +115,18 @@ class CampaignGeneratorService:
         google_customer_id: Optional[str] = None,
         campaign_type_override: Optional[str] = None,
     ) -> Dict[str, Any]:
+        blog = BuilderLog()
         industry = (business_profile.industry_classification or "general").lower()
 
         # --- Step 1: AI Intent Parsing ---
+        blog.step_start("Intent Parsing", f"Analyzing prompt: \"{prompt[:80]}{'...' if len(prompt) > 80 else ''}\"")
         intent = await self._parse_intent_ai(prompt, business_profile)
+        services = intent.get("services", [])
+        locations = intent.get("locations", [])
+        blog.step_end(
+            f"Extracted {len(services)} service(s), {len(locations)} location(s), goal={intent.get('goal', 'N/A')}, urgency={intent.get('urgency', 'N/A')}",
+            extra={"services": services, "locations": locations, "goal": intent.get("goal"), "urgency": intent.get("urgency")},
+        )
 
         # Respect campaign_type_override — strategist passes the user's chosen type
         campaign_type = (
@@ -67,27 +135,56 @@ class CampaignGeneratorService:
             or intent.get("campaign_type")
             or self._determine_campaign_type(intent, business_profile)
         )
+        blog.step_start("Campaign Type Selection", f"Override={campaign_type_override or 'none'}, AI suggested={intent.get('campaign_type', 'N/A')}")
+        blog.step_end(f"Selected campaign type: {campaign_type}", extra={"campaign_type": campaign_type})
 
         # --- Step 2: AI Overlap Analysis ---
+        blog.step_start("Overlap Analysis", "Checking against existing campaigns for conflicts/cannibalization")
         existing = await self._get_existing_campaigns()
         overlap_analysis = await self._analyze_overlap_ai(existing, intent)
+        overlap_risk = overlap_analysis.get("risk_level", "none") if isinstance(overlap_analysis, dict) else "unknown"
+        blog.step_end(
+            f"Found {len(existing)} existing campaigns, overlap risk: {overlap_risk}",
+            extra={"existing_count": len(existing), "overlap_risk": overlap_risk},
+        )
 
         # --- Step 3: AI Strategy Synthesis ---
+        blog.step_start("Strategy Synthesis", f"Loading playbooks + learnings for {industry} industry")
         playbook = await self._get_playbook(industry, intent.get("goal"))
         learnings = await self._get_relevant_learnings(industry)
         strategy_insights = await self._synthesize_strategy_ai(industry, intent, playbook, learnings, business_profile)
+        blog.step_end(
+            f"Playbook: {'loaded' if playbook else 'none found'}, {len(learnings)} learnings applied, strategy synthesized via AI",
+            extra={"has_playbook": playbook is not None, "learnings_count": len(learnings)},
+        )
 
         # --- Step 4: AI Competitor Intelligence ---
+        blog.step_start("Competitor Intelligence", "Analyzing competitor positioning and identifying gaps to exploit")
         competitors = await self._get_competitor_intelligence()
         competitor_insights = await self._analyze_competitors_ai(competitors, intent, industry, business_profile)
+        gaps = competitor_insights.get("gaps", competitor_insights.get("differentiation_angles", []))
+        blog.step_end(
+            f"Analyzed {len(competitors)} competitor(s), found {len(gaps)} gap(s) to exploit",
+            extra={"competitor_count": len(competitors), "gaps": gaps[:5]},
+        )
 
         # --- Step 5: AI Keyword Strategy (skip for PMax — no keywords) ---
         if campaign_type == "PERFORMANCE_MAX":
+            blog.step_start("Keyword Strategy", "Skipped — Performance Max uses audience signals, not keywords")
             keyword_strategy = {"keywords": [], "negatives": [], "total_keywords": 0, "total_negatives": 0, "tiers": {}}
+            blog.step_end("PMax campaigns target via audience signals and search themes instead")
         else:
+            blog.step_start("Keyword Strategy", f"Building AI-powered keyword strategy for {industry}")
             keyword_strategy = await self._build_keyword_strategy_ai(intent, industry, learnings, playbook, business_profile)
+            tiers = keyword_strategy.get("tiers", {})
+            tier_summary = ", ".join(f"{k}: {v}" for k, v in tiers.items()) if tiers else "N/A"
+            blog.step_end(
+                f"Generated {keyword_strategy.get('total_keywords', 0)} keywords + {keyword_strategy.get('total_negatives', 0)} negatives | Tiers: {tier_summary}",
+                extra={"total_keywords": keyword_strategy.get("total_keywords", 0), "total_negatives": keyword_strategy.get("total_negatives", 0), "tiers": tiers},
+            )
 
         # --- Step 6: AI Budget, Bidding & Schedule ---
+        blog.step_start("Budget, Bidding & Schedule", f"Calculating optimal budget and bidding for {campaign_type}")
         bbs = await self._recommend_budget_bidding_schedule_ai(
             industry=industry, intent=intent, profile=business_profile,
             campaign_type=campaign_type, competitor_insights=competitor_insights,
@@ -97,8 +194,13 @@ class CampaignGeneratorService:
         bid_strategy = bbs.get("bidding", {})
         scheduling = bbs.get("schedule", {})
         device_bids = bbs.get("device_bids", {})
+        blog.step_end(
+            f"Budget: ${budget.get('daily_usd', 0)}/day | Bidding: {bid_strategy.get('strategy', 'N/A')} | Mobile bid adj: {device_bids.get('mobile_bid_adj', 0)}%",
+            extra={"daily_usd": budget.get("daily_usd"), "bidding_strategy": bid_strategy.get("strategy"), "schedule": scheduling},
+        )
 
         # --- Step 7: Build Campaign Draft — route by campaign type ---
+        blog.step_start("Campaign Draft Build", f"Building {campaign_type} campaign structure with AI-generated ad copy")
         build_args = dict(
             intent=intent,
             campaign_type=campaign_type,
@@ -124,10 +226,42 @@ class CampaignGeneratorService:
         else:
             draft = await self._build_campaign_draft(**build_args)
 
+        # Summarize what was built
+        if campaign_type == "PERFORMANCE_MAX":
+            ag_count = len(draft.get("asset_groups", []))
+            blog.step_end(
+                f"Built {ag_count} asset group(s) with AI-generated text assets + audience signals",
+                extra={"asset_groups": ag_count},
+            )
+        else:
+            ag_count = len(draft.get("ad_groups", []))
+            kw_count = sum(len(ag.get("keywords", [])) for ag in draft.get("ad_groups", []))
+            ad_count = sum(len(ag.get("ads", [])) for ag in draft.get("ad_groups", []))
+            ad_type_label = {"CALL": "Call-Only", "DISPLAY": "Responsive Display"}.get(campaign_type, "RSA")
+            blog.step_end(
+                f"Built {ag_count} ad group(s), {kw_count} keywords, {ad_count} {ad_type_label} ad(s) — all AI-generated",
+                extra={"ad_groups": ag_count, "keywords": kw_count, "ads": ad_count, "ad_format": ad_type_label},
+            )
+
         # --- Step 8: Compliance Validation + Auto-Heal ---
+        blog.step_start("Google Compliance Check", "Validating against Google Ads maximum standards + auto-healing issues")
         from app.services.campaign_compliance import CampaignComplianceEngine
         compliance = CampaignComplianceEngine()
         draft, compliance_report = await compliance.validate_and_heal(draft, max_rounds=2)
+        healed = draft.get("compliance", {}).get("auto_healed", False)
+        blog.step_end(
+            f"Score: {compliance_report['score']}/100 ({compliance_report['grade']}) | "
+            f"Issues: {compliance_report['critical']} critical, {compliance_report['warnings']} warnings | "
+            f"Auto-healed: {'yes' if healed else 'no'}",
+            extra={
+                "score": compliance_report["score"],
+                "grade": compliance_report["grade"],
+                "critical": compliance_report["critical"],
+                "warnings": compliance_report["warnings"],
+                "auto_healed": healed,
+            },
+        )
+
         logger.info(
             "Campaign compliance check complete",
             score=compliance_report["score"],
@@ -136,7 +270,22 @@ class CampaignGeneratorService:
             critical=compliance_report["critical"],
         )
 
-        # Inject AI analysis into draft
+        # --- Step 9: Extensions Check ---
+        extensions = draft.get("extensions", {})
+        ext_sl = len(extensions.get("sitelinks", []))
+        ext_co = len(extensions.get("callouts", []))
+        ext_sn = len(extensions.get("structured_snippets", []))
+        blog.step_start("Extensions Summary", "Reviewing sitelinks, callouts, structured snippets")
+        blog.step_end(
+            f"{ext_sl} sitelinks, {ext_co} callouts, {ext_sn} structured snippets",
+            extra={"sitelinks": ext_sl, "callouts": ext_co, "structured_snippets": ext_sn},
+        )
+
+        # --- Final: Package everything ---
+        blog.step_start("Final Package", "Assembling campaign draft with all AI analysis")
+        blog.step_end(f"Campaign \"{draft.get('campaign', {}).get('name', 'N/A')}\" ready for review")
+
+        # Inject AI analysis + builder log into draft
         draft["ai_analysis"] = {
             "intent": {k: v for k, v in intent.items() if k != "_ai_generated"},
             "overlap_analysis": overlap_analysis,
@@ -145,6 +294,7 @@ class CampaignGeneratorService:
             "keyword_rationale": keyword_strategy.get("keyword_rationale"),
             "compliance": compliance_report,
         }
+        draft["builder_log"] = blog.to_dict()
         return draft
 
     async def generate_from_prompt_streaming(

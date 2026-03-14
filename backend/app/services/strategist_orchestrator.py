@@ -972,6 +972,18 @@ Audit and improve this intent extraction. Return complete improved JSON."""
             if compliance.get("critical", 0) > 0:
                 lines.append(f"  - ⚠️ {compliance['critical']} critical issue(s) remaining")
 
+        # Builder log summary
+        builder_log = draft.get("builder_log", {})
+        steps = builder_log.get("steps", [])
+        if steps:
+            total_sec = builder_log.get("total_elapsed_sec", 0)
+            lines.append(f"\n**🔧 AI Builder Log** ({len(steps)} steps, {total_sec}s total):")
+            for s in steps:
+                status_icon = {"done": "✅", "error": "❌", "running": "⏳"}.get(s.get("status"), "⚪")
+                elapsed = s.get("elapsed_ms")
+                time_str = f" ({elapsed}ms)" if elapsed is not None else ""
+                lines.append(f"  {status_icon} **{s['step']}**{time_str} — {s.get('result_summary') or s.get('detail', '')}")
+
         reasoning = draft.get("reasoning", {})
         if reasoning.get("campaign_type"):
             lines.append(f"\n> {reasoning['campaign_type']}")
