@@ -13,6 +13,7 @@ Pipeline:
 9) Set smart budget, bid strategy, scheduling, device bids, location bid adjustments
 10) Return full preview with expert reasoning for every decision
 """
+import asyncio
 import uuid
 import json
 import time
