@@ -10,7 +10,7 @@ import {
   Wand2, Save, Rocket, ChevronDown, ChevronUp,
   CheckCircle2, Loader2, Brain, Search, Users, Target,
   DollarSign, Sparkles, Puzzle, Eye, EyeOff, AlertCircle,
-  MessageSquare, ArrowRight, RotateCcw, X, Lightbulb, MapPin, Tag,
+  Send, RotateCcw, FileText, CheckCheck,
 } from "lucide-react";
 
 interface LogEntry {
@@ -34,22 +34,23 @@ const STEP_ICONS: Record<string, any> = {
   error: AlertCircle,
 };
 
-interface RefinementResult {
-  original_prompt: string;
-  refined_prompt: string;
-  detected_services?: string[];
-  detected_locations?: string[];
-  detected_goal?: string;
-  detected_urgency?: string;
-  suggested_budget?: string;
-  overlap_warning?: string | null;
+interface ChatMsg {
+  role: "user" | "assistant";
+  content: string;
   suggestions?: string[];
-  ai_powered: boolean;
 }
 
 export default function PromptPage() {
-  const [prompt, setPrompt] = useState("");
-  const [loading, setLoading] = useState(false);
+  // Chat state
+  const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const [draftPrompt, setDraftPrompt] = useState("");
+  const [readyToGenerate, setReadyToGenerate] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // Generation state
+  const [generating, setGenerating] = useState(false);
   const [draft, setDraft] = useState<any>(null);
   const [error, setError] = useState("");
   const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set([0]));
@@ -58,67 +59,71 @@ export default function PromptPage() {
   const [aiPromptExpanded, setAiPromptExpanded] = useState<string | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
 
-  // Refinement state
-  const [refining, setRefining] = useState(false);
-  const [refinement, setRefinement] = useState<RefinementResult | null>(null);
-  const [refinedPrompt, setRefinedPrompt] = useState("");
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMessages, chatLoading]);
 
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logEntries]);
 
-  async function handleRefine() {
-    if (!prompt.trim()) return;
+  // ── Chat with AI ───────────────────────────────────────────
+  async function handleSendMessage(text?: string) {
+    const msg = (text || chatInput).trim();
+    if (!msg || chatLoading) return;
+
+    const userMsg: ChatMsg = { role: "user", content: msg };
+    const updatedMessages = [...chatMessages, userMsg];
+    setChatMessages(updatedMessages);
+    setChatInput("");
+    setChatLoading(true);
     setError("");
-    setRefining(true);
-    setRefinement(null);
-    setDraft(null);
-    setLogEntries([]);
 
     try {
-      const result = await api.post("/api/ads/prompt/refine", { prompt });
-      setRefinement(result);
-      setRefinedPrompt(result.refined_prompt || prompt);
+      const result = await api.post("/api/ads/prompt/chat", {
+        messages: updatedMessages.map((m) => ({ role: m.role, content: m.content })),
+      });
+
+      const assistantMsg: ChatMsg = {
+        role: "assistant",
+        content: result.reply || "I couldn't generate a response.",
+        suggestions: result.suggestions || [],
+      };
+      setChatMessages([...updatedMessages, assistantMsg]);
+      if (result.draft_prompt) setDraftPrompt(result.draft_prompt);
+      if (result.ready_to_generate !== undefined) setReadyToGenerate(result.ready_to_generate);
     } catch (err: any) {
-      setError(err.message || "Refinement failed");
+      setError(err.message || "Chat failed");
     } finally {
-      setRefining(false);
+      setChatLoading(false);
     }
   }
 
-  function handleUseRefined() {
-    if (refinedPrompt.trim()) {
-      setPrompt(refinedPrompt);
-      setRefinement(null);
-      setRefinedPrompt("");
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSendMessage();
     }
   }
 
-  function handleConfirmAndGenerate() {
-    if (refinedPrompt.trim()) {
-      setPrompt(refinedPrompt);
-      setRefinement(null);
-      setRefinedPrompt("");
-      // Trigger generation after state updates
-      setTimeout(() => {
-        handleGenerateWithPrompt(refinedPrompt);
-      }, 0);
-    }
-  }
-
-  function handleDismissRefinement() {
-    setRefinement(null);
-    setRefinedPrompt("");
-  }
-
-  async function handleGenerateWithPrompt(promptText: string) {
-    if (!promptText.trim()) return;
+  function handleNewChat() {
+    setChatMessages([]);
+    setChatInput("");
+    setDraftPrompt("");
+    setReadyToGenerate(false);
+    setDraft(null);
+    setLogEntries([]);
     setError("");
-    setLoading(true);
+  }
+
+  // ── Approve & Generate ─────────────────────────────────────
+  async function handleApproveGenerate() {
+    if (!draftPrompt.trim()) return;
+    setError("");
+    setGenerating(true);
     setDraft(null);
     setLogEntries([]);
     setShowLog(true);
-    setRefinement(null);
 
     const token = api.getToken();
 
@@ -129,7 +134,7 @@ export default function PromptPage() {
           "Content-Type": "application/json",
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify({ prompt: promptText }),
+        body: JSON.stringify({ prompt: draftPrompt }),
       });
 
       if (!res.ok) {
@@ -158,7 +163,7 @@ export default function PromptPage() {
 
           try {
             const event: LogEntry = JSON.parse(jsonStr);
-            setLogEntries((prev) => [...prev, event]);
+            setLogEntries((prev: LogEntry[]) => [...prev, event]);
 
             if (event.step === "complete" && event.detail) {
               setDraft(event.detail);
@@ -174,12 +179,8 @@ export default function PromptPage() {
     } catch (err: any) {
       setError(err.message || "Generation failed");
     } finally {
-      setLoading(false);
+      setGenerating(false);
     }
-  }
-
-  async function handleGenerate() {
-    handleGenerateWithPrompt(prompt);
   }
 
   async function handleSave() {
@@ -209,197 +210,183 @@ export default function PromptPage() {
     setExpandedGroups(next);
   }
 
-  const doneSteps = logEntries.filter((e) => e.status === "done" && e.step !== "ai_copy_result");
-  const isComplete = logEntries.some((e) => e.step === "complete");
+  const doneSteps = logEntries.filter((e: LogEntry) => e.status === "done" && e.step !== "ai_copy_result");
+  const isComplete = logEntries.some((e: LogEntry) => e.step === "complete");
+  const hasChat = chatMessages.length > 0;
 
   return (
     <AppLayout>
       <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900">Command Console</h1>
-          <p className="text-muted-foreground">Describe what you want and let AI build your campaign</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900">Command Console</h1>
+            <p className="text-muted-foreground">Chat with AI to build your perfect campaign</p>
+          </div>
+          {hasChat && (
+            <Button variant="outline" size="sm" onClick={handleNewChat}>
+              <RotateCcw className="w-4 h-4 mr-2" /> New Campaign
+            </Button>
+          )}
         </div>
 
-        {/* Prompt Input */}
-        <Card>
-          <CardContent className="p-6">
-            <div className="space-y-4">
-              <textarea
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                placeholder="Example: Launch an emergency locksmith campaign targeting Dallas, Fort Worth, and Arlington. Focus on lockout services with a $50/day budget. Include our $20 off offer."
-                className="w-full min-h-[120px] rounded-lg border border-input bg-background px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none"
-              />
-              <div className="flex items-center gap-3">
-                <Button
-                  variant="outline"
-                  onClick={handleRefine}
-                  disabled={loading || refining || !prompt.trim()}
-                >
-                  {refining ? (
-                    <span className="flex items-center gap-2">
-                      <Loader2 className="w-4 h-4 animate-spin" /> Refining...
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-2">
-                      <MessageSquare className="w-4 h-4" /> Refine with AI
-                    </span>
-                  )}
-                </Button>
-                <Button onClick={handleGenerate} disabled={loading || refining || !prompt.trim()}>
-                  {loading ? (
-                    <span className="flex items-center gap-2">
-                      <Loader2 className="w-4 h-4 animate-spin" /> Generating...
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-2">
-                      <Wand2 className="w-4 h-4" /> Generate Campaign
-                    </span>
-                  )}
-                </Button>
-                <span className="text-xs text-muted-foreground">
-                  Refine first to let AI expand your idea, or generate directly
-                </span>
-              </div>
-              {error && <p className="text-sm text-destructive">{error}</p>}
-            </div>
-          </CardContent>
-        </Card>
+        {/* ════════════════════════════════════════════════════════
+            CHAT + DRAFT PROMPT LAYOUT
+            ════════════════════════════════════════════════════════ */}
+        <div className={`grid gap-4 ${hasChat && draftPrompt ? "lg:grid-cols-[1fr_340px]" : "grid-cols-1"}`}>
 
-        {/* AI Refinement Panel */}
-        {refinement && (
-          <Card className="border-blue-200 bg-gradient-to-br from-blue-50/50 to-indigo-50/30">
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Brain className="w-5 h-5 text-blue-600" />
-                  <CardTitle className="text-base text-blue-900">AI Refined Campaign Brief</CardTitle>
-                  {refinement.ai_powered && (
-                    <Badge className="text-xs bg-blue-100 text-blue-700 border-blue-200">
-                      AI Powered
-                    </Badge>
-                  )}
-                </div>
-                <Button variant="ghost" size="sm" onClick={handleDismissRefinement}>
-                  <X className="w-4 h-4" />
-                </Button>
+          {/* ── Chat Panel ────────────────────────────────────── */}
+          <Card className="flex flex-col overflow-hidden">
+            <CardHeader className="pb-3 border-b bg-slate-50/50">
+              <div className="flex items-center gap-2">
+                <Brain className="w-5 h-5 text-blue-600" />
+                <CardTitle className="text-base">Campaign Strategist</CardTitle>
+                <Badge className="text-[10px] bg-blue-100 text-blue-700 border-blue-200">AI</Badge>
               </div>
-              <p className="text-sm text-blue-700 mt-1">
-                Review and edit the expanded prompt below. When you're happy, confirm to generate.
-              </p>
             </CardHeader>
-            <CardContent className="space-y-4">
-              {/* Editable refined prompt */}
-              <div>
-                <label className="text-xs font-semibold text-blue-800 uppercase tracking-wide mb-1 block">
-                  Campaign Brief (editable)
-                </label>
-                <textarea
-                  value={refinedPrompt}
-                  onChange={(e) => setRefinedPrompt(e.target.value)}
-                  className="w-full min-h-[100px] rounded-lg border border-blue-200 bg-white px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 resize-none"
-                />
+
+            {/* Messages area */}
+            <CardContent className="flex-1 p-0">
+              <div className="min-h-[300px] max-h-[500px] overflow-y-auto p-4 space-y-4">
+                {/* Welcome message if no chat yet */}
+                {!hasChat && !generating && (
+                  <div className="flex items-start gap-3">
+                    <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
+                      <Brain className="w-4 h-4 text-blue-600" />
+                    </div>
+                    <div className="flex-1 bg-slate-50 rounded-2xl rounded-tl-sm px-4 py-3 text-sm text-slate-700">
+                      <p className="font-medium text-slate-900 mb-1">Hey! I'm your Google Ads strategist.</p>
+                      <p>Tell me what kind of campaign you want to create. Even a rough idea works — I'll help you shape it into a detailed brief.</p>
+                      <p className="mt-2 text-slate-500">Try something like: <em>"I need a campaign for jaguar bcm repair"</em></p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Chat messages */}
+                {chatMessages.map((msg, i) => (
+                  <div key={i} className={`flex items-start gap-3 ${msg.role === "user" ? "flex-row-reverse" : ""}`}>
+                    {/* Avatar */}
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
+                      msg.role === "user" ? "bg-slate-800" : "bg-blue-100"
+                    }`}>
+                      {msg.role === "user" ? (
+                        <span className="text-white text-xs font-bold">You</span>
+                      ) : (
+                        <Brain className="w-4 h-4 text-blue-600" />
+                      )}
+                    </div>
+
+                    {/* Bubble */}
+                    <div className={`flex-1 max-w-[85%] ${msg.role === "user" ? "text-right" : ""}`}>
+                      <div className={`inline-block text-left rounded-2xl px-4 py-3 text-sm ${
+                        msg.role === "user"
+                          ? "bg-slate-800 text-white rounded-tr-sm"
+                          : "bg-slate-50 text-slate-700 rounded-tl-sm"
+                      }`}>
+                        <div className="whitespace-pre-wrap">{msg.content}</div>
+                      </div>
+
+                      {/* Quick-reply suggestions */}
+                      {msg.role === "assistant" && msg.suggestions && msg.suggestions.length > 0 && (
+                        <div className="flex flex-wrap gap-2 mt-2">
+                          {msg.suggestions.map((s, si) => (
+                            <button
+                              key={si}
+                              onClick={() => handleSendMessage(s)}
+                              disabled={chatLoading}
+                              className="text-xs bg-white border border-blue-200 text-blue-700 rounded-full px-3 py-1.5 hover:bg-blue-50 transition-colors disabled:opacity-50"
+                            >
+                              {s}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+
+                {/* Typing indicator */}
+                {chatLoading && (
+                  <div className="flex items-start gap-3">
+                    <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
+                      <Brain className="w-4 h-4 text-blue-600" />
+                    </div>
+                    <div className="bg-slate-50 rounded-2xl rounded-tl-sm px-4 py-3">
+                      <div className="flex gap-1">
+                        <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                        <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                        <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div ref={chatEndRef} />
               </div>
 
-              {/* Detected metadata */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                {refinement.detected_services && refinement.detected_services.length > 0 && (
-                  <div className="bg-white rounded-lg border p-2.5">
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <Tag className="w-3.5 h-3.5 text-slate-500" />
-                      <span className="text-[11px] font-semibold text-slate-500 uppercase">Services</span>
-                    </div>
-                    <div className="flex flex-wrap gap-1">
-                      {refinement.detected_services.map((s, i) => (
-                        <span key={i} className="text-xs bg-slate-100 rounded px-1.5 py-0.5">{s}</span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {refinement.detected_locations && refinement.detected_locations.length > 0 && (
-                  <div className="bg-white rounded-lg border p-2.5">
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <MapPin className="w-3.5 h-3.5 text-slate-500" />
-                      <span className="text-[11px] font-semibold text-slate-500 uppercase">Locations</span>
-                    </div>
-                    <div className="flex flex-wrap gap-1">
-                      {refinement.detected_locations.map((l, i) => (
-                        <span key={i} className="text-xs bg-slate-100 rounded px-1.5 py-0.5">{l}</span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {refinement.detected_goal && (
-                  <div className="bg-white rounded-lg border p-2.5">
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <Target className="w-3.5 h-3.5 text-slate-500" />
-                      <span className="text-[11px] font-semibold text-slate-500 uppercase">Goal</span>
-                    </div>
-                    <span className="text-xs font-medium capitalize">{refinement.detected_goal}</span>
-                  </div>
-                )}
-                {refinement.suggested_budget && (
-                  <div className="bg-white rounded-lg border p-2.5">
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <DollarSign className="w-3.5 h-3.5 text-slate-500" />
-                      <span className="text-[11px] font-semibold text-slate-500 uppercase">Budget</span>
-                    </div>
-                    <span className="text-xs font-medium">{refinement.suggested_budget}</span>
-                  </div>
-                )}
-              </div>
-
-              {/* Overlap warning */}
-              {refinement.overlap_warning && (
-                <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg p-3">
-                  <AlertCircle className="w-4 h-4 text-amber-600 mt-0.5 flex-shrink-0" />
-                  <p className="text-sm text-amber-800">{refinement.overlap_warning}</p>
+              {/* Input area */}
+              <div className="border-t p-3 bg-white">
+                <div className="flex gap-2">
+                  <textarea
+                    value={chatInput}
+                    onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setChatInput(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder={hasChat ? "Type your reply..." : "Describe your campaign idea..."}
+                    className="flex-1 min-h-[44px] max-h-[120px] rounded-xl border border-input bg-slate-50 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+                    rows={1}
+                  />
+                  <Button
+                    onClick={() => handleSendMessage()}
+                    disabled={chatLoading || !chatInput.trim()}
+                    className="h-[44px] w-[44px] rounded-xl p-0"
+                  >
+                    <Send className="w-4 h-4" />
+                  </Button>
                 </div>
-              )}
-
-              {/* Suggestions */}
-              {refinement.suggestions && refinement.suggestions.length > 0 && (
-                <div className="bg-white border rounded-lg p-3">
-                  <div className="flex items-center gap-1.5 mb-2">
-                    <Lightbulb className="w-4 h-4 text-amber-500" />
-                    <span className="text-xs font-semibold text-slate-600 uppercase">Suggestions</span>
-                  </div>
-                  <ul className="space-y-1">
-                    {refinement.suggestions.map((s, i) => (
-                      <li key={i} className="text-sm text-slate-700 flex items-start gap-2">
-                        <span className="text-blue-400 mt-1">-</span>
-                        {s}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {/* Action buttons */}
-              <div className="flex items-center gap-3 pt-2">
-                <Button onClick={handleConfirmAndGenerate} disabled={loading || !refinedPrompt.trim()}>
-                  <span className="flex items-center gap-2">
-                    <Wand2 className="w-4 h-4" /> Confirm & Generate
-                  </span>
-                </Button>
-                <Button variant="outline" onClick={handleUseRefined}>
-                  <span className="flex items-center gap-2">
-                    <ArrowRight className="w-4 h-4" /> Use as Prompt
-                  </span>
-                </Button>
-                <Button
-                  variant="ghost"
-                  onClick={() => { setRefinedPrompt(refinedPrompt); handleRefine(); }}
-                  disabled={refining}
-                >
-                  <span className="flex items-center gap-2">
-                    <RotateCcw className="w-4 h-4" /> Re-refine
-                  </span>
-                </Button>
               </div>
             </CardContent>
           </Card>
-        )}
+
+          {/* ── Draft Prompt Sidebar ──────────────────────────── */}
+          {hasChat && draftPrompt && (
+            <Card className="border-emerald-200 bg-gradient-to-b from-emerald-50/30 to-white h-fit lg:sticky lg:top-4">
+              <CardHeader className="pb-3">
+                <div className="flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-emerald-600" />
+                  <CardTitle className="text-sm text-emerald-900">Campaign Brief</CardTitle>
+                  {readyToGenerate && (
+                    <CheckCheck className="w-4 h-4 text-emerald-500 ml-auto" />
+                  )}
+                </div>
+                <p className="text-[11px] text-emerald-700">
+                  This is what will be sent to the campaign generator
+                </p>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="bg-white border rounded-lg p-3 text-sm text-slate-700 whitespace-pre-wrap min-h-[80px]">
+                  {draftPrompt}
+                </div>
+
+                <Button
+                  onClick={handleApproveGenerate}
+                  disabled={generating || !draftPrompt.trim()}
+                  className="w-full bg-emerald-600 hover:bg-emerald-700"
+                >
+                  {generating ? (
+                    <span className="flex items-center gap-2">
+                      <Loader2 className="w-4 h-4 animate-spin" /> Building Campaign...
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-2">
+                      <Wand2 className="w-4 h-4" /> Approve & Generate
+                    </span>
+                  )}
+                </Button>
+
+                {error && <p className="text-xs text-destructive">{error}</p>}
+              </CardContent>
+            </Card>
+          )}
+        </div>
 
         {/* Process Log */}
         {logEntries.length > 0 && (
@@ -408,7 +395,7 @@ export default function PromptPage() {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <CardTitle className="text-base">Generation Process</CardTitle>
-                  {loading && <Loader2 className="w-4 h-4 animate-spin text-blue-500" />}
+                  {generating && <Loader2 className="w-4 h-4 animate-spin text-blue-500" />}
                   {isComplete && <CheckCircle2 className="w-4 h-4 text-green-500" />}
                   <span className="text-xs text-muted-foreground">
                     {doneSteps.length} steps completed

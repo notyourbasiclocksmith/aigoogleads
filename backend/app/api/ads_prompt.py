@@ -28,34 +28,51 @@ class ApproveLaunchRequest(BaseModel):
     draft: Optional[Dict[str, Any]] = None
 
 
-class RefineRequest(BaseModel):
-    prompt: str
+class ChatMessage(BaseModel):
+    role: str  # "user" or "assistant"
+    content: str
 
 
-@router.post("/refine")
-async def refine_prompt(
-    req: RefineRequest,
+class ChatRequest(BaseModel):
+    messages: List[ChatMessage]
+
+
+@router.post("/chat")
+async def chat_refine(
+    req: ChatRequest,
     user: CurrentUser = Depends(require_analyst),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Takes a rough/short user prompt and uses OpenAI to expand it into a
-    detailed campaign brief.  Returns the expanded prompt so the user can
-    review, edit, and confirm before triggering full generation.
+    Multi-turn ChatGPT-style conversation for refining campaign prompts.
+    The frontend sends the full conversation history and gets back the AI reply.
+    The AI acts as a Google Ads strategist helping shape the perfect campaign brief.
+    Every response includes a `draft_prompt` — the latest version of the campaign
+    brief that would be sent to the generator if the user clicks Approve.
     """
+    import json as _json
+    from openai import AsyncOpenAI
+    from app.core.config import settings
+
+    if not settings.OPENAI_API_KEY:
+        return {
+            "reply": "AI is not configured. Please type your full campaign brief and click Generate.",
+            "draft_prompt": req.messages[-1].content if req.messages else "",
+            "ready_to_generate": True,
+        }
+
+    # Gather business context
     result = await db.execute(
         select(BusinessProfile).where(BusinessProfile.tenant_id == user.tenant_id)
     )
     profile = result.scalar_one_or_none()
 
-    # Pull existing campaigns for context
     camp_result = await db.execute(
         select(Campaign).where(Campaign.tenant_id == user.tenant_id).limit(20)
     )
     existing = camp_result.scalars().all()
     existing_names = [c.name for c in existing]
 
-    # Build business context block
     if profile:
         services = profile.services_json if isinstance(profile.services_json, list) else []
         svc_names = [s if isinstance(s, str) else s.get("name", "") for s in services]
@@ -72,47 +89,15 @@ async def refine_prompt(
         constraints = profile.constraints_json or {}
         monthly_budget = constraints.get("monthly_budget", 0)
     else:
-        svc_names = []
-        loc_names = []
-        offer_texts = []
-        usp_texts = []
-        industry = "general"
-        phone = ""
-        website = ""
-        conversion_goal = "calls"
+        svc_names, loc_names, offer_texts, usp_texts = [], [], [], []
+        industry, phone, website, conversion_goal = "general", "", "", "calls"
         monthly_budget = 0
 
-    import json as _json
-    from openai import AsyncOpenAI
-    from app.core.config import settings
+    system = f"""You are an expert Google Ads campaign strategist having a conversation
+with a business owner. Your job is to help them build the perfect campaign brief
+through natural conversation. You're friendly, knowledgeable, and proactive.
 
-    if not settings.OPENAI_API_KEY:
-        # No AI available — just return the prompt as-is
-        return {
-            "original_prompt": req.prompt,
-            "refined_prompt": req.prompt,
-            "suggestions": [],
-            "ai_powered": False,
-        }
-
-    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-
-    system = """You are a Google Ads campaign strategist helping a business owner
-refine their campaign request. Your job is to take a short or vague request and
-expand it into a clear, detailed campaign brief that will produce the best
-possible Google Ads campaign.
-
-You have access to the business's profile data. Use it to fill in gaps the user
-didn't mention. Ask yourself: What services? What locations? What budget? What
-goal? What urgency level? What offers or USPs should be highlighted?
-
-You respond ONLY with valid JSON."""
-
-    user_msg = f"""The user typed this rough campaign request:
-
-"{req.prompt}"
-
-BUSINESS PROFILE:
+BUSINESS PROFILE (use this to give informed advice):
 - Industry: {industry}
 - Services: {_json.dumps(svc_names[:15])}
 - Locations: {_json.dumps(loc_names[:10])}
@@ -124,74 +109,66 @@ BUSINESS PROFILE:
 - Monthly budget: {"$" + str(monthly_budget) if monthly_budget else "Not set"}
 - Existing campaigns: {_json.dumps(existing_names[:10])}
 
-INSTRUCTIONS:
-1. Expand the user's rough prompt into a detailed, well-structured campaign brief
-   (2-4 sentences). Include specifics from their business profile they may have
-   forgotten to mention.
-2. If the user mentioned a niche service, keep it as the focus — don't generalize.
-3. Suggest a budget if they didn't mention one (based on industry norms).
-4. Suggest locations if not specified (from their profile).
-5. Include relevant offers/USPs from their profile.
-6. Flag if this might overlap with their existing campaigns.
-7. Provide 2-3 short suggestions for things the user might want to add or change.
+CONVERSATION RULES:
+1. On the FIRST message, expand their rough idea into a clear campaign brief.
+   Then ask 1-2 focused questions about things they might want to add or change.
+2. On follow-up messages, incorporate their feedback and present the updated brief.
+3. Keep your responses concise and conversational — NOT walls of text.
+4. If they mention a niche service, keep it as the focus. Don't generalize.
+5. Proactively suggest things from their business profile they forgot to mention
+   (offers, USPs, locations).
+6. Warn them if the new campaign might overlap with existing ones.
+7. When the brief feels complete, tell them it's ready and they can click Approve.
 
-Return JSON:
+You MUST respond with valid JSON in this exact format:
 {{
-  "refined_prompt": "The expanded, detailed campaign brief ready to generate...",
-  "detected_services": ["service1", "service2"],
-  "detected_locations": ["city1", "city2"],
-  "detected_goal": "calls" | "leads" | "awareness",
-  "detected_urgency": "high" | "normal",
-  "suggested_budget": "$X/day",
-  "overlap_warning": "Warning if overlaps with existing campaign, or null",
-  "suggestions": [
-    "Consider adding...",
-    "You might want to...",
-    "Tip: ..."
-  ]
-}}"""
+  "reply": "Your conversational response to the user (use markdown for formatting)",
+  "draft_prompt": "The current version of the full campaign brief that would be sent to the generator. Update this every turn based on the conversation so far.",
+  "ready_to_generate": true/false,
+  "suggestions": ["optional quick-reply suggestion 1", "optional suggestion 2"]
+}}
+
+The draft_prompt should be a clean, detailed 2-5 sentence campaign brief — NOT your
+conversational reply. It's what gets fed to the campaign generator when they approve."""
+
+    # Build OpenAI messages: system + conversation history
+    openai_messages = [{"role": "system", "content": system}]
+    for msg in req.messages:
+        openai_messages.append({"role": msg.role, "content": msg.content})
 
     try:
+        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
         response = await client.chat.completions.create(
             model=settings.OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_msg},
-            ],
+            messages=openai_messages,
             response_format={"type": "json_object"},
-            temperature=0.5,
-            max_tokens=1000,
+            temperature=0.6,
+            max_tokens=1200,
         )
         content = response.choices[0].message.content
         if not content:
             return {
-                "original_prompt": req.prompt,
-                "refined_prompt": req.prompt,
+                "reply": "I couldn't generate a response. Please try again.",
+                "draft_prompt": "",
+                "ready_to_generate": False,
                 "suggestions": [],
-                "ai_powered": False,
             }
 
         data = _json.loads(content)
         return {
-            "original_prompt": req.prompt,
-            "refined_prompt": data.get("refined_prompt", req.prompt),
-            "detected_services": data.get("detected_services", []),
-            "detected_locations": data.get("detected_locations", []),
-            "detected_goal": data.get("detected_goal"),
-            "detected_urgency": data.get("detected_urgency"),
-            "suggested_budget": data.get("suggested_budget"),
-            "overlap_warning": data.get("overlap_warning"),
+            "reply": data.get("reply", ""),
+            "draft_prompt": data.get("draft_prompt", ""),
+            "ready_to_generate": data.get("ready_to_generate", False),
             "suggestions": data.get("suggestions", []),
-            "ai_powered": True,
         }
     except Exception as e:
         import structlog
-        structlog.get_logger().error("Prompt refinement failed", error=str(e))
+        structlog.get_logger().error("Chat refinement failed", error=str(e))
         return {
-            "original_prompt": req.prompt,
-            "refined_prompt": req.prompt,
+            "reply": f"Something went wrong: {str(e)[:200]}. Please try again.",
+            "draft_prompt": "",
+            "ready_to_generate": False,
             "suggestions": [],
-            "ai_powered": False,
         }
 
 
