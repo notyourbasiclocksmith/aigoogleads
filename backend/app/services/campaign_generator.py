@@ -118,7 +118,9 @@ class CampaignGeneratorService:
         blog = BuilderLog()
         industry = (business_profile.industry_classification or "general").lower()
 
-        # --- Step 1: AI Intent Parsing ---
+        # ══════════════════════════════════════════════════════════════════
+        #  PHASE 1: Intent Parsing  (must be first — everything depends on it)
+        # ══════════════════════════════════════════════════════════════════
         blog.step_start("Intent Parsing", f"Analyzing prompt: \"{prompt[:80]}{'...' if len(prompt) > 80 else ''}\"")
         intent = await self._parse_intent_ai(prompt, business_profile)
         services = intent.get("services", [])
@@ -128,7 +130,6 @@ class CampaignGeneratorService:
             extra={"services": services, "locations": locations, "goal": intent.get("goal"), "urgency": intent.get("urgency")},
         )
 
-        # Respect campaign_type_override — strategist passes the user's chosen type
         campaign_type = (
             campaign_type_override
             or intent.get("campaign_type_override")
@@ -138,52 +139,64 @@ class CampaignGeneratorService:
         blog.step_start("Campaign Type Selection", f"Override={campaign_type_override or 'none'}, AI suggested={intent.get('campaign_type', 'N/A')}")
         blog.step_end(f"Selected campaign type: {campaign_type}", extra={"campaign_type": campaign_type})
 
-        # --- Step 2: AI Overlap Analysis ---
-        blog.step_start("Overlap Analysis", "Checking against existing campaigns for conflicts/cannibalization")
+        # ══════════════════════════════════════════════════════════════════
+        #  PHASE 2: All DB queries (sequential — fast, ~100ms each)
+        # ══════════════════════════════════════════════════════════════════
+        blog.step_start("Data Loading", "Fetching existing campaigns, playbook, learnings, competitors from DB")
         existing = await self._get_existing_campaigns()
-        overlap_analysis = await self._analyze_overlap_ai(existing, intent)
-        overlap_risk = overlap_analysis.get("risk_level", "none") if isinstance(overlap_analysis, dict) else "unknown"
-        blog.step_end(
-            f"Found {len(existing)} existing campaigns, overlap risk: {overlap_risk}",
-            extra={"existing_count": len(existing), "overlap_risk": overlap_risk},
-        )
-
-        # --- Step 3: AI Strategy Synthesis ---
-        blog.step_start("Strategy Synthesis", f"Loading playbooks + learnings for {industry} industry")
         playbook = await self._get_playbook(industry, intent.get("goal"))
         learnings = await self._get_relevant_learnings(industry)
-        strategy_insights = await self._synthesize_strategy_ai(industry, intent, playbook, learnings, business_profile)
-        blog.step_end(
-            f"Playbook: {'loaded' if playbook else 'none found'}, {len(learnings)} learnings applied, strategy synthesized via AI",
-            extra={"has_playbook": playbook is not None, "learnings_count": len(learnings)},
-        )
-
-        # --- Step 4: AI Competitor Intelligence ---
-        blog.step_start("Competitor Intelligence", "Analyzing competitor positioning and identifying gaps to exploit")
         competitors = await self._get_competitor_intelligence()
-        competitor_insights = await self._analyze_competitors_ai(competitors, intent, industry, business_profile)
-        gaps = competitor_insights.get("gaps", competitor_insights.get("differentiation_angles", []))
         blog.step_end(
-            f"Analyzed {len(competitors)} competitor(s), found {len(gaps)} gap(s) to exploit",
-            extra={"competitor_count": len(competitors), "gaps": gaps[:5]},
+            f"Loaded {len(existing)} campaigns, {'1 playbook' if playbook else 'no playbook'}, {len(learnings)} learnings, {len(competitors)} competitors",
+            extra={"existing": len(existing), "has_playbook": playbook is not None, "learnings": len(learnings), "competitors": len(competitors)},
         )
 
-        # --- Step 5: AI Keyword Strategy (skip for PMax — no keywords) ---
-        if campaign_type == "PERFORMANCE_MAX":
-            blog.step_start("Keyword Strategy", "Skipped — Performance Max uses audience signals, not keywords")
-            keyword_strategy = {"keywords": [], "negatives": [], "total_keywords": 0, "total_negatives": 0, "tiers": {}}
-            blog.step_end("PMax campaigns target via audience signals and search themes instead")
-        else:
-            blog.step_start("Keyword Strategy", f"Building AI-powered keyword strategy for {industry}")
-            keyword_strategy = await self._build_keyword_strategy_ai(intent, industry, learnings, playbook, business_profile)
-            tiers = keyword_strategy.get("tiers", {})
-            tier_summary = ", ".join(f"{k}: {v}" for k, v in tiers.items()) if tiers else "N/A"
-            blog.step_end(
-                f"Generated {keyword_strategy.get('total_keywords', 0)} keywords + {keyword_strategy.get('total_negatives', 0)} negatives | Tiers: {tier_summary}",
-                extra={"total_keywords": keyword_strategy.get("total_keywords", 0), "total_negatives": keyword_strategy.get("total_negatives", 0), "tiers": tiers},
-            )
+        # ══════════════════════════════════════════════════════════════════
+        #  PHASE 3: Parallel AI calls  (overlap + strategy + competitor + keywords)
+        #  These are INDEPENDENT — each only needs intent + DB data
+        #  Running them in parallel saves ~8-12 seconds
+        # ══════════════════════════════════════════════════════════════════
+        blog.step_start("Parallel AI Analysis", "Running overlap, strategy, competitor, keyword analysis simultaneously")
 
-        # --- Step 6: AI Budget, Bidding & Schedule ---
+        async def _do_overlap():
+            return await self._analyze_overlap_ai(existing, intent)
+
+        async def _do_strategy():
+            return await self._synthesize_strategy_ai(industry, intent, playbook, learnings, business_profile)
+
+        async def _do_competitor():
+            return await self._analyze_competitors_ai(competitors, intent, industry, business_profile)
+
+        async def _do_keywords():
+            if campaign_type == "PERFORMANCE_MAX":
+                return {"keywords": [], "negatives": [], "total_keywords": 0, "total_negatives": 0, "tiers": {}}
+            return await self._build_keyword_strategy_ai(intent, industry, learnings, playbook, business_profile)
+
+        overlap_analysis, strategy_insights, competitor_insights, keyword_strategy = await asyncio.gather(
+            _do_overlap(), _do_strategy(), _do_competitor(), _do_keywords(),
+        )
+
+        # Log results from all parallel calls
+        overlap_risk = overlap_analysis.get("risk_level", "none") if isinstance(overlap_analysis, dict) else "unknown"
+        gaps = competitor_insights.get("gaps", competitor_insights.get("differentiation_angles", []))
+        kw_total = keyword_strategy.get("total_keywords", 0)
+        neg_total = keyword_strategy.get("total_negatives", 0)
+        blog.step_end(
+            f"Overlap risk: {overlap_risk} | Strategy synthesized | {len(gaps)} competitor gaps | {kw_total} keywords + {neg_total} negatives",
+            extra={
+                "overlap_risk": overlap_risk,
+                "competitor_gaps": gaps[:5],
+                "total_keywords": kw_total,
+                "total_negatives": neg_total,
+                "has_playbook": playbook is not None,
+                "learnings_count": len(learnings),
+            },
+        )
+
+        # ══════════════════════════════════════════════════════════════════
+        #  PHASE 4: Budget, Bidding & Schedule  (needs strategy + competitor results)
+        # ══════════════════════════════════════════════════════════════════
         blog.step_start("Budget, Bidding & Schedule", f"Calculating optimal budget and bidding for {campaign_type}")
         bbs = await self._recommend_budget_bidding_schedule_ai(
             industry=industry, intent=intent, profile=business_profile,
@@ -199,7 +212,9 @@ class CampaignGeneratorService:
             extra={"daily_usd": budget.get("daily_usd"), "bidding_strategy": bid_strategy.get("strategy"), "schedule": scheduling},
         )
 
-        # --- Step 7: Build Campaign Draft — route by campaign type ---
+        # ══════════════════════════════════════════════════════════════════
+        #  PHASE 5: Build Campaign Draft  (route by campaign type)
+        # ══════════════════════════════════════════════════════════════════
         blog.step_start("Campaign Draft Build", f"Building {campaign_type} campaign structure with AI-generated ad copy")
         build_args = dict(
             intent=intent,
@@ -226,7 +241,6 @@ class CampaignGeneratorService:
         else:
             draft = await self._build_campaign_draft(**build_args)
 
-        # Summarize what was built
         if campaign_type == "PERFORMANCE_MAX":
             ag_count = len(draft.get("asset_groups", []))
             blog.step_end(
@@ -243,11 +257,13 @@ class CampaignGeneratorService:
                 extra={"ad_groups": ag_count, "keywords": kw_count, "ads": ad_count, "ad_format": ad_type_label},
             )
 
-        # --- Step 8: Compliance Validation + Auto-Heal ---
+        # ══════════════════════════════════════════════════════════════════
+        #  PHASE 6: Compliance Validation + Auto-Heal (1 round, skip if already good)
+        # ══════════════════════════════════════════════════════════════════
         blog.step_start("Google Compliance Check", "Validating against Google Ads maximum standards + auto-healing issues")
         from app.services.campaign_compliance import CampaignComplianceEngine
         compliance = CampaignComplianceEngine()
-        draft, compliance_report = await compliance.validate_and_heal(draft, max_rounds=2)
+        draft, compliance_report = await compliance.validate_and_heal(draft, max_rounds=1)
         healed = draft.get("compliance", {}).get("auto_healed", False)
         blog.step_end(
             f"Score: {compliance_report['score']}/100 ({compliance_report['grade']}) | "
@@ -270,7 +286,7 @@ class CampaignGeneratorService:
             critical=compliance_report["critical"],
         )
 
-        # --- Step 9: Extensions Check ---
+        # --- Extensions Summary ---
         extensions = draft.get("extensions", {})
         ext_sl = len(extensions.get("sitelinks", []))
         ext_co = len(extensions.get("callouts", []))
@@ -1568,11 +1584,13 @@ Return JSON: {{
                     deduped.append(kw)
             keywords_by_service[svc] = deduped
 
-        ad_groups = []
-        for i, svc in enumerate(services[:5]):
-            svc_keywords = keywords_by_service.get(svc, [])
+        # --- Parallel ad copy generation for ALL ad groups simultaneously ---
+        # Instead of sequential loop (5 services × ~3s each = ~15s),
+        # fire all OpenAI calls at once (~3s total)
+
+        async def _generate_ad_group(svc: str, svc_keywords: list) -> Dict:
+            """Generate ad copy for a single service — runs in parallel."""
             if not svc_keywords:
-                # Last resort: generate basic keywords for this service
                 svc_keywords = [
                     {"text": svc.lower(), "match_type": "PHRASE", "tier": "service"},
                     {"text": f"{svc.lower()} near me", "match_type": "EXACT", "tier": "high"},
@@ -1581,21 +1599,12 @@ Return JSON: {{
                 for loc in locations[:2]:
                     svc_keywords.append({"text": f"{svc.lower()} {loc.lower()}", "match_type": "EXACT", "tier": "local"})
 
-            # --- AI-powered ad copy (retry with simpler prompt if first attempt fails) ---
             llm_copy = await self._generate_ad_copy_llm(
-                service=svc,
-                locations=locations,
-                offers=offers,
-                usps=usps,
-                phone=phone,
-                tone=tone,
-                industry=industry,
-                urgency=intent.get("urgency"),
-                competitor_insights=competitor_insights,
-                campaign_type=campaign_type,
-                business_name=business_name,
-                website=website,
-                raw_prompt=intent.get("raw_prompt", ""),
+                service=svc, locations=locations, offers=offers, usps=usps,
+                phone=phone, tone=tone, industry=industry,
+                urgency=intent.get("urgency"), competitor_insights=competitor_insights,
+                campaign_type=campaign_type, business_name=business_name,
+                website=website, raw_prompt=intent.get("raw_prompt", ""),
             )
             if not llm_copy:
                 logger.warning("Primary AI ad copy failed, retrying with simplified prompt", service=svc)
@@ -1603,23 +1612,17 @@ Return JSON: {{
                     service=svc, locations=locations, industry=industry,
                     business_name=business_name, raw_prompt=intent.get("raw_prompt", ""),
                 )
-            ai_prompt_used = None
-            ai_raw_response = None
-            ad_pinning = {}
-            ad_sitelinks = []
-            ad_callouts = []
-            ad_rationale = ""
+
             if llm_copy:
                 headlines = llm_copy["headlines"]
                 descriptions = llm_copy["descriptions"]
-                ai_prompt_used = llm_copy.get("ai_prompt")
-                ai_raw_response = llm_copy.get("ai_raw_response")
                 ad_pinning = llm_copy.get("pinning", {})
                 ad_sitelinks = llm_copy.get("sitelinks", [])
                 ad_callouts = llm_copy.get("callouts", [])
                 ad_rationale = llm_copy.get("rationale", "")
+                ai_prompt_used = llm_copy.get("ai_prompt")
+                ai_raw_response = llm_copy.get("ai_raw_response")
             else:
-                # Absolute last resort — only if OpenAI API key is missing or all retries exhausted
                 logger.error("All AI ad copy attempts failed — using emergency template fallback", service=svc)
                 headlines = self._generate_expert_headlines(
                     svc, locations, offers, usps, phone, tone, industry,
@@ -1629,9 +1632,11 @@ Return JSON: {{
                     svc, locations, offers, usps, phone, tone, industry,
                     intent.get("urgency"), competitor_insights
                 )
+                ad_pinning, ad_sitelinks, ad_callouts, ad_rationale = {}, [], [], ""
+                ai_prompt_used, ai_raw_response = None, None
 
             url_slug = svc.lower().replace(" ", "-")
-            ad_group = {
+            return {
                 "name": f"{svc} — {locations[0] if locations else 'All Areas'}",
                 "theme": svc,
                 "match_strategy": "EXACT + PHRASE (SKAG-style tightly themed)",
@@ -1652,7 +1657,13 @@ Return JSON: {{
                 "llm_sitelinks": ad_sitelinks,
                 "llm_callouts": ad_callouts,
             }
-            ad_groups.append(ad_group)
+
+        # Fire all ad group generations in parallel
+        ad_group_tasks = [
+            _generate_ad_group(svc, keywords_by_service.get(svc, []))
+            for svc in services[:5]
+        ]
+        ad_groups = list(await asyncio.gather(*ad_group_tasks))
 
         extensions = await self._generate_extensions_ai(
             business_profile, services, offers, usps, competitor_insights, intent
@@ -1727,9 +1738,8 @@ Return JSON: {{
         all_keywords = keyword_strategy.get("keywords", [])
         all_negatives = keyword_strategy.get("negatives", [])
 
-        # Build ad groups with Call-Only ads
-        ad_groups = []
-        for i, svc in enumerate(services[:5]):
+        # Build ad groups with Call-Only ads — parallel AI generation
+        async def _build_call_ad_group(i: int, svc: str) -> Dict:
             svc_keywords = [k for k in all_keywords if svc.lower() in k.get("text", "").lower()]
             if not svc_keywords:
                 svc_keywords = all_keywords[i * 10:(i + 1) * 10] if all_keywords else [
@@ -1737,7 +1747,6 @@ Return JSON: {{
                     {"text": f"{svc.lower()} near me", "match_type": "EXACT", "tier": "high"},
                 ]
 
-            # Generate call-only ad copy via AI
             call_copy = await self._generate_call_ad_copy_llm(
                 service=svc, locations=locations, phone=phone,
                 industry=industry, business_name=business_name,
@@ -1753,7 +1762,7 @@ Return JSON: {{
                     "description2": f"Call {phone} for same-day help."[:35] if phone else f"Available 24/7. Call now!"[:35],
                 }
 
-            ad_group = {
+            return {
                 "name": f"{svc} — {locations[0] if locations else 'All Areas'}",
                 "theme": svc,
                 "keywords": svc_keywords[:20],
@@ -1771,7 +1780,10 @@ Return JSON: {{
                     "generated_by": "openai" if call_copy.get("ai_generated") else "template",
                 }],
             }
-            ad_groups.append(ad_group)
+
+        ad_groups = list(await asyncio.gather(*[
+            _build_call_ad_group(i, svc) for i, svc in enumerate(services[:5])
+        ]))
 
         extensions = await self._generate_extensions_ai(
             business_profile, services, intent.get("offers", []),
