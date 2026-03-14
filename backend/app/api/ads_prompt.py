@@ -118,17 +118,63 @@ CONVERSATION RULES:
 5. Proactively suggest things from their business profile they forgot to mention
    (offers, USPs, locations).
 6. Warn them if the new campaign might overlap with existing ones.
-7. **LANDING PAGE QUESTION (CRITICAL):** Before you EVER set ready_to_generate to true,
-   you MUST ask the user about their landing page. This is required. Ask them:
-   "What about your landing page for this campaign?" and present these options:
+7. **FUNNEL RECOMMENDATION (CRITICAL — DO THIS ON THE FIRST MESSAGE):**
+   When the user describes their service, you MUST automatically analyze it and
+   recommend the best advertising funnel. Include your recommendation with clear
+   reasoning in your reply. Use this framework:
+
+   FUNNEL TYPES:
+   - **lp_call** (Landing Page + Call CTA): Best for HIGH-TICKET or COMPLEX services
+     that need explanation/trust-building before the customer calls.
+     Examples: Jaguar BCM repair, HVAC system replacement, roof replacement,
+     foundation repair, custom kitchen remodel, commercial electrical.
+     WHY: Customer needs to see expertise, credentials, process explanation,
+     before/after photos, and pricing context before committing to call.
+
+   - **call_only** (Call-Only Ad — no landing page): Best for EMERGENCY or URGENT
+     services where speed matters most and customers don't research.
+     Examples: emergency locksmith lockout, burst pipe plumber, tow truck,
+     24/7 AC repair, garage door stuck open, roadside assistance.
+     WHY: Customer is in crisis mode, needs help NOW, will call the first
+     number they see. A landing page adds friction and loses the lead.
+
+   - **lp_form** (Landing Page + Form/Quote CTA): Best for PLANNED or RESEARCH-HEAVY
+     services where customers compare multiple providers before deciding.
+     Examples: home remodeling, legal consultation, insurance quotes,
+     wedding planning, landscaping design, solar panel installation.
+     WHY: Customer is comparison-shopping, wants to submit info to multiple
+     providers. A form captures lead details for follow-up.
+
+   - **lp_booking** (Landing Page + Online Booking CTA): Best for APPOINTMENT-BASED
+     services with predictable scheduling and lower friction.
+     Examples: dental cleaning, auto detailing, pest control inspection,
+     home inspection, tax preparation, chimney sweep.
+     WHY: Customer knows what they want and prefers self-service scheduling.
+     Reducing phone tag increases conversion.
+
+   ANALYSIS FACTORS (evaluate these for every service):
+   - **Ticket size**: High (>$500) → needs trust/explanation → lp_call or lp_form
+   - **Urgency**: Emergency → call_only; Planned → lp_form or lp_booking
+   - **Complexity**: Complex/technical → lp_call (need to explain process)
+   - **Trust requirement**: High-trust (entering home, expensive) → lp_call
+   - **Comparison shopping**: High → lp_form (capture lead before they leave)
+   - **Scheduling**: Appointment-based → lp_booking
+
+   FORMAT YOUR RECOMMENDATION like this in your reply:
+   **Recommended Funnel: [type]**
+   **Why:** [1-2 sentence reason based on the specific service]
+
+8. **LANDING PAGE QUESTION (CRITICAL):** After recommending the funnel, present
+   the landing page options that align with your recommendation. Before you EVER
+   set ready_to_generate to true, the user MUST confirm or change the funnel choice:
    - **Use an existing landing page** — they'll enter their URL
    - **Create an AI-generated landing page** — we'll build one matched to the campaign
    - **Audit an existing landing page** — we'll score it for conversion quality
-   - **Call-only ad (no landing page)** — for phone call campaigns with no website needed
-   Include these as suggestions. Do NOT set ready_to_generate to true until the user
-   has answered the landing page question. Once they answer, incorporate their choice
-   into the brief and THEN set ready_to_generate to true.
-8. When the brief feels complete AND the landing page question is answered,
+   - **Call-only ad (no landing page)** — for phone call campaigns
+   If you recommended call_only, pre-select that option but let them override.
+   If you recommended lp_call/lp_form/lp_booking, push them toward creating or
+   auditing a landing page. Do NOT set ready_to_generate to true until confirmed.
+9. When the brief feels complete AND the funnel/landing page is confirmed,
    tell them it's ready and they can click Approve.
 
 You MUST respond with valid JSON in this exact format:
@@ -136,18 +182,25 @@ You MUST respond with valid JSON in this exact format:
   "reply": "Your conversational response to the user (use markdown for formatting)",
   "draft_prompt": "The current version of the full campaign brief that would be sent to the generator. Update this every turn based on the conversation so far.",
   "ready_to_generate": true/false,
+  "recommended_funnel": {{
+    "type": "lp_call" | "call_only" | "lp_form" | "lp_booking" | null,
+    "reason": "1-2 sentence explanation of why this funnel is best for this service",
+    "confidence": "high" | "medium" | "low"
+  }},
   "landing_page_choice": null | "existing" | "create_ai" | "audit" | "call_only",
   "landing_page_url": null | "https://...",
   "suggestions": ["optional quick-reply suggestion 1", "optional suggestion 2"]
 }}
 
 IMPORTANT NOTES:
+- recommended_funnel should be set on the FIRST response when you identify the service.
+  Update it if the service changes. Set to null only if no service is identified yet.
 - landing_page_choice should be null until the user picks a landing page option.
 - landing_page_url should be set only if the user provides a URL for existing/audit.
 - ready_to_generate must be false until the landing page question is answered.
 - The draft_prompt should be a clean, detailed 2-5 sentence campaign brief — NOT your
   conversational reply. It's what gets fed to the campaign generator when they approve.
-  Include the landing page choice in the draft_prompt once decided."""
+  Include the funnel type and landing page choice in the draft_prompt once decided."""
 
     # Build OpenAI messages: system + conversation history
     openai_messages = [{"role": "system", "content": system}]
@@ -178,6 +231,7 @@ IMPORTANT NOTES:
             "draft_prompt": data.get("draft_prompt", ""),
             "ready_to_generate": data.get("ready_to_generate", False),
             "suggestions": data.get("suggestions", []),
+            "recommended_funnel": data.get("recommended_funnel"),
             "landing_page_choice": data.get("landing_page_choice"),
             "landing_page_url": data.get("landing_page_url"),
         }

@@ -11,7 +11,7 @@ import {
   CheckCircle2, Loader2, Brain, Search, Users, Target,
   DollarSign, Sparkles, Puzzle, Eye, EyeOff, AlertCircle,
   Send, RotateCcw, FileText, CheckCheck, Globe, Shield,
-  Phone, Link2, ExternalLink,
+  Phone, Link2, ExternalLink, Zap,
 } from "lucide-react";
 
 interface LogEntry {
@@ -59,6 +59,9 @@ export default function PromptPage() {
   const [showLog, setShowLog] = useState(true);
   const [aiPromptExpanded, setAiPromptExpanded] = useState<string | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
+
+  // Funnel recommendation state
+  const [recommendedFunnel, setRecommendedFunnel] = useState<any>(null);
 
   // Landing page decision state
   const [lpChoice, setLpChoice] = useState<string | null>(null); // 'existing' | 'create' | 'audit' | 'call_only' | null
@@ -108,6 +111,10 @@ export default function PromptPage() {
         setLpChoice(choiceMap[result.landing_page_choice] || result.landing_page_choice);
       }
       if (result.landing_page_url) setLpUrl(result.landing_page_url);
+      // Track funnel recommendation
+      if (result.recommended_funnel && result.recommended_funnel.type) {
+        setRecommendedFunnel(result.recommended_funnel);
+      }
     } catch (err: any) {
       setError(err.message || "Chat failed");
     } finally {
@@ -130,6 +137,7 @@ export default function PromptPage() {
     setDraft(null);
     setLogEntries([]);
     setError("");
+    setRecommendedFunnel(null);
     setLpChoice(null);
     setLpUrl("");
     setLpResult(null);
@@ -447,6 +455,34 @@ export default function PromptPage() {
                 <div className="bg-white border rounded-lg p-3 text-sm text-slate-700 whitespace-pre-wrap min-h-[80px]">
                   {draftPrompt}
                 </div>
+
+                {/* Funnel recommendation */}
+                {recommendedFunnel && recommendedFunnel.type && (
+                  <div className="border rounded-lg p-3 bg-gradient-to-r from-indigo-50 to-violet-50 border-indigo-200">
+                    <div className="flex items-center gap-2 mb-1">
+                      <Zap className="w-3.5 h-3.5 text-indigo-600" />
+                      <span className="text-xs font-semibold text-indigo-900">Recommended Funnel</span>
+                      {recommendedFunnel.confidence && (
+                        <span className={`ml-auto text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                          recommendedFunnel.confidence === "high" ? "bg-green-100 text-green-700" :
+                          recommendedFunnel.confidence === "medium" ? "bg-yellow-100 text-yellow-700" :
+                          "bg-slate-100 text-slate-600"
+                        }`}>
+                          {recommendedFunnel.confidence} confidence
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs font-medium text-indigo-800 mb-0.5">
+                      {recommendedFunnel.type === "lp_call" && "Landing Page + Call"}
+                      {recommendedFunnel.type === "call_only" && "Call-Only Ad"}
+                      {recommendedFunnel.type === "lp_form" && "Landing Page + Form"}
+                      {recommendedFunnel.type === "lp_booking" && "Landing Page + Booking"}
+                    </div>
+                    {recommendedFunnel.reason && (
+                      <p className="text-[11px] text-indigo-600 leading-tight">{recommendedFunnel.reason}</p>
+                    )}
+                  </div>
+                )}
 
                 {/* Landing page choice indicator */}
                 {lpChoice ? (
