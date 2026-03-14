@@ -10,7 +10,7 @@ import {
   Shield, Building2, GitBranch, Plug, Scale,
   CreditCard, Bell, Trophy, Crosshair, Brain,
   MessageSquare, Key, Image, Globe, Lightbulb, Compass, Phone,
-  ChevronDown, Menu, X,
+  ChevronDown, Menu, X, Sparkles,
 } from "lucide-react";
 
 interface NavSection {
@@ -29,6 +29,7 @@ const navSections: NavSection[] = [
   {
     title: "AI Power",
     items: [
+      { label: "AI Marketing Operator", href: "/strategist", icon: Sparkles },
       { label: "Fix My Ads", href: "/operator", icon: Brain },
       { label: "Campaign Builder", href: "/ads/prompt", icon: Wand2 },
       { label: "Ad Copy Studio", href: "/creative", icon: Palette },
