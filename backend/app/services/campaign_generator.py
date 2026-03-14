@@ -98,6 +98,21 @@ class CampaignGeneratorService:
         self.tenant_id = tenant_id
         self._biz_name_cache: Optional[str] = None
 
+    @staticmethod
+    def _safe_int(val, default: int = 0) -> int:
+        """Safely convert a value to int — AI sometimes returns strings like '30' or '+30%'."""
+        if isinstance(val, int):
+            return val
+        if isinstance(val, float):
+            return int(val)
+        if isinstance(val, str):
+            cleaned = val.replace("%", "").replace("+", "").replace(",", "").strip()
+            try:
+                return int(float(cleaned))
+            except (ValueError, TypeError):
+                return default
+        return default
+
     async def _get_business_name(self) -> str:
         """Get business name from Tenant (not on BusinessProfile)."""
         if self._biz_name_cache is not None:
@@ -1802,7 +1817,7 @@ Return JSON: {{
                 "bidding_strategy": bid_strategy["strategy"],
                 "locations": locations,
                 "schedule": scheduling,
-                "device_bids": {**device_bids, "mobile_bid_adj": max(device_bids.get("mobile_bid_adj", 30), 30)},
+                "device_bids": {**device_bids, "mobile_bid_adj": max(self._safe_int(device_bids.get("mobile_bid_adj", 30)), 30)},
                 "settings": {
                     "network": "SEARCH",
                     "language": "en",
