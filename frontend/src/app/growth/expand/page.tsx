@@ -25,6 +25,7 @@ interface Suggestion {
 
 interface ExpansionResult {
   status: string;
+  message?: string;
   current_services: string[];
   industry: string;
   suggestions: Suggestion[];
