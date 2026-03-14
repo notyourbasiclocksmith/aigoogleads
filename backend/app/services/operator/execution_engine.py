@@ -552,6 +552,7 @@ class ExecutionEngine:
                 "device_bids": camp_data.get("device_bids", {}),
                 "network": camp_data.get("settings", {}).get("network", "SEARCH"),
                 "ad_groups": draft.get("ad_groups", []),
+                "asset_groups": draft.get("asset_groups", []),
                 "extensions": draft.get("extensions", {}),
                 "keyword_strategy": draft.get("keyword_strategy", {}),
                 "reasoning": draft.get("reasoning", {}),

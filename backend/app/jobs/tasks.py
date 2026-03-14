@@ -999,39 +999,83 @@ async def _launch_campaign_async(tenant_id: str, campaign_id: str, actor_id: str
             launch_log["steps"].append({"step": "campaign", "status": "created", "resource": campaign_resource})
             logger.info("Campaign created in Google Ads", campaign_resource=campaign_resource)
 
-            # ── Step 2: Create ad groups → keywords → ads ──
+            # ── Step 2: Route by campaign type ──
             ag_created = 0
             kw_created = 0
             ad_created = 0
+            asset_groups_created = 0
+            campaign_type = (campaign.type or "SEARCH").upper()
 
-            for ag_data in ad_groups_data:
-                ag_name = ag_data.get("name", f"Ad Group {ag_created + 1}")
+            # ── Step 2-PMAX: Create asset groups (no ad groups/keywords) ──
+            if campaign_type == "PERFORMANCE_MAX":
+                asset_groups_data = settings.get("asset_groups", [])
+                for ag_data in asset_groups_data:
+                    ag_name = ag_data.get("name", f"Asset Group {asset_groups_created + 1}")
+                    ag_result = await client.create_asset_group(campaign_resource, {
+                        "name": ag_name,
+                        "final_url": ag_data.get("final_url", ""),
+                    })
+                    if ag_result.get("status") != "created":
+                        launch_log["steps"].append({"step": "asset_group", "name": ag_name, "status": "failed", "error": ag_result.get("error")})
+                        continue
 
-                ag_result = await client.create_ad_group(campaign_resource, {"name": ag_name})
-                if ag_result.get("status") != "created":
-                    launch_log["steps"].append({"step": "ad_group", "name": ag_name, "status": "failed", "error": ag_result.get("error")})
-                    logger.warning("Ad group creation failed", name=ag_name, error=ag_result.get("error"))
-                    continue
+                    ag_resource = ag_result["asset_group_resource"]
+                    asset_groups_created += 1
+                    launch_log["steps"].append({"step": "asset_group", "name": ag_name, "status": "created"})
 
-                ag_resource = ag_result["ad_group_resource"]
-                ag_created += 1
-                launch_log["steps"].append({"step": "ad_group", "name": ag_name, "status": "created"})
+                    # Link text assets
+                    text_assets = ag_data.get("text_assets", {})
+                    if text_assets:
+                        asset_result = await client.create_asset_group_assets(ag_resource, text_assets)
+                        launch_log["steps"].append({"step": "assets", "asset_group": ag_name, "count": asset_result.get("assets_linked", 0), "status": asset_result.get("status")})
 
-                # ── Step 2a: Keywords for this ad group ──
-                keywords = ag_data.get("keywords", [])
-                if keywords:
-                    kw_result = await client.create_keywords(ag_resource, keywords)
-                    count = kw_result.get("created", 0)
-                    kw_created += count
-                    launch_log["steps"].append({"step": "keywords", "ad_group": ag_name, "count": count, "status": kw_result.get("status")})
+                    # Add audience signals
+                    audience = ag_data.get("audience_signals", {})
+                    if audience.get("search_themes"):
+                        signal_result = await client.create_asset_group_signal(ag_resource, audience)
+                        launch_log["steps"].append({"step": "signals", "asset_group": ag_name, "status": signal_result.get("status")})
 
-                # ── Step 2b: RSA ads for this ad group ──
-                ads = ag_data.get("ads", [])
-                for ad_data in ads:
-                    ad_result = await client.create_responsive_search_ad(ag_resource, ad_data)
-                    if ad_result.get("status") == "created":
-                        ad_created += 1
-                    launch_log["steps"].append({"step": "rsa", "ad_group": ag_name, "status": ad_result.get("status")})
+            else:
+                # ── Step 2-STANDARD: Create ad groups → keywords → ads ──
+                for ag_data in ad_groups_data:
+                    ag_name = ag_data.get("name", f"Ad Group {ag_created + 1}")
+
+                    ag_result = await client.create_ad_group(campaign_resource, {
+                        "name": ag_name,
+                        "type": ag_data.get("type", "SEARCH_STANDARD"),
+                    })
+                    if ag_result.get("status") != "created":
+                        launch_log["steps"].append({"step": "ad_group", "name": ag_name, "status": "failed", "error": ag_result.get("error")})
+                        logger.warning("Ad group creation failed", name=ag_name, error=ag_result.get("error"))
+                        continue
+
+                    ag_resource = ag_result["ad_group_resource"]
+                    ag_created += 1
+                    launch_log["steps"].append({"step": "ad_group", "name": ag_name, "status": "created"})
+
+                    # ── Step 2a: Keywords (skip for Display — uses audience targeting) ──
+                    keywords = ag_data.get("keywords", [])
+                    if keywords and campaign_type != "DISPLAY":
+                        kw_result = await client.create_keywords(ag_resource, keywords)
+                        count = kw_result.get("created", 0)
+                        kw_created += count
+                        launch_log["steps"].append({"step": "keywords", "ad_group": ag_name, "count": count, "status": kw_result.get("status")})
+
+                    # ── Step 2b: Create ads — route by ad type ──
+                    ads = ag_data.get("ads", [])
+                    for ad_data in ads:
+                        ad_type = ad_data.get("type", "RESPONSIVE_SEARCH_AD").upper()
+
+                        if ad_type == "CALL_AD":
+                            ad_result = await client.create_call_ad(ag_resource, ad_data)
+                        elif ad_type == "RESPONSIVE_DISPLAY_AD":
+                            ad_result = await client.create_responsive_display_ad(ag_resource, ad_data)
+                        else:
+                            ad_result = await client.create_responsive_search_ad(ag_resource, ad_data)
+
+                        if ad_result.get("status") == "created":
+                            ad_created += 1
+                        launch_log["steps"].append({"step": ad_type.lower(), "ad_group": ag_name, "status": ad_result.get("status")})
 
             # ── Step 3: Campaign-level negative keywords ──
             neg_created = 0
@@ -1063,6 +1107,7 @@ async def _launch_campaign_async(tenant_id: str, campaign_id: str, actor_id: str
                 "keywords_created": kw_created,
                 "ads_created": ad_created,
                 "negatives_created": neg_created,
+                "asset_groups_created": asset_groups_created,
             }
 
             log = ChangeLog(
@@ -1076,10 +1121,12 @@ async def _launch_campaign_async(tenant_id: str, campaign_id: str, actor_id: str
                 after_json={
                     "status": "ENABLED",
                     "google_campaign_id": google_campaign_id,
+                    "campaign_type": campaign_type,
                     "ad_groups": ag_created,
                     "keywords": kw_created,
                     "ads": ad_created,
                     "negatives": neg_created,
+                    "asset_groups": asset_groups_created,
                 },
                 reason="Campaign launched via approval flow",
                 rollback_token=str(uuid.uuid4()),

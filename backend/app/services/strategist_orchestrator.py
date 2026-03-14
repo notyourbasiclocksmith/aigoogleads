@@ -913,11 +913,14 @@ Audit and improve this intent extraction. Return complete improved JSON."""
         from app.services.campaign_generator import CampaignGeneratorService
 
         prompt = intent.get("original_prompt", intent.get("service", ""))
+        campaign_type_override = intent.get("campaign_type_override") or state.get("campaign_type")
         generator = CampaignGeneratorService(self.db, self.tenant_id)
         bp_obj = await self._get_bp_obj()
 
         if bp_obj:
-            draft = await generator.generate_from_prompt(prompt, bp_obj)
+            draft = await generator.generate_from_prompt(
+                prompt, bp_obj, campaign_type_override=campaign_type_override,
+            )
         else:
             draft = {
                 "campaign": {"name": intent.get("service", "Campaign")},
@@ -930,16 +933,38 @@ Audit and improve this intent extraction. Return complete improved JSON."""
         return draft
 
     def _format_draft_summary(self, draft: Dict) -> str:
-        """Format a campaign draft into a readable summary."""
-        ag_count = len(draft.get("ad_groups", []))
-        kw_count = sum(len(ag.get("keywords", [])) for ag in draft.get("ad_groups", []))
-        ad_count = sum(len(ag.get("ads", [])) for ag in draft.get("ad_groups", []))
-        return (
-            f"- **Campaign:** {draft.get('campaign', {}).get('name', 'N/A')}\n"
-            f"- **Ad Groups:** {ag_count}\n"
-            f"- **Keywords:** {kw_count}\n"
-            f"- **Ads:** {ad_count}"
-        )
+        """Format a campaign draft into a readable summary — adapts to campaign type."""
+        camp = draft.get("campaign", {})
+        camp_type = (camp.get("type") or "SEARCH").upper()
+        lines = [f"- **Campaign:** {camp.get('name', 'N/A')}"]
+        lines.append(f"- **Type:** {camp_type}")
+        lines.append(f"- **Budget:** ${camp.get('budget_daily_usd', 0)}/day (${camp.get('budget_monthly_estimate_usd', 0)}/mo est.)")
+        lines.append(f"- **Bidding:** {camp.get('bidding_strategy', 'N/A')}")
+
+        if camp_type == "PERFORMANCE_MAX":
+            ag_count = len(draft.get("asset_groups", []))
+            lines.append(f"- **Asset Groups:** {ag_count}")
+            for ag in draft.get("asset_groups", []):
+                ta = ag.get("text_assets", {})
+                lines.append(f"  - {ag.get('name', '?')}: {len(ta.get('headlines', []))} headlines, {len(ta.get('descriptions', []))} descriptions")
+        else:
+            ag_count = len(draft.get("ad_groups", []))
+            kw_count = sum(len(ag.get("keywords", [])) for ag in draft.get("ad_groups", []))
+            ad_count = sum(len(ag.get("ads", [])) for ag in draft.get("ad_groups", []))
+            lines.append(f"- **Ad Groups:** {ag_count}")
+            if kw_count:
+                lines.append(f"- **Keywords:** {kw_count}")
+            lines.append(f"- **Ads:** {ad_count}")
+            if camp_type == "CALL":
+                lines.append(f"- **Phone:** {camp.get('settings', {}).get('phone_number', 'N/A')}")
+            elif camp_type == "DISPLAY":
+                lines.append("- **Targeting:** Audience-based (in-market + custom intent)")
+
+        reasoning = draft.get("reasoning", {})
+        if reasoning.get("campaign_type"):
+            lines.append(f"\n> {reasoning['campaign_type']}")
+
+        return "\n".join(lines)
 
     async def _build_campaign_and_auto_audit(self, profile: Optional[Dict], state: Dict) -> Dict:
         """

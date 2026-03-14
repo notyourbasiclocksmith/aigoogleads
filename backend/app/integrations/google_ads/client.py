@@ -1061,7 +1061,13 @@ class GoogleAdsClient:
             ag.name = ad_group_data["name"]
             ag.campaign = campaign_resource
             ag.status = client.enums.AdGroupStatusEnum.ENABLED
-            ag.type_ = client.enums.AdGroupTypeEnum.SEARCH_STANDARD
+            # Support both Search and Display ad group types
+            ag_type = ad_group_data.get("type", "SEARCH_STANDARD").upper()
+            type_map = {
+                "SEARCH_STANDARD": client.enums.AdGroupTypeEnum.SEARCH_STANDARD,
+                "DISPLAY_STANDARD": client.enums.AdGroupTypeEnum.DISPLAY_STANDARD,
+            }
+            ag.type_ = type_map.get(ag_type, client.enums.AdGroupTypeEnum.SEARCH_STANDARD)
 
             response = ag_service.mutate_ad_groups(
                 customer_id=self.customer_id, operations=[operation]
@@ -1128,6 +1134,231 @@ class GoogleAdsClient:
             return {"ad_resource": response.results[0].resource_name, "status": "created"}
         except Exception as e:
             logger.error("Failed to create RSA", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def create_call_ad(self, ad_group_resource: str, ad_data: Dict) -> Dict[str, Any]:
+        """Create a Call-Only ad — phone number shows directly, user taps to call."""
+        await self._ensure_token()
+        try:
+            client = self._get_client()
+            ag_ad_service = client.get_service("AdGroupAdService")
+
+            operation = client.get_type("AdGroupAdOperation")
+            ag_ad = operation.create
+            ag_ad.ad_group = ad_group_resource
+            ag_ad.status = client.enums.AdGroupAdStatusEnum.ENABLED
+
+            call_ad = ag_ad.ad.call_ad
+            call_ad.country_code = ad_data.get("country_code", "US")
+            call_ad.phone_number = ad_data.get("phone_number", "")
+            call_ad.business_name = ad_data.get("business_name", "")[:25]
+            call_ad.headline1 = ad_data.get("headline1", "")[:30]
+            call_ad.headline2 = ad_data.get("headline2", "")[:30]
+            call_ad.description1 = ad_data.get("description1", "")[:35]
+            call_ad.description2 = ad_data.get("description2", "")[:35]
+            call_ad.call_tracked = True
+            call_ad.disable_call_conversion = False
+
+            if ad_data.get("phone_number_verification_url"):
+                call_ad.phone_number_verification_url = ad_data["phone_number_verification_url"]
+
+            # Final URLs are required even for call ads (used for verification)
+            if ad_data.get("final_urls"):
+                ag_ad.ad.final_urls.extend(ad_data["final_urls"])
+
+            response = ag_ad_service.mutate_ad_group_ads(
+                customer_id=self.customer_id, operations=[operation]
+            )
+            return {"ad_resource": response.results[0].resource_name, "status": "created"}
+        except Exception as e:
+            logger.error("Failed to create call ad", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def create_responsive_display_ad(self, ad_group_resource: str, ad_data: Dict) -> Dict[str, Any]:
+        """Create a Responsive Display Ad for Display campaigns."""
+        await self._ensure_token()
+        try:
+            client = self._get_client()
+            ag_ad_service = client.get_service("AdGroupAdService")
+
+            operation = client.get_type("AdGroupAdOperation")
+            ag_ad = operation.create
+            ag_ad.ad_group = ad_group_resource
+            ag_ad.status = client.enums.AdGroupAdStatusEnum.ENABLED
+            ag_ad.ad.final_urls.extend(ad_data.get("final_urls", []))
+
+            rda = ag_ad.ad.responsive_display_ad
+
+            # Short headlines (up to 5, ≤30 chars each)
+            for headline in ad_data.get("short_headlines", [])[:5]:
+                h = client.get_type("AdTextAsset")
+                h.text = headline[:30]
+                rda.headlines.append(h)
+
+            # Long headline (1, ≤90 chars)
+            long_hl = ad_data.get("long_headline", "")
+            if long_hl:
+                rda.long_headline.text = long_hl[:90]
+
+            # Descriptions (up to 5, ≤90 chars each)
+            for desc in ad_data.get("descriptions", [])[:5]:
+                d = client.get_type("AdTextAsset")
+                d.text = desc[:90]
+                rda.descriptions.append(d)
+
+            # Business name (≤25 chars)
+            if ad_data.get("business_name"):
+                rda.business_name = ad_data["business_name"][:25]
+
+            # Image assets (resource names of previously uploaded images)
+            for img_resource in ad_data.get("image_asset_resources", []):
+                img = client.get_type("AdImageAsset")
+                img.asset = img_resource
+                rda.marketing_images.append(img)
+
+            # Logo assets
+            for logo_resource in ad_data.get("logo_asset_resources", []):
+                logo = client.get_type("AdImageAsset")
+                logo.asset = logo_resource
+                rda.logo_images.append(logo)
+
+            response = ag_ad_service.mutate_ad_group_ads(
+                customer_id=self.customer_id, operations=[operation]
+            )
+            return {"ad_resource": response.results[0].resource_name, "status": "created"}
+        except Exception as e:
+            logger.error("Failed to create responsive display ad", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    # ── PERFORMANCE MAX ASSET GROUP METHODS ────────────────────────────
+
+    async def create_asset_group(
+        self, campaign_resource: str, asset_group_data: Dict
+    ) -> Dict[str, Any]:
+        """Create a PMax Asset Group with final URL and name."""
+        await self._ensure_token()
+        try:
+            client = self._get_client()
+            ag_service = client.get_service("AssetGroupService")
+
+            operation = client.get_type("AssetGroupOperation")
+            ag = operation.create
+            ag.name = asset_group_data["name"]
+            ag.campaign = campaign_resource
+            ag.status = client.enums.AssetGroupStatusEnum.ENABLED
+
+            final_url = asset_group_data.get("final_url", "")
+            if final_url:
+                ag.final_urls.append(final_url)
+            ag.final_mobile_urls.extend(asset_group_data.get("final_mobile_urls", []))
+
+            response = ag_service.mutate_asset_groups(
+                customer_id=self.customer_id, operations=[operation]
+            )
+            return {
+                "asset_group_resource": response.results[0].resource_name,
+                "status": "created",
+            }
+        except Exception as e:
+            logger.error("Failed to create asset group", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def create_asset_group_assets(
+        self, asset_group_resource: str, text_assets: Dict
+    ) -> Dict[str, Any]:
+        """
+        Create and link text assets (headlines, descriptions, long headlines, business name)
+        to a PMax Asset Group. Uses batch operations: create Asset → link via AssetGroupAsset.
+        """
+        await self._ensure_token()
+        try:
+            client = self._get_client()
+            asset_service = client.get_service("AssetService")
+            aga_service = client.get_service("AssetGroupAssetService")
+
+            created_assets = []
+
+            # Helper: create a text asset and link it to the asset group
+            async def _create_and_link(text: str, field_type_enum):
+                # Create the asset
+                asset_op = client.get_type("AssetOperation")
+                asset = asset_op.create
+                asset.text_asset.text = text
+                asset.name = f"PMax - {text[:30]}"
+
+                asset_response = asset_service.mutate_assets(
+                    customer_id=self.customer_id, operations=[asset_op]
+                )
+                asset_resource = asset_response.results[0].resource_name
+
+                # Link to asset group
+                link_op = client.get_type("AssetGroupAssetOperation")
+                link = link_op.create
+                link.asset = asset_resource
+                link.asset_group = asset_group_resource
+                link.field_type = field_type_enum
+
+                aga_service.mutate_asset_group_assets(
+                    customer_id=self.customer_id, operations=[link_op]
+                )
+                created_assets.append({"asset": asset_resource, "type": field_type_enum.name})
+
+            field_types = client.enums.AssetFieldTypeEnum
+
+            # Headlines (≤30 chars, up to 5)
+            for headline in text_assets.get("headlines", [])[:5]:
+                await _create_and_link(headline[:30], field_types.HEADLINE)
+
+            # Long headlines (≤90 chars, up to 5)
+            for lh in text_assets.get("long_headlines", [])[:5]:
+                await _create_and_link(lh[:90], field_types.LONG_HEADLINE)
+
+            # Descriptions (≤90 chars, up to 5)
+            for desc in text_assets.get("descriptions", [])[:5]:
+                await _create_and_link(desc[:90], field_types.DESCRIPTION)
+
+            # Business name (≤25 chars)
+            biz_name = text_assets.get("business_name", "")
+            if biz_name:
+                await _create_and_link(biz_name[:25], field_types.BUSINESS_NAME)
+
+            return {"status": "created", "assets_linked": len(created_assets), "details": created_assets}
+        except Exception as e:
+            logger.error("Failed to create asset group assets", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def create_asset_group_signal(
+        self, asset_group_resource: str, signal_data: Dict
+    ) -> Dict[str, Any]:
+        """Add audience signals (search themes) to a PMax Asset Group."""
+        await self._ensure_token()
+        try:
+            client = self._get_client()
+            agsi_service = client.get_service("AssetGroupSignalService")
+
+            operation = client.get_type("AssetGroupSignalOperation")
+            signal = operation.create
+            signal.asset_group = asset_group_resource
+
+            # Add search theme signals
+            search_themes = signal_data.get("search_themes", [])
+            for theme in search_themes[:10]:
+                st = client.get_type("SearchThemeInfo")
+                st.text = theme[:255]
+                signal.search_theme = st
+
+                # Each search theme is a separate signal — mutate one at a time
+                agsi_service.mutate_asset_group_signals(
+                    customer_id=self.customer_id, operations=[operation]
+                )
+                # Reset for next
+                operation = client.get_type("AssetGroupSignalOperation")
+                signal = operation.create
+                signal.asset_group = asset_group_resource
+
+            return {"status": "created", "search_themes_added": len(search_themes)}
+        except Exception as e:
+            logger.error("Failed to create asset group signal", error=str(e))
             return {"status": "error", "error": str(e)}
 
     async def update_campaign_status(self, campaign_resource: str, status: str) -> Dict[str, Any]:

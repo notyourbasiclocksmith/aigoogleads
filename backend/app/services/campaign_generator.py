@@ -53,12 +53,20 @@ class CampaignGeneratorService:
         prompt: str,
         business_profile: BusinessProfile,
         google_customer_id: Optional[str] = None,
+        campaign_type_override: Optional[str] = None,
     ) -> Dict[str, Any]:
         industry = (business_profile.industry_classification or "general").lower()
 
         # --- Step 1: AI Intent Parsing ---
         intent = await self._parse_intent_ai(prompt, business_profile)
-        campaign_type = intent.get("campaign_type") or self._determine_campaign_type(intent, business_profile)
+
+        # Respect campaign_type_override — strategist passes the user's chosen type
+        campaign_type = (
+            campaign_type_override
+            or intent.get("campaign_type_override")
+            or intent.get("campaign_type")
+            or self._determine_campaign_type(intent, business_profile)
+        )
 
         # --- Step 2: AI Overlap Analysis ---
         existing = await self._get_existing_campaigns()
@@ -73,8 +81,11 @@ class CampaignGeneratorService:
         competitors = await self._get_competitor_intelligence()
         competitor_insights = await self._analyze_competitors_ai(competitors, intent, industry, business_profile)
 
-        # --- Step 5: AI Keyword Strategy ---
-        keyword_strategy = await self._build_keyword_strategy_ai(intent, industry, learnings, playbook, business_profile)
+        # --- Step 5: AI Keyword Strategy (skip for PMax — no keywords) ---
+        if campaign_type == "PERFORMANCE_MAX":
+            keyword_strategy = {"keywords": [], "negatives": [], "total_keywords": 0, "total_negatives": 0, "tiers": {}}
+        else:
+            keyword_strategy = await self._build_keyword_strategy_ai(intent, industry, learnings, playbook, business_profile)
 
         # --- Step 6: AI Budget, Bidding & Schedule ---
         bbs = await self._recommend_budget_bidding_schedule_ai(
@@ -87,8 +98,8 @@ class CampaignGeneratorService:
         scheduling = bbs.get("schedule", {})
         device_bids = bbs.get("device_bids", {})
 
-        # --- Step 7: Build Campaign Draft (AI Ad Copy) ---
-        draft = await self._build_campaign_draft(
+        # --- Step 7: Build Campaign Draft — route by campaign type ---
+        build_args = dict(
             intent=intent,
             campaign_type=campaign_type,
             business_profile=business_profile,
@@ -103,6 +114,15 @@ class CampaignGeneratorService:
             competitor_insights=competitor_insights,
             google_customer_id=google_customer_id,
         )
+
+        if campaign_type == "CALL":
+            draft = await self._build_call_campaign_draft(**build_args)
+        elif campaign_type == "PERFORMANCE_MAX":
+            draft = await self._build_pmax_campaign_draft(**build_args)
+        elif campaign_type == "DISPLAY":
+            draft = await self._build_display_campaign_draft(**build_args)
+        else:
+            draft = await self._build_campaign_draft(**build_args)
 
         # Inject AI analysis into draft
         draft["ai_analysis"] = {
@@ -1515,6 +1535,524 @@ Return JSON: {{
                 "total_negatives": keyword_strategy["total_negatives"],
             },
         }
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  CALL-ONLY Campaign Builder
+    # ══════════════════════════════════════════════════════════════════════
+
+    async def _build_call_campaign_draft(
+        self, intent: Dict, campaign_type: str, business_profile: BusinessProfile,
+        existing_campaigns: List[Dict], playbook: Optional[Dict], learnings: List[Dict],
+        keyword_strategy: Dict, bid_strategy: Dict, budget: Dict, scheduling: Dict,
+        device_bids: Dict, competitor_insights: Dict, google_customer_id: Optional[str],
+    ) -> Dict[str, Any]:
+        """Build a Call-Only campaign draft — phone number shows directly in the ad."""
+        services = intent.get("services", ["General Service"])
+        locations = intent.get("locations", [])
+        phone = business_profile.phone or ""
+        industry = (business_profile.industry_classification or "general").lower()
+        business_name = await self._get_business_name()
+
+        primary_service = services[0] if services else "Service"
+        urgency_tag = "Emergency" if intent.get("urgency") == "high" else "Standard"
+        campaign_name = f"{primary_service} | CALL | {urgency_tag}"
+
+        existing_names = {c["name"] for c in existing_campaigns}
+        if campaign_name in existing_names:
+            campaign_name = f"{campaign_name} ({str(uuid.uuid4())[:4]})"
+
+        all_keywords = keyword_strategy.get("keywords", [])
+        all_negatives = keyword_strategy.get("negatives", [])
+
+        # Build ad groups with Call-Only ads
+        ad_groups = []
+        for i, svc in enumerate(services[:5]):
+            svc_keywords = [k for k in all_keywords if svc.lower() in k.get("text", "").lower()]
+            if not svc_keywords:
+                svc_keywords = all_keywords[i * 10:(i + 1) * 10] if all_keywords else [
+                    {"text": svc.lower(), "match_type": "PHRASE", "tier": "service"},
+                    {"text": f"{svc.lower()} near me", "match_type": "EXACT", "tier": "high"},
+                ]
+
+            # Generate call-only ad copy via AI
+            call_copy = await self._generate_call_ad_copy_llm(
+                service=svc, locations=locations, phone=phone,
+                industry=industry, business_name=business_name,
+                urgency=intent.get("urgency"), competitor_insights=competitor_insights,
+                raw_prompt=intent.get("raw_prompt", ""),
+            )
+            if not call_copy:
+                loc = locations[0] if locations else "Your Area"
+                call_copy = {
+                    "headline1": f"{svc[:20]} - Call Now"[:30],
+                    "headline2": f"Serving {loc}"[:30],
+                    "description1": f"Fast {svc}. Licensed & insured."[:35],
+                    "description2": f"Call {phone} for same-day help."[:35] if phone else f"Available 24/7. Call now!"[:35],
+                }
+
+            ad_group = {
+                "name": f"{svc} — {locations[0] if locations else 'All Areas'}",
+                "theme": svc,
+                "keywords": svc_keywords[:20],
+                "negatives": all_negatives,
+                "ads": [{
+                    "type": "CALL_AD",
+                    "headline1": call_copy["headline1"],
+                    "headline2": call_copy["headline2"],
+                    "description1": call_copy["description1"],
+                    "description2": call_copy["description2"],
+                    "phone_number": phone,
+                    "business_name": business_name,
+                    "country_code": "US",
+                    "phone_number_verification_url": business_profile.website_url or "",
+                    "generated_by": "openai" if call_copy.get("ai_generated") else "template",
+                }],
+            }
+            ad_groups.append(ad_group)
+
+        extensions = await self._generate_extensions_ai(
+            business_profile, services, intent.get("offers", []),
+            intent.get("usps", []), competitor_insights, intent,
+        )
+
+        return {
+            "campaign": {
+                "name": campaign_name,
+                "type": "CALL",
+                "channel_type": "SEARCH",
+                "objective": intent.get("goal", "calls"),
+                "budget_micros": budget["daily_micros"],
+                "budget_daily_usd": budget["daily_usd"],
+                "budget_monthly_estimate_usd": budget["monthly_estimate_usd"],
+                "bidding_strategy": bid_strategy["strategy"],
+                "locations": locations,
+                "schedule": scheduling,
+                "device_bids": {**device_bids, "mobile_bid_adj": max(device_bids.get("mobile_bid_adj", 30), 30)},
+                "settings": {
+                    "network": "SEARCH",
+                    "language": "en",
+                    "call_only": True,
+                    "phone_number": phone,
+                },
+            },
+            "ad_groups": ad_groups,
+            "extensions": extensions,
+            "keyword_strategy": keyword_strategy,
+            "competitor_insights": competitor_insights,
+            "intent": intent,
+            "reasoning": {
+                "campaign_type": "CALL — Phone number shows directly in the ad. Ideal for emergency/urgent services where customers call immediately.",
+                "bid_strategy": bid_strategy.get("reasoning", ""),
+                "budget": budget.get("reasoning", ""),
+                "schedule": scheduling.get("reasoning", ""),
+                "device_bids": "Mobile bid increased to +30% minimum — call-only ads perform best on mobile.",
+                "ad_groups_count": len(ad_groups),
+                "total_keywords": keyword_strategy.get("total_keywords", 0),
+            },
+        }
+
+    async def _generate_call_ad_copy_llm(
+        self, service: str, locations: List[str], phone: str, industry: str,
+        business_name: str, urgency: Optional[str], competitor_insights: Dict,
+        raw_prompt: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """Generate call-only ad copy via AI. Returns headline1/2, description1/2."""
+        if not settings.OPENAI_API_KEY:
+            return None
+
+        loc = locations[0] if locations else "local area"
+        comp_gaps = ", ".join(competitor_insights.get("gaps", competitor_insights.get("differentiation_angles", []))) or "none"
+        is_emergency = urgency == "high"
+
+        system = """You are a Google Ads Call-Only ad specialist. Generate ad copy that maximizes
+phone calls. Call-Only ads show the phone number directly — the user taps to call.
+You respond ONLY with valid JSON. Count characters precisely."""
+
+        user_msg = f"""Generate a Call-Only ad for:
+Business: {business_name}
+Service: {service}
+Industry: {industry}
+Location: {loc}
+Phone: {phone}
+Urgency: {'HIGH — emergency' if is_emergency else 'standard'}
+Competitor gaps: {comp_gaps}
+User request: "{raw_prompt}"
+
+CALL-ONLY AD FORMAT:
+- headline1: ≤30 chars — must contain the service name. This is the main hook.
+- headline2: ≤30 chars — location or trust signal
+- description1: ≤35 chars — value proposition or urgency trigger
+- description2: ≤35 chars — CTA or differentiator
+
+Extract pain points from the user request for maximum relevance.
+
+Return JSON:
+{{
+  "headline1": "≤30 chars",
+  "headline2": "≤30 chars",
+  "description1": "≤35 chars",
+  "description2": "≤35 chars",
+  "rationale": "brief strategy note"
+}}"""
+
+        result = await self._call_openai_json(system, user_msg, temperature=0.7, max_tokens=500)
+        if not result:
+            return None
+        result.pop("_raw", None)
+        # Enforce character limits
+        result["headline1"] = (result.get("headline1", "") or "")[:30]
+        result["headline2"] = (result.get("headline2", "") or "")[:30]
+        result["description1"] = (result.get("description1", "") or "")[:35]
+        result["description2"] = (result.get("description2", "") or "")[:35]
+        result["ai_generated"] = True
+        return result
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  PERFORMANCE MAX Campaign Builder
+    # ══════════════════════════════════════════════════════════════════════
+
+    async def _build_pmax_campaign_draft(
+        self, intent: Dict, campaign_type: str, business_profile: BusinessProfile,
+        existing_campaigns: List[Dict], playbook: Optional[Dict], learnings: List[Dict],
+        keyword_strategy: Dict, bid_strategy: Dict, budget: Dict, scheduling: Dict,
+        device_bids: Dict, competitor_insights: Dict, google_customer_id: Optional[str],
+    ) -> Dict[str, Any]:
+        """Build a Performance Max campaign — asset groups, audience signals, no keywords."""
+        services = intent.get("services", ["General Service"])
+        locations = intent.get("locations", [])
+        phone = business_profile.phone or ""
+        website = business_profile.website_url or ""
+        industry = (business_profile.industry_classification or "general").lower()
+        business_name = await self._get_business_name()
+
+        primary_service = services[0] if services else "Service"
+        campaign_name = f"{primary_service} | PMAX | {'Emergency' if intent.get('urgency') == 'high' else 'Standard'}"
+
+        existing_names = {c["name"] for c in existing_campaigns}
+        if campaign_name in existing_names:
+            campaign_name = f"{campaign_name} ({str(uuid.uuid4())[:4]})"
+
+        # Generate PMax text assets via AI
+        pmax_assets = await self._generate_pmax_assets_llm(
+            services=services, locations=locations, phone=phone, website=website,
+            industry=industry, business_name=business_name,
+            urgency=intent.get("urgency"), competitor_insights=competitor_insights,
+            raw_prompt=intent.get("raw_prompt", ""), usps=intent.get("usps", []),
+            offers=intent.get("offers", []),
+        )
+
+        if not pmax_assets:
+            loc = locations[0] if locations else "Your Area"
+            pmax_assets = {
+                "headlines": [f"{primary_service} Near You"[:30], f"Call {business_name}"[:30], f"{primary_service} in {loc}"[:30]],
+                "long_headlines": [f"Expert {primary_service} — Licensed, Insured, Available Now"[:90]],
+                "descriptions": [
+                    f"Professional {primary_service} in {loc}. Licensed & insured. Call for free estimate!"[:90],
+                    f"Trusted by hundreds of customers. Fast, reliable {primary_service.lower()} service."[:90],
+                ],
+                "business_name": business_name,
+            }
+
+        # Build asset groups (one per service, max 5)
+        asset_groups = []
+        for svc in services[:5]:
+            svc_assets = {
+                "name": f"{svc} — {locations[0] if locations else 'All Areas'}",
+                "final_url": f"{website}/{svc.lower().replace(' ', '-')}" if website else "",
+                "text_assets": {
+                    "headlines": pmax_assets.get("headlines", [])[:5],
+                    "long_headlines": pmax_assets.get("long_headlines", [])[:5],
+                    "descriptions": pmax_assets.get("descriptions", [])[:5],
+                    "business_name": business_name,
+                },
+                "audience_signals": {
+                    "search_themes": [svc.lower(), f"{svc.lower()} near me", f"{svc.lower()} service",
+                                      f"emergency {svc.lower()}" if intent.get("urgency") == "high" else f"best {svc.lower()}"],
+                    "custom_segments": [f"{industry} customers", f"{svc.lower()} seekers"],
+                    "demographics": {"age_ranges": ["25-34", "35-44", "45-54", "55-64"], "genders": ["all"]},
+                    "in_market_audiences": [industry, svc.lower()],
+                },
+                "image_assets": [],
+            }
+            asset_groups.append(svc_assets)
+
+        extensions = await self._generate_extensions_ai(
+            business_profile, services, intent.get("offers", []),
+            intent.get("usps", []), competitor_insights, intent,
+        )
+
+        return {
+            "campaign": {
+                "name": campaign_name,
+                "type": "PERFORMANCE_MAX",
+                "channel_type": "PERFORMANCE_MAX",
+                "objective": intent.get("goal", "leads"),
+                "budget_micros": budget["daily_micros"],
+                "budget_daily_usd": budget["daily_usd"],
+                "budget_monthly_estimate_usd": budget["monthly_estimate_usd"],
+                "bidding_strategy": bid_strategy["strategy"],
+                "locations": locations,
+                "schedule": scheduling,
+                "device_bids": device_bids,
+                "settings": {
+                    "network": "ALL",
+                    "language": "en",
+                    "final_url_expansion": True,
+                },
+            },
+            "asset_groups": asset_groups,
+            "ad_groups": [],
+            "extensions": extensions,
+            "keyword_strategy": keyword_strategy,
+            "competitor_insights": competitor_insights,
+            "intent": intent,
+            "reasoning": {
+                "campaign_type": "PERFORMANCE_MAX — AI-optimized across Search, Display, YouTube, Gmail, Maps. Uses asset groups instead of traditional ad groups/keywords.",
+                "bid_strategy": bid_strategy.get("reasoning", ""),
+                "budget": budget.get("reasoning", ""),
+                "schedule": scheduling.get("reasoning", ""),
+                "asset_groups_count": len(asset_groups),
+                "note": "PMax campaigns require text and image assets. Image assets should be uploaded separately via the Landing Page Studio or manually.",
+            },
+        }
+
+    async def _generate_pmax_assets_llm(
+        self, services: List[str], locations: List[str], phone: str, website: str,
+        industry: str, business_name: str, urgency: Optional[str],
+        competitor_insights: Dict, raw_prompt: str = "", usps: List[str] = None,
+        offers: List[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Generate Performance Max text assets via AI."""
+        if not settings.OPENAI_API_KEY:
+            return None
+
+        loc = locations[0] if locations else "local area"
+        svc_list = ", ".join(services[:5])
+        usp_block = ", ".join(usps[:5]) if usps else "none"
+        offer_block = ", ".join(offers[:3]) if offers else "none"
+        comp_gaps = ", ".join(competitor_insights.get("gaps", competitor_insights.get("differentiation_angles", []))) or "none"
+
+        system = """You are a Google Ads Performance Max specialist. Generate text assets for
+PMax asset groups. PMax serves across Search, Display, YouTube, Gmail, and Maps.
+Assets must work in ALL these contexts. Respond ONLY with valid JSON."""
+
+        user_msg = f"""Generate PMax text assets for:
+Business: {business_name}
+Services: {svc_list}
+Industry: {industry}
+Location: {loc}
+Phone: {phone or 'N/A'}
+Website: {website or 'N/A'}
+Urgency: {'HIGH' if urgency == 'high' else 'standard'}
+USPs: {usp_block}
+Offers: {offer_block}
+Competitor gaps: {comp_gaps}
+User request: "{raw_prompt}"
+
+PMAX TEXT ASSET REQUIREMENTS:
+- headlines: 5 headlines, each ≤30 chars — keyword-rich, diverse
+- long_headlines: 5 long headlines, each ≤90 chars — expanded value props
+- descriptions: 5 descriptions, each ≤90 chars — persuasive, varied
+- business_name: ≤25 chars
+
+Headlines must work on Search AND as Display/YouTube overlays.
+Descriptions must be compelling standalone AND in combination.
+
+Return JSON:
+{{
+  "headlines": ["≤30", "≤30", "≤30", "≤30", "≤30"],
+  "long_headlines": ["≤90", "≤90", "≤90", "≤90", "≤90"],
+  "descriptions": ["≤90", "≤90", "≤90", "≤90", "≤90"],
+  "business_name": "≤25",
+  "rationale": "brief strategy note"
+}}"""
+
+        result = await self._call_openai_json(system, user_msg, temperature=0.7, max_tokens=1500)
+        if not result:
+            return None
+        result.pop("_raw", None)
+        # Enforce character limits
+        result["headlines"] = [(h or "")[:30] for h in result.get("headlines", []) if h][:5]
+        result["long_headlines"] = [(h or "")[:90] for h in result.get("long_headlines", []) if h][:5]
+        result["descriptions"] = [(d or "")[:90] for d in result.get("descriptions", []) if d][:5]
+        result["business_name"] = (result.get("business_name", business_name) or "")[:25]
+        return result
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  DISPLAY Campaign Builder
+    # ══════════════════════════════════════════════════════════════════════
+
+    async def _build_display_campaign_draft(
+        self, intent: Dict, campaign_type: str, business_profile: BusinessProfile,
+        existing_campaigns: List[Dict], playbook: Optional[Dict], learnings: List[Dict],
+        keyword_strategy: Dict, bid_strategy: Dict, budget: Dict, scheduling: Dict,
+        device_bids: Dict, competitor_insights: Dict, google_customer_id: Optional[str],
+    ) -> Dict[str, Any]:
+        """Build a Display campaign — responsive display ads with audience targeting."""
+        services = intent.get("services", ["General Service"])
+        locations = intent.get("locations", [])
+        phone = business_profile.phone or ""
+        website = business_profile.website_url or ""
+        industry = (business_profile.industry_classification or "general").lower()
+        business_name = await self._get_business_name()
+
+        primary_service = services[0] if services else "Service"
+        campaign_name = f"{primary_service} | DISPLAY | {'Remarketing' if intent.get('goal') == 'remarketing' else 'Prospecting'}"
+
+        existing_names = {c["name"] for c in existing_campaigns}
+        if campaign_name in existing_names:
+            campaign_name = f"{campaign_name} ({str(uuid.uuid4())[:4]})"
+
+        # Generate display ad copy via AI
+        display_copy = await self._generate_display_ad_copy_llm(
+            services=services, locations=locations, phone=phone, website=website,
+            industry=industry, business_name=business_name,
+            urgency=intent.get("urgency"), competitor_insights=competitor_insights,
+            raw_prompt=intent.get("raw_prompt", ""), usps=intent.get("usps", []),
+            offers=intent.get("offers", []),
+        )
+
+        if not display_copy:
+            loc = locations[0] if locations else "Your Area"
+            display_copy = {
+                "short_headlines": [f"{primary_service}"[:30], f"Call {business_name}"[:30]],
+                "long_headline": f"Professional {primary_service} — Licensed & Insured in {loc}"[:90],
+                "descriptions": [
+                    f"Expert {primary_service.lower()} in {loc}. Licensed, insured. Call for free estimate!"[:90],
+                ],
+                "business_name": business_name,
+            }
+
+        # Build ad groups with responsive display ads
+        ad_groups = []
+        for svc in services[:3]:
+            url_slug = svc.lower().replace(" ", "-")
+            ad_group = {
+                "name": f"{svc} — Display — {locations[0] if locations else 'All Areas'}",
+                "type": "DISPLAY_STANDARD",
+                "theme": svc,
+                "keywords": [],
+                "negatives": [],
+                "audience_targeting": {
+                    "in_market": [industry, svc.lower()],
+                    "affinity": [f"{industry} enthusiasts"],
+                    "custom_intent": [svc.lower(), f"{svc.lower()} near me", f"hire {svc.lower()}",
+                                      f"best {svc.lower()}", f"{svc.lower()} cost"],
+                    "remarketing": intent.get("goal") == "remarketing",
+                },
+                "ads": [{
+                    "type": "RESPONSIVE_DISPLAY_AD",
+                    "short_headlines": display_copy.get("short_headlines", [])[:5],
+                    "long_headline": display_copy.get("long_headline", "")[:90],
+                    "descriptions": display_copy.get("descriptions", [])[:5],
+                    "business_name": display_copy.get("business_name", business_name)[:25],
+                    "final_urls": [f"{website}/{url_slug}"] if website else [],
+                    "image_assets": [],
+                    "logo_assets": [],
+                    "generated_by": "openai" if display_copy.get("ai_generated") else "template",
+                }],
+            }
+            ad_groups.append(ad_group)
+
+        extensions = await self._generate_extensions_ai(
+            business_profile, services, intent.get("offers", []),
+            intent.get("usps", []), competitor_insights, intent,
+        )
+
+        return {
+            "campaign": {
+                "name": campaign_name,
+                "type": "DISPLAY",
+                "channel_type": "DISPLAY",
+                "objective": intent.get("goal", "awareness"),
+                "budget_micros": budget["daily_micros"],
+                "budget_daily_usd": budget["daily_usd"],
+                "budget_monthly_estimate_usd": budget["monthly_estimate_usd"],
+                "bidding_strategy": bid_strategy["strategy"],
+                "locations": locations,
+                "schedule": scheduling,
+                "device_bids": device_bids,
+                "settings": {
+                    "network": "DISPLAY",
+                    "language": "en",
+                    "content_exclusions": ["BELOW_THE_FOLD", "PARKED_DOMAINS", "SEXUALLY_SUGGESTIVE"],
+                },
+            },
+            "ad_groups": ad_groups,
+            "extensions": extensions,
+            "keyword_strategy": {"keywords": [], "negatives": [], "total_keywords": 0, "total_negatives": 0, "tiers": {}},
+            "competitor_insights": competitor_insights,
+            "intent": intent,
+            "reasoning": {
+                "campaign_type": "DISPLAY — Visual banner ads across the Google Display Network. Uses responsive display ads with audience targeting.",
+                "bid_strategy": bid_strategy.get("reasoning", ""),
+                "budget": budget.get("reasoning", ""),
+                "schedule": scheduling.get("reasoning", ""),
+                "ad_groups_count": len(ad_groups),
+                "note": "Display campaigns require image assets (landscape 1200x628, square 1200x1200, logo 1200x1200). Upload via Landing Page Studio or manually.",
+            },
+        }
+
+    async def _generate_display_ad_copy_llm(
+        self, services: List[str], locations: List[str], phone: str, website: str,
+        industry: str, business_name: str, urgency: Optional[str],
+        competitor_insights: Dict, raw_prompt: str = "", usps: List[str] = None,
+        offers: List[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Generate responsive display ad copy via AI."""
+        if not settings.OPENAI_API_KEY:
+            return None
+
+        loc = locations[0] if locations else "local area"
+        svc_list = ", ".join(services[:5])
+        usp_block = ", ".join(usps[:5]) if usps else "none"
+        offer_block = ", ".join(offers[:3]) if offers else "none"
+        comp_gaps = ", ".join(competitor_insights.get("gaps", competitor_insights.get("differentiation_angles", []))) or "none"
+
+        system = """You are a Google Display Network specialist. Generate responsive display ad copy
+that works across websites, apps, and Gmail. Display ads are visual — copy must be
+punchy, brand-forward, and work with image overlays. Respond ONLY with valid JSON."""
+
+        user_msg = f"""Generate responsive display ad copy for:
+Business: {business_name}
+Services: {svc_list}
+Industry: {industry}
+Location: {loc}
+Phone: {phone or 'N/A'}
+Urgency: {'HIGH' if urgency == 'high' else 'standard'}
+USPs: {usp_block}
+Offers: {offer_block}
+Competitor gaps: {comp_gaps}
+User request: "{raw_prompt}"
+
+RESPONSIVE DISPLAY AD FORMAT:
+- short_headlines: 5 headlines, each ≤30 chars — punchy, brand-forward
+- long_headline: 1 expanded headline, ≤90 chars — full value prop
+- descriptions: 5 descriptions, each ≤90 chars — persuasive, varied
+- business_name: ≤25 chars
+
+Display ads appear on websites/apps — they need to INTERRUPT attention.
+Use bold claims, urgency, and specific numbers (not vague superlatives).
+
+Return JSON:
+{{
+  "short_headlines": ["≤30", "≤30", "≤30", "≤30", "≤30"],
+  "long_headline": "≤90",
+  "descriptions": ["≤90", "≤90", "≤90", "≤90", "≤90"],
+  "business_name": "≤25",
+  "rationale": "brief strategy note"
+}}"""
+
+        result = await self._call_openai_json(system, user_msg, temperature=0.7, max_tokens=1200)
+        if not result:
+            return None
+        result.pop("_raw", None)
+        result["short_headlines"] = [(h or "")[:30] for h in result.get("short_headlines", []) if h][:5]
+        result["long_headline"] = (result.get("long_headline", "") or "")[:90]
+        result["descriptions"] = [(d or "")[:90] for d in result.get("descriptions", []) if d][:5]
+        result["business_name"] = (result.get("business_name", business_name) or "")[:25]
+        result["ai_generated"] = True
+        return result
 
     async def _generate_ad_copy_llm(
         self,
