@@ -33,6 +33,7 @@ const navSections: NavSection[] = [
       { label: "Fix My Ads", href: "/operator", icon: Brain },
       { label: "Campaign Builder", href: "/ads/prompt", icon: Wand2 },
       { label: "Ad Copy Studio", href: "/creative", icon: Palette },
+      { label: "Landing Page Studio", href: "/ads/landing-page-studio", icon: Globe },
       { label: "Auto Optimizer", href: "/operator/live", icon: Zap },
     ],
   },

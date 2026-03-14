@@ -305,6 +305,149 @@ async def audit_landing_page(
     return result
 
 
+# ── LANDING PAGE AI EDIT ──────────────────────────────────────────
+
+class AiEditVariantRequest(BaseModel):
+    variant_id: str
+    prompt: str
+
+
+@router.post("/landing-pages/{page_id}/ai-edit")
+async def ai_edit_landing_page(
+    page_id: str,
+    req: AiEditVariantRequest,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Apply an AI prompt-based edit to a landing page variant."""
+    from app.services.landing_page_generator import LandingPageGenerator
+
+    lp = await db.get(LandingPage, page_id)
+    if not lp or str(lp.tenant_id) != str(user.tenant_id):
+        raise HTTPException(404, "Landing page not found")
+
+    variant = await db.get(LandingPageVariant, req.variant_id)
+    if not variant or str(variant.landing_page_id) != page_id:
+        raise HTTPException(404, "Variant not found")
+
+    gen = LandingPageGenerator(db, str(user.tenant_id))
+    result = await gen.ai_edit_variant(
+        variant_content=variant.content_json or {},
+        edit_prompt=req.prompt,
+        strategy=lp.strategy_json,
+    )
+
+    if result.get("error"):
+        raise HTTPException(500, result["error"])
+
+    # Save updated content
+    variant.content_json = result["content"]
+    if lp.content_json and variant.variant_key == "A":
+        lp.content_json = result["content"]
+    await db.commit()
+
+    return {
+        "variant_id": variant.id,
+        "variant_key": variant.variant_key,
+        "content": variant.content_json,
+        "edit_applied": result.get("edit_applied", ""),
+    }
+
+
+class UpdateVariantContentRequest(BaseModel):
+    content: Dict[str, Any]
+
+
+@router.put("/landing-pages/{page_id}/variants/{variant_id}")
+async def update_variant_content(
+    page_id: str,
+    variant_id: str,
+    req: UpdateVariantContentRequest,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Directly update a variant's content JSON."""
+    lp = await db.get(LandingPage, page_id)
+    if not lp or str(lp.tenant_id) != str(user.tenant_id):
+        raise HTTPException(404, "Landing page not found")
+
+    variant = await db.get(LandingPageVariant, variant_id)
+    if not variant or str(variant.landing_page_id) != page_id:
+        raise HTTPException(404, "Variant not found")
+
+    variant.content_json = req.content
+    await db.commit()
+    return {"variant_id": variant.id, "content": variant.content_json}
+
+
+class CloneLandingPageRequest(BaseModel):
+    new_service: str = ""
+    new_location: str = ""
+    adapt_prompt: str = ""
+
+
+@router.post("/landing-pages/{page_id}/clone")
+async def clone_landing_page(
+    page_id: str,
+    req: CloneLandingPageRequest,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Clone a landing page, optionally adapting for a new service/location."""
+    from app.services.landing_page_generator import LandingPageGenerator
+
+    lp = await db.get(LandingPage, page_id)
+    if not lp or str(lp.tenant_id) != str(user.tenant_id):
+        raise HTTPException(404, "Landing page not found")
+
+    gen = LandingPageGenerator(db, str(user.tenant_id))
+    result = await gen.clone_landing_page(
+        source_lp=lp,
+        new_service=req.new_service,
+        new_location=req.new_location,
+        adapt_prompt=req.adapt_prompt,
+    )
+    return result
+
+
+class GenerateFromPromptRequest(BaseModel):
+    prompt: str
+    service: str = ""
+    location: str = ""
+
+
+@router.post("/landing-pages/generate-from-prompt")
+async def generate_lp_from_prompt(
+    req: GenerateFromPromptRequest,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate a new AI landing page from a free-form prompt."""
+    from app.services.landing_page_generator import LandingPageGenerator
+    from app.models.business_profile import BusinessProfile
+    from app.models.tenant import Tenant
+
+    bp_result = await db.execute(
+        select(BusinessProfile).where(BusinessProfile.tenant_id == user.tenant_id)
+    )
+    profile = bp_result.scalar_one_or_none()
+    tenant = await db.get(Tenant, str(user.tenant_id))
+    biz_name = tenant.name if tenant else ""
+
+    gen = LandingPageGenerator(db, str(user.tenant_id))
+    result = await gen.generate(
+        service=req.service or req.prompt[:100],
+        location=req.location,
+        industry=profile.industry_classification if profile else "",
+        business_name=biz_name,
+        phone=profile.phone if profile else "",
+        website=profile.website_url if profile else "",
+        usps=[u if isinstance(u, str) else u.get("text", "") for u in (profile.usp_json or [])] if profile else [],
+        offers=[o if isinstance(o, str) else o.get("text", "") for o in (profile.offers_json or [])] if profile else [],
+    )
+    return result
+
+
 # ── CAMPAIGN AUDIT ────────────────────────────────────────────────
 
 class AuditCampaignRequest(BaseModel):

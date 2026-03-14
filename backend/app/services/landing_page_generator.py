@@ -131,6 +131,101 @@ class LandingPageGenerator:
             ],
         }
 
+    async def ai_edit_variant(
+        self,
+        variant_content: Dict,
+        edit_prompt: str,
+        strategy: Dict = None,
+    ) -> Dict[str, Any]:
+        """Apply a prompt-based edit to a landing page variant's content."""
+        if not self.client:
+            return {"error": "AI not configured"}
+
+        system = """You are an expert landing page editor. The user will give you the current
+landing page content as JSON and an edit instruction. Apply the edit precisely,
+preserving the overall page structure. Return the COMPLETE updated content JSON
+with all sections — not just the changed parts.
+Respond ONLY with valid JSON matching the exact same structure as the input."""
+
+        prompt = f"""CURRENT LANDING PAGE CONTENT:
+{json.dumps(variant_content, indent=2)[:6000]}
+
+EDIT INSTRUCTION:
+{edit_prompt}
+
+Return the complete updated content JSON with the edit applied.
+Keep all existing sections and structure intact — only modify what the instruction asks for."""
+
+        result = await self._call_ai(system, prompt, temperature=0.3)
+        if not result:
+            return {"error": "AI failed to apply edit"}
+        return {"content": result, "edit_applied": edit_prompt}
+
+    async def clone_landing_page(
+        self,
+        source_lp: "LandingPage",
+        new_service: str = "",
+        new_location: str = "",
+        adapt_prompt: str = "",
+    ) -> Dict[str, Any]:
+        """Clone a landing page, optionally adapting content for a new service/location."""
+        slug = f"{(new_service or source_lp.service or 'page').lower().replace(' ', '-')}-{(new_location or source_lp.location or 'local').lower().replace(' ', '-')}-{uuid.uuid4().hex[:6]}"
+        slug = slug.replace("--", "-").strip("-")[:250]
+
+        new_lp = LandingPage(
+            tenant_id=self.tenant_id,
+            name=f"{new_service or source_lp.service} — {new_location or source_lp.location}" if (new_location or source_lp.location) else (new_service or source_lp.service or source_lp.name),
+            slug=slug,
+            service=new_service or source_lp.service,
+            location=new_location or source_lp.location,
+            status="draft",
+            page_type=source_lp.page_type,
+            is_ai_generated=True,
+            strategy_json=source_lp.strategy_json or {},
+            content_json=source_lp.content_json or {},
+            style_json=source_lp.style_json or {},
+            seo_json=source_lp.seo_json or {},
+        )
+        self.db.add(new_lp)
+        await self.db.flush()
+
+        variant_records = []
+        source_variants = source_lp.variants or []
+        for sv in source_variants:
+            content = sv.content_json or {}
+
+            # If adapting for new service/location, use AI to rewrite
+            if adapt_prompt and self.client:
+                adapted = await self.ai_edit_variant(
+                    content,
+                    adapt_prompt or f"Adapt this landing page for '{new_service}' in '{new_location}'. Update all headlines, copy, service references, and location mentions.",
+                )
+                if not adapted.get("error"):
+                    content = adapted["content"]
+
+            vr = LandingPageVariant(
+                landing_page_id=new_lp.id,
+                variant_key=sv.variant_key,
+                variant_name=sv.variant_name,
+                content_json=content,
+                is_active=True,
+            )
+            self.db.add(vr)
+            variant_records.append(vr)
+
+        await self.db.commit()
+
+        return {
+            "landing_page_id": new_lp.id,
+            "slug": new_lp.slug,
+            "name": new_lp.name,
+            "status": new_lp.status,
+            "variants": [
+                {"id": vr.id, "key": vr.variant_key, "name": vr.variant_name, "content": vr.content_json}
+                for vr in variant_records
+            ],
+        }
+
     async def _call_ai(self, system: str, user_prompt: str, temperature: float = 0.6) -> Optional[Dict]:
         try:
             resp = await self.client.chat.completions.create(
