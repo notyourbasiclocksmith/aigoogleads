@@ -58,7 +58,7 @@ export default function ExpandServicesPage() {
         campaign_prompt: suggestion.campaign_prompt,
         service_name: suggestion.service_name,
       });
-      setGenerated((prev) => new Set(prev).add(suggestion.service_name));
+      setGenerated((prev: Set<string>) => new Set(prev).add(suggestion.service_name));
     } catch (e) {
       console.error(e);
     } finally {
@@ -111,7 +111,7 @@ export default function ExpandServicesPage() {
             <CardContent className="pt-4">
               <p className="text-sm font-medium text-slate-500 mb-2">Your Current Services</p>
               <div className="flex flex-wrap gap-2">
-                {result.current_services.map((s, i) => (
+                {result.current_services.map((s: string, i: number) => (
                   <Badge key={i} className="bg-slate-100 text-slate-700 px-3 py-1">
                     {s}
                   </Badge>
@@ -173,7 +173,7 @@ export default function ExpandServicesPage() {
                       <p className="text-sm text-slate-600 mt-2">{s.why_good_fit}</p>
                       {(s.suggested_keywords?.length ?? 0) > 0 && (
                         <div className="flex flex-wrap gap-1 mt-3">
-                          {s.suggested_keywords.slice(0, 6).map((kw, j) => (
+                          {s.suggested_keywords.slice(0, 6).map((kw: string, j: number) => (
                             <span
                               key={j}
                               className="text-xs px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded"
