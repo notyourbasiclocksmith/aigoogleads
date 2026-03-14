@@ -6,7 +6,7 @@ import structlog
 from app.core.config import settings
 from app.api import auth, tenants, onboarding, dashboard, ads_accounts, ads_audit, ads_prompt, ads_data, campaigns, creative, competitors, optimizations, experiments, reports, admin_settings, lsa, bridge
 from app.api import workspace
-from app.api.v2 import mcc, conversions, change_mgmt, connectors, policy, billing, notifications, evaluation, operator
+from app.api.v2 import mcc, conversions, change_mgmt, connectors, policy, billing, notifications, evaluation, operator, growth
 
 logger = structlog.get_logger()
 
@@ -77,6 +77,7 @@ app.include_router(billing.router, prefix="/api/v2/billing", tags=["V2 Billing"]
 app.include_router(notifications.router, prefix="/api/v2/notifications", tags=["V2 Notifications"])
 app.include_router(evaluation.router, prefix="/api/v2/evaluation", tags=["V2 Evaluation"])
 app.include_router(operator.router, prefix="/api/v2/operator", tags=["V2 AI Operator"])
+app.include_router(growth.router, prefix="/api/v2/growth", tags=["V2 Growth Features"])
 
 
 @app.get("/api/health")

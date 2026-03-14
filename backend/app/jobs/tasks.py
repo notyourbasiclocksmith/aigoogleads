@@ -1618,3 +1618,150 @@ async def _auto_dispute_lsa_leads_async():
 
         await db.commit()
         logger.info("LSA auto-dispute complete", disputed=disputed, failed=failed)
+
+
+# ── SEARCH TERM MINING AI ─────────────────────────────────────────
+
+@celery_app.task(name="app.jobs.tasks.mine_search_terms_task")
+def mine_search_terms_task(tenant_id: str, google_customer_id: str, days: int = 30):
+    """Run AI search term mining for a specific tenant + account."""
+    import asyncio
+    asyncio.run(_mine_search_terms_async(tenant_id, google_customer_id, days))
+
+
+async def _mine_search_terms_async(tenant_id: str, google_customer_id: str, days: int):
+    from app.core.database import async_session_factory
+    from app.services.search_term_miner import SearchTermMiner
+    from app.models.recommendation import Recommendation
+    from datetime import datetime, timezone
+    import json as _json
+
+    async with async_session_factory() as db:
+        try:
+            miner = SearchTermMiner(db, tenant_id)
+            result = await miner.mine(google_customer_id, days=days)
+
+            if result.get("status") == "complete":
+                # Store each actionable recommendation
+                for rec in result.get("add_as_keyword", []):
+                    db.add(Recommendation(
+                        tenant_id=tenant_id,
+                        category="search_term_mining",
+                        severity="opportunity",
+                        title=f"Add keyword: {rec['search_term']}",
+                        rationale=rec.get("reason", ""),
+                        expected_impact=f"{rec.get('conversions', 0)} conversions at ${rec.get('cpa', 0)} CPA",
+                        risk_level="low",
+                        action_diff=_json.dumps({
+                            "action": "add_keyword",
+                            "search_term": rec["search_term"],
+                            "match_type": rec.get("recommended_match_type", "EXACT"),
+                            "campaign_id": rec.get("campaign_id"),
+                            "ad_group_id": rec.get("ad_group_id"),
+                        }),
+                        status="pending",
+                    ))
+
+                for rec in result.get("add_as_negative", []):
+                    db.add(Recommendation(
+                        tenant_id=tenant_id,
+                        category="search_term_mining",
+                        severity="waste",
+                        title=f"Add negative: {rec['search_term']}",
+                        rationale=rec.get("reason", ""),
+                        expected_impact=f"Save ${rec.get('cost_wasted', 0):.2f}/period",
+                        risk_level="low",
+                        action_diff=_json.dumps({
+                            "action": "add_negative",
+                            "search_term": rec["search_term"],
+                            "match_type": rec.get("recommended_match_type", "PHRASE"),
+                            "campaign_id": rec.get("campaign_id"),
+                        }),
+                        status="pending",
+                    ))
+
+                await db.commit()
+                logger.info("Search term mining complete",
+                            tenant_id=tenant_id,
+                            keywords=len(result.get("add_as_keyword", [])),
+                            negatives=len(result.get("add_as_negative", [])),
+                            ai=result.get("ai_generated", False))
+            else:
+                logger.info("Search term mining: no data", tenant_id=tenant_id)
+
+        except Exception as e:
+            await db.rollback()
+            logger.error("Search term mining failed", tenant_id=tenant_id, error=str(e))
+
+
+# ── BULK CAMPAIGN GENERATION ───────────────────────────────────────
+
+@celery_app.task(name="app.jobs.tasks.bulk_generate_campaigns_task", bind=True)
+def bulk_generate_campaigns_task(self, tenant_id: str, service_variants: list, base_prompt: str):
+    """Generate campaigns in bulk for multiple service variants."""
+    import asyncio
+    asyncio.run(_bulk_generate_async(self, tenant_id, service_variants, base_prompt))
+
+
+async def _bulk_generate_async(task_ref, tenant_id: str, service_variants: list, base_prompt: str):
+    from app.core.database import async_session_factory
+    from app.models.business_profile import BusinessProfile
+    from app.services.campaign_generator import CampaignGeneratorService
+
+    total = len(service_variants)
+    results = []
+    errors = []
+
+    async with async_session_factory() as db:
+        try:
+            bp_result = await db.execute(
+                select(BusinessProfile).where(BusinessProfile.tenant_id == tenant_id)
+            )
+            profile = bp_result.scalar_one_or_none()
+            if not profile:
+                logger.error("Bulk generate: no business profile", tenant_id=tenant_id)
+                return
+
+            for i, variant in enumerate(service_variants):
+                try:
+                    # Update progress
+                    task_ref.update_state(
+                        state="PROGRESS",
+                        meta={
+                            "current": i + 1,
+                            "total": total,
+                            "current_service": variant,
+                            "completed": len(results),
+                            "errors": len(errors),
+                        },
+                    )
+
+                    # Build prompt with variant
+                    prompt = base_prompt.replace("{service}", variant)
+                    if "{service}" not in base_prompt:
+                        prompt = f"{base_prompt} — focus on {variant}"
+
+                    generator = CampaignGeneratorService(db, tenant_id)
+                    draft = await generator.generate(prompt)
+                    results.append({
+                        "service": variant,
+                        "status": "success",
+                        "campaign_name": draft.get("campaign", {}).get("name", variant),
+                        "ad_groups": len(draft.get("ad_groups", [])),
+                        "keywords": sum(len(ag.get("keywords", [])) for ag in draft.get("ad_groups", [])),
+                    })
+                    logger.info("Bulk generate: campaign done",
+                                service=variant, i=i + 1, total=total)
+
+                except Exception as e:
+                    errors.append({"service": variant, "error": str(e)})
+                    logger.error("Bulk generate: campaign failed",
+                                 service=variant, error=str(e))
+
+            await db.commit()
+            logger.info("Bulk generation complete",
+                        tenant_id=tenant_id, success=len(results), errors=len(errors))
+
+        except Exception as e:
+            await db.rollback()
+            logger.error("Bulk generation failed", tenant_id=tenant_id, error=str(e))

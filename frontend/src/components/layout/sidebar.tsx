@@ -46,6 +46,14 @@ const navSections: NavSection[] = [
     ],
   },
   {
+    title: "Growth AI",
+    items: [
+      { label: "Search Term Mining", href: "/growth/search-mining", icon: Search },
+      { label: "Expand Services", href: "/growth/expand", icon: Zap },
+      { label: "Bulk Campaigns", href: "/growth/bulk-generate", icon: Megaphone },
+    ],
+  },
+  {
     title: "Intelligence",
     items: [
       { label: "Recommendations", href: "/ads/recommendations", icon: Lightbulb },
