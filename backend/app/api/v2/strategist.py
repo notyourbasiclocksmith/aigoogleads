@@ -229,12 +229,17 @@ async def generate_landing_page(
     )
     profile = bp_result.scalar_one_or_none()
 
+    # Get business name from Tenant (not on BusinessProfile)
+    from app.models.tenant import Tenant
+    tenant = await db.get(Tenant, str(user.tenant_id))
+    biz_name = tenant.name if tenant else ""
+
     gen = LandingPageGenerator(db, str(user.tenant_id))
     result = await gen.generate(
         service=req.service,
         location=req.location,
         industry=profile.industry_classification if profile else "",
-        business_name=profile.business_name if profile else "",
+        business_name=biz_name,
         phone=profile.phone if profile else "",
         website=profile.website_url if profile else "",
         usps=[u if isinstance(u, str) else u.get("text", "") for u in (profile.usp_json or [])] if profile else [],

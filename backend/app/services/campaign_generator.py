@@ -36,6 +36,17 @@ class CampaignGeneratorService:
     def __init__(self, db: AsyncSession, tenant_id: str):
         self.db = db
         self.tenant_id = tenant_id
+        self._biz_name_cache: Optional[str] = None
+
+    async def _get_business_name(self) -> str:
+        """Get business name from Tenant (not on BusinessProfile)."""
+        if self._biz_name_cache is not None:
+            return self._biz_name_cache
+        result = await self.db.execute(
+            select(Tenant.name).where(Tenant.id == self.tenant_id)
+        )
+        self._biz_name_cache = result.scalar_one_or_none() or "Local Service"
+        return self._biz_name_cache
 
     async def generate_from_prompt(
         self,
@@ -681,9 +692,10 @@ similar businesses into a cohesive campaign strategy. You respond ONLY with vali
 
         playbook_summary = json.dumps(playbook, default=str)[:1500] if playbook else "No industry playbook available."
         learnings_summary = json.dumps(learnings[:10], default=str)[:1500] if learnings else "No cross-tenant learnings available."
+        biz_name = await self._get_business_name()
 
         user_msg = f"""INDUSTRY: {industry}
-BUSINESS: {profile.business_name if hasattr(profile, 'business_name') else 'N/A'}
+BUSINESS: {biz_name}
 CONVERSION GOAL: {profile.primary_conversion_goal or 'calls'}
 SERVICES: {json.dumps(intent.get('services', [])[:5])}
 LOCATIONS: {json.dumps(intent.get('locations', [])[:5])}
@@ -1875,9 +1887,10 @@ that boost CTR and Quality Score. You respond ONLY with valid JSON.
 Sitelink text: ≤25 chars. Sitelink descriptions: ≤35 chars each.
 Callout text: ≤25 chars each. Structured snippet values: ≤25 chars each."""
 
+        ext_biz_name = await self._get_business_name()
         user_msg = f"""Generate Google Ads extensions for:
 
-Business: {profile.business_name if hasattr(profile, 'business_name') else 'Local Service'}
+Business: {ext_biz_name}
 Industry: {industry}
 Website: {website or 'N/A'}
 Phone: {phone or 'N/A'}

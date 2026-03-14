@@ -77,13 +77,17 @@ async def generate_image(
     if not client.is_configured:
         raise HTTPException(status_code=503, detail="Image generator not configured. Set IMAGE_GENERATOR_API_URL.")
 
+    # Get business name from Tenant (not on BusinessProfile)
+    from app.models.tenant import Tenant
+    tenant = await db.get(Tenant, str(user.tenant_id))
+    biz_name = tenant.name if tenant else "Our Business"
+
     # If no prompt provided, auto-generate one from service + profile
     if req.prompt:
         prompt = req.prompt
         metadata = req.metadata or {}
     else:
         service = req.service or "service"
-        biz_name = profile.business_name if profile else "Our Business"
         biz_type = profile.industry_classification if profile else "service"
         city = ""
         state = ""
