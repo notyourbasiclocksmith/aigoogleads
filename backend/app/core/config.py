@@ -79,6 +79,11 @@ class Settings(BaseSettings):
     GA4_CLIENT_SECRET: str = ""
     GA4_REDIRECT_URI: str = "http://localhost:3000/api/auth/ga4/callback"
 
+    # Google Business Profile (GBP) OAuth
+    GBP_CLIENT_ID: str = ""
+    GBP_CLIENT_SECRET: str = ""
+    GBP_REDIRECT_URI: str = "http://localhost:8000/api/gbp/oauth/callback"
+
     @property
     def cors_origins_list(self) -> List[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]

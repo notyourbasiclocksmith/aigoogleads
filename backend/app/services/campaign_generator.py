@@ -106,16 +106,19 @@ class CampaignGeneratorService:
         self._biz_name_cache: Optional[str] = None
 
     @staticmethod
-    def _normalize_trust_signals(raw: Any) -> Dict[str, Any]:
+    def _normalize_trust_signals(raw: Any, bp: Optional[BusinessProfile] = None) -> Dict[str, Any]:
         """
         Normalize trust_signals_json to a consistent dict.
         Handles two formats:
           1. Scanner format: {"list": ["licensed & insured", "15+ years experience", ...]}
           2. Structured format: {"years_experience": 15, "google_rating": 4.9, ...}
+        If a BusinessProfile is passed, structured GBP fields (google_rating,
+        review_count, service_radius_miles, etc.) are merged in as authoritative
+        overrides — they come directly from the GBP API.
         Returns a dict with both structured keys (if parseable) and a "signals_list" key.
         """
         if not raw or not isinstance(raw, dict):
-            return {"signals_list": []}
+            raw = {}
 
         result: Dict[str, Any] = {}
         signals_list: list = []
@@ -150,6 +153,19 @@ class CampaignGeneratorService:
             for k, v in raw.items():
                 if v:
                     result[k] = v
+
+        # Merge authoritative GBP fields from BusinessProfile (override parsed values)
+        if bp:
+            if bp.google_rating:
+                result["google_rating"] = str(bp.google_rating)
+            if bp.review_count:
+                result["review_count"] = str(bp.review_count)
+            if bp.years_experience:
+                result["years_experience"] = f"{bp.years_experience}+"
+            if bp.license_info:
+                result["license"] = bp.license_info
+            if bp.service_radius_miles:
+                result["service_radius"] = f"{bp.service_radius_miles} mile radius"
 
         result["signals_list"] = signals_list
         return result
@@ -1646,7 +1662,7 @@ Return JSON: {{
         # Extract trust signals from business profile for ad personalization
         # Format may be {"list": ["licensed & insured", ...]} or {"years_experience": 15, ...}
         raw_ts = business_profile.trust_signals_json or {}
-        trust_signals = self._normalize_trust_signals(raw_ts)
+        trust_signals = self._normalize_trust_signals(raw_ts, bp=business_profile)
         biz_description = business_profile.description or ""
 
         # Fetch business name from tenant
@@ -1857,7 +1873,7 @@ Return JSON: {{
         business_name = await self._get_business_name()
 
         # Extract trust signals + merge USPs/offers from business profile
-        trust_signals = self._normalize_trust_signals(business_profile.trust_signals_json or {})
+        trust_signals = self._normalize_trust_signals(business_profile.trust_signals_json or {}, bp=business_profile)
         bp_usps = business_profile.usp_json if isinstance(business_profile.usp_json, list) else []
         usps = list(dict.fromkeys(
             intent.get("usps", []) + [u if isinstance(u, str) else u.get("text", "") for u in bp_usps]
@@ -2050,7 +2066,7 @@ Return JSON:
         business_name = await self._get_business_name()
 
         # Extract trust signals + merge USPs/offers from business profile
-        trust_signals = self._normalize_trust_signals(business_profile.trust_signals_json or {})
+        trust_signals = self._normalize_trust_signals(business_profile.trust_signals_json or {}, bp=business_profile)
         bp_usps = business_profile.usp_json if isinstance(business_profile.usp_json, list) else []
         usps = list(dict.fromkeys(
             intent.get("usps", []) + [u if isinstance(u, str) else u.get("text", "") for u in bp_usps]
@@ -2240,7 +2256,7 @@ Return JSON:
         business_name = await self._get_business_name()
 
         # Extract trust signals + merge USPs/offers from business profile
-        trust_signals = self._normalize_trust_signals(business_profile.trust_signals_json or {})
+        trust_signals = self._normalize_trust_signals(business_profile.trust_signals_json or {}, bp=business_profile)
         bp_usps = business_profile.usp_json if isinstance(business_profile.usp_json, list) else []
         usps = list(dict.fromkeys(
             intent.get("usps", []) + [u if isinstance(u, str) else u.get("text", "") for u in bp_usps]

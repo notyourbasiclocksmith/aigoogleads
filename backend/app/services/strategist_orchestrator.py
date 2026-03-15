@@ -207,6 +207,16 @@ class StrategistOrchestrator:
             "brand_voice": bv,
             "constraints": constraints,
             "conversion_goal": p.primary_conversion_goal or "calls",
+            # Structured GBP fields
+            "google_rating": p.google_rating,
+            "review_count": p.review_count,
+            "business_hours": p.business_hours_json if isinstance(p.business_hours_json, dict) else {},
+            "service_radius_miles": p.service_radius_miles,
+            "city": p.city or "",
+            "state": p.state or "",
+            "address": p.address or "",
+            "zip_code": p.zip_code or "",
+            "primary_category": p.primary_category or "",
         }
 
     # ── PHASE HANDLERS ────────────────────────────────────────────────

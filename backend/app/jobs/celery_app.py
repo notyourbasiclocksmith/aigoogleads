@@ -96,6 +96,11 @@ celery_app.conf.beat_schedule = {
         "task": "app.jobs.tasks.auto_dispute_lsa_leads",
         "schedule": crontab(minute=30, hour="10,18"),
     },
+    # GBP — publish scheduled posts every 5 minutes
+    "gbp-publish-scheduled": {
+        "task": "app.jobs.tasks.publish_scheduled_gbp_posts",
+        "schedule": crontab(minute="*/5"),
+    },
 }
 
 celery_app.autodiscover_tasks(["app.jobs", "app.jobs.operator_tasks"])

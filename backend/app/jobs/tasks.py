@@ -173,6 +173,68 @@ async def _analyze_business_async(tenant_id: str):
             await analyzer.close()
 
 
+# ── GBP TASKS ──────────────────────────────────────────────────────
+
+@celery_app.task(name="app.jobs.tasks.publish_scheduled_gbp_posts")
+def publish_scheduled_gbp_posts():
+    """Celery beat task: publish all GBP posts whose scheduled_for has passed."""
+    import asyncio
+    asyncio.run(_publish_scheduled_gbp_posts_async())
+
+
+async def _publish_scheduled_gbp_posts_async():
+    from app.core.database import async_session_factory
+    from app.models.gbp_post import GBPPost, GBPPostStatus
+    from app.services.gbp_post_service import GBPPostService
+    from datetime import datetime, timezone
+
+    async with async_session_factory() as db:
+        now = datetime.now(timezone.utc)
+        result = await db.execute(
+            select(GBPPost).where(
+                GBPPost.status == GBPPostStatus.SCHEDULED,
+                GBPPost.scheduled_for <= now,
+            )
+        )
+        posts = result.scalars().all()
+        if not posts:
+            return
+
+        svc = GBPPostService(db)
+        for post in posts:
+            try:
+                pub_result = await svc.publish_post(post.tenant_id, post.id)
+                if pub_result.get("success"):
+                    logger.info("GBP scheduled post published", post_id=post.id)
+                else:
+                    logger.warning("GBP scheduled post failed", post_id=post.id, error=pub_result.get("error"))
+            except Exception as e:
+                logger.error("GBP scheduled publish error", post_id=post.id, error=str(e))
+        await db.commit()
+
+
+@celery_app.task(name="app.jobs.tasks.sync_gbp_reviews_task")
+def sync_gbp_reviews_task(tenant_id: str, location_id: str):
+    """Sync reviews for a single GBP location."""
+    import asyncio
+    asyncio.run(_sync_gbp_reviews_async(tenant_id, location_id))
+
+
+async def _sync_gbp_reviews_async(tenant_id: str, location_id: str):
+    from app.core.database import async_session_factory
+    from app.services.gbp_review_service import GBPReviewService
+
+    async with async_session_factory() as db:
+        try:
+            svc = GBPReviewService(db)
+            result = await svc.sync_reviews(tenant_id, location_id)
+            await db.commit()
+            logger.info("GBP reviews synced", tenant_id=tenant_id, location_id=location_id, result=result)
+        except Exception as e:
+            await db.rollback()
+            logger.error("GBP review sync failed", tenant_id=tenant_id, error=str(e))
+
+
 @celery_app.task(name="app.jobs.tasks.sync_ads_account_task")
 def sync_ads_account_task(tenant_id: str, integration_id: str, full_sync: bool = True):
     import asyncio

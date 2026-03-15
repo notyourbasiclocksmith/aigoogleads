@@ -37,6 +37,9 @@ from app.models.google_recommendation import GoogleRecommendation
 from app.models.lsa_lead import LSALead
 from app.models.lsa_conversation import LSAConversation
 from app.models.landing_page import LandingPage, LandingPageVariant, LandingPageEvent, ExpansionRecommendation, AIGenerationLog
+from app.models.gbp_connection import GBPConnection
+from app.models.gbp_location import GBPLocation
+from app.models.gbp_post import GBPPost, GBPPostTemplate, GBPReview
 
 __all__ = [
     "Tenant", "User", "TenantUser", "IntegrationGoogleAds",
@@ -52,6 +55,7 @@ __all__ = [
     "LSALead", "LSAConversation",
     "LandingPage", "LandingPageVariant", "LandingPageEvent",
     "ExpansionRecommendation", "AIGenerationLog",
+    "GBPConnection", "GBPLocation", "GBPPost", "GBPPostTemplate", "GBPReview",
 ]
 
 # V2 Models — imported so Alembic/ORM can discover them

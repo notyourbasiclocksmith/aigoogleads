@@ -26,3 +26,4 @@ class Tenant(Base):
     users = relationship("TenantUser", back_populates="tenant", lazy="selectin")
     business_profile = relationship("BusinessProfile", back_populates="tenant", uselist=False, lazy="selectin")
     integrations = relationship("IntegrationGoogleAds", back_populates="tenant", lazy="selectin")
+    gbp_connection = relationship("GBPConnection", back_populates="tenant", uselist=False, lazy="selectin")
