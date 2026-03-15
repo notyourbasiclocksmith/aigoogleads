@@ -528,6 +528,92 @@ async def ai_edit_landing_page(
     }
 
 
+class GenerateHeroImageRequest(BaseModel):
+    variant_id: str
+    prompt: Optional[str] = None  # Custom prompt, or auto-generate from content
+
+
+@router.post("/landing-pages/{page_id}/generate-image")
+async def generate_landing_page_image(
+    page_id: str,
+    req: GenerateHeroImageRequest,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate or regenerate a hero image for a landing page variant using SEOpix."""
+    from app.integrations.image_generator.client import ImageGeneratorClient
+    from app.models.business_profile import BusinessProfile
+    from app.models.tenant import Tenant
+
+    lp = await db.get(LandingPage, page_id)
+    if not lp or str(lp.tenant_id) != str(user.tenant_id):
+        raise HTTPException(404, "Landing page not found")
+
+    variant = await db.get(LandingPageVariant, req.variant_id)
+    if not variant or str(variant.landing_page_id) != page_id:
+        raise HTTPException(404, "Variant not found")
+
+    img_client = ImageGeneratorClient()
+    if not img_client.is_configured:
+        raise HTTPException(503, "Image generator not configured")
+
+    # Load business context
+    bp_result = await db.execute(
+        select(BusinessProfile).where(BusinessProfile.tenant_id == user.tenant_id)
+    )
+    bp = bp_result.scalar_one_or_none()
+    tenant = await db.get(Tenant, str(user.tenant_id))
+
+    content = variant.content_json or {}
+    hero = content.get("hero", {})
+
+    # Use custom prompt, or hero_image_prompt from content, or build default
+    prompt = req.prompt or hero.get("hero_image_prompt", "")
+    if not prompt:
+        service = lp.service or "service"
+        industry = bp.industry_classification if bp else (tenant.industry if tenant else "service")
+        prompt = (
+            f"Professional {industry} business photo: a licensed {service.lower()} expert "
+            f"performing work for a customer. Clean uniform, professional tools, well-lit workspace. "
+            f"Photorealistic, high quality, suitable for a landing page hero."
+        )
+
+    biz_name = tenant.name if tenant else "Business"
+    metadata = {
+        "businessName": biz_name,
+        "businessType": bp.industry_classification if bp else "service",
+        "city": bp.city if bp else "",
+        "description": f"Professional {lp.service} by {biz_name}",
+        "keywords": f"{lp.service}, {lp.location}, professional",
+    }
+
+    result = await img_client.generate_single(
+        prompt=prompt,
+        engine="dalle",
+        style="photorealistic",
+        size="1792x1024",
+        metadata=metadata,
+    )
+
+    if not result.get("success"):
+        raise HTTPException(500, result.get("error", "Image generation failed"))
+
+    # Store image URL in variant content
+    hero["hero_image_url"] = result["image_url"]
+    hero["hero_image_prompt"] = prompt
+    content["hero"] = hero
+    variant.content_json = content
+    if lp.content_json and variant.variant_key == "A":
+        lp.content_json = content
+    await db.commit()
+
+    return {
+        "variant_id": variant.id,
+        "image_url": result["image_url"],
+        "prompt": prompt,
+    }
+
+
 class UpdateVariantContentRequest(BaseModel):
     content: Dict[str, Any]
 

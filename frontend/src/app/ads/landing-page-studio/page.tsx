@@ -85,6 +85,9 @@ export default function LandingPageStudioPage() {
   const [cloneAdapt, setCloneAdapt] = useState("");
   const [cloning, setCloning] = useState(false);
 
+  // Image generation state
+  const [generatingImage, setGeneratingImage] = useState(false);
+
   // Preview mode
   const [previewMode, setPreviewMode] = useState<"desktop" | "mobile">("desktop");
 
@@ -150,6 +153,35 @@ export default function LandingPageStudioPage() {
       setError(e.message || "AI edit failed");
     } finally {
       setEditing(false);
+    }
+  }
+
+  // Generate hero image for current variant
+  async function handleGenerateImage() {
+    if (!activePage || generatingImage) return;
+    const variant = activePage.variants[activeVariantIdx];
+    if (!variant) return;
+
+    setGeneratingImage(true);
+    setError("");
+    try {
+      const result = await api.post(`/api/v2/strategist/landing-pages/${activePage.id}/generate-image`, {
+        variant_id: variant.id,
+      });
+      // Update the variant content with the new image URL
+      const updated = { ...activePage };
+      updated.variants = [...updated.variants];
+      const updatedContent = { ...updated.variants[activeVariantIdx].content };
+      updatedContent.hero = { ...updatedContent.hero, hero_image_url: result.image_url };
+      updated.variants[activeVariantIdx] = {
+        ...updated.variants[activeVariantIdx],
+        content: updatedContent,
+      };
+      setActivePage(updated);
+    } catch (e: any) {
+      setError(e.message || "Image generation failed");
+    } finally {
+      setGeneratingImage(false);
     }
   }
 
@@ -405,6 +437,18 @@ export default function LandingPageStudioPage() {
                       {v.is_winner && <Star className="w-3 h-3 inline ml-1 text-amber-500" />}
                     </button>
                   ))}
+                  <div className="ml-auto">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs gap-1"
+                      onClick={handleGenerateImage}
+                      disabled={generatingImage}
+                    >
+                      {generatingImage ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                      {generatingImage ? "Generating..." : "Generate Image"}
+                    </Button>
+                  </div>
                 </div>
               )}
 
@@ -601,15 +645,19 @@ function LandingPagePreview({ content, style }: { content: any; style?: any }) {
       {/* ── HERO ── */}
       <div
         className="relative text-white p-8 md:p-12 text-center"
-        style={{ background: `linear-gradient(135deg, ${primaryColor}, ${primaryColor}dd)` }}
+        style={{
+          background: hero.hero_image_url
+            ? `linear-gradient(rgba(0,0,0,0.55), rgba(0,0,0,0.65)), url(${hero.hero_image_url}) center/cover no-repeat`
+            : `linear-gradient(135deg, ${primaryColor}, ${primaryColor}dd)`,
+        }}
       >
         {hero.urgency_badge && (
           <div className="inline-block bg-amber-400 text-amber-900 text-xs font-bold px-3 py-1 rounded-full mb-4">
             {hero.urgency_badge}
           </div>
         )}
-        <h1 className="text-2xl md:text-3xl font-bold mb-3 leading-tight">{hero.headline || "Your Headline Here"}</h1>
-        <p className="text-white/80 text-sm md:text-base mb-6 max-w-xl mx-auto">{hero.subheadline || ""}</p>
+        <h1 className="text-2xl md:text-3xl font-bold mb-3 leading-tight drop-shadow-lg">{hero.headline || "Your Headline Here"}</h1>
+        <p className="text-white/90 text-sm md:text-base mb-6 max-w-xl mx-auto drop-shadow">{hero.subheadline || ""}</p>
         {hero.cta_text && (
           <button
             className="inline-flex items-center gap-2 px-6 py-3 rounded-lg font-bold text-sm shadow-lg transition-transform hover:scale-105"
@@ -620,7 +668,7 @@ function LandingPagePreview({ content, style }: { content: any; style?: any }) {
           </button>
         )}
         {hero.cta_phone && (
-          <p className="text-white/60 text-xs mt-3">
+          <p className="text-white/70 text-xs mt-3 drop-shadow">
             <Phone className="w-3 h-3 inline mr-1" /> {hero.cta_phone}
           </p>
         )}

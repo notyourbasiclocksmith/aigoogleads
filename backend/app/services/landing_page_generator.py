@@ -87,6 +87,12 @@ class LandingPageGenerator:
         if not variants or not isinstance(variants, list) or len(variants) == 0:
             return {"error": "AI failed to generate landing page variants"}
 
+        # Agent 3: Generate hero images for each variant
+        variants = await self._generate_variant_images(
+            variants, service=service, business_name=business_name,
+            industry=industry, location=location,
+        )
+
         # Save to DB
         slug = f"{service.lower().replace(' ', '-')}-{location.lower().replace(' ', '-')}-{uuid.uuid4().hex[:6]}"
         slug = slug.replace("--", "-").strip("-")[:250]
@@ -296,6 +302,70 @@ Use the real business name, phone, and details throughout."""
                 for vr in variant_records
             ],
         }
+
+    async def _generate_variant_images(
+        self,
+        variants: List[Dict],
+        service: str = "",
+        business_name: str = "",
+        industry: str = "",
+        location: str = "",
+    ) -> List[Dict]:
+        """Generate real AI images for each variant's hero section using SEOpix."""
+        from app.integrations.image_generator.client import ImageGeneratorClient
+
+        img_client = ImageGeneratorClient()
+        if not img_client.is_configured:
+            logger.info("Image generator not configured, skipping image generation")
+            return variants
+
+        for variant in variants:
+            content = variant.get("content", {})
+            hero = content.get("hero", {})
+            prompt = hero.get("hero_image_prompt", "")
+
+            if not prompt:
+                # Build a default prompt from context
+                prompt = (
+                    f"Professional {industry or 'service'} business photo: "
+                    f"a licensed {service.lower()} expert performing work for a customer. "
+                    f"Clean uniform, professional tools, well-lit workspace. "
+                    f"Photorealistic, high quality, suitable for a landing page hero."
+                )
+
+            metadata = {
+                "businessName": business_name,
+                "businessType": industry or "service",
+                "city": location.split(",")[0].strip() if location else "",
+                "description": f"Professional {service} by {business_name}",
+                "keywords": f"{service}, {industry}, {location}, professional",
+            }
+
+            try:
+                result = await img_client.generate_single(
+                    prompt=prompt,
+                    engine="dalle",
+                    style="photorealistic",
+                    size="1792x1024",  # Wide hero format
+                    metadata=metadata,
+                )
+                if result.get("success") and result.get("image_url"):
+                    hero["hero_image_url"] = result["image_url"]
+                    logger.info("Hero image generated",
+                                variant=variant.get("name"),
+                                url=result["image_url"][:80])
+                else:
+                    logger.warning("Hero image generation failed",
+                                   variant=variant.get("name"),
+                                   error=result.get("error"))
+            except Exception as e:
+                logger.warning("Hero image generation exception",
+                               variant=variant.get("name"), error=str(e))
+
+            content["hero"] = hero
+            variant["content"] = content
+
+        return variants
 
     async def _call_ai(self, system: str, user_prompt: str, temperature: float = 0.6, max_tokens: int = 4000) -> Optional[Dict]:
         try:
