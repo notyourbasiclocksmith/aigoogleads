@@ -177,12 +177,12 @@ async def strategist_chat_stream(
                     from app.jobs.tasks import bulk_generate_campaigns_task
                     intent = req.session_state.get("intent", {})
                     base_prompt = intent.get("original_prompt", bulk.get("base_prompt", ""))
-                    task = bulk_generate_campaigns_task.delay(
+                    task_obj = bulk_generate_campaigns_task.delay(
                         str(user.tenant_id),
                         bulk["service_variants"],
                         base_prompt,
                     )
-                    result["bulk_task_id"] = task.id
+                    result["bulk_task_id"] = task_obj.id
                 result_holder["data"] = result
             except Exception as e:
                 logger.error("Streaming orchestrator error", error=str(e))
@@ -192,39 +192,52 @@ async def strategist_chat_stream(
 
         task = asyncio.create_task(run_orchestrator())
 
-        # Stream progress events while orchestrator runs
-        while True:
-            try:
-                event = await asyncio.wait_for(progress_queue.get(), timeout=30.0)
-            except asyncio.TimeoutError:
-                yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
-                if task.done():
+        try:
+            # Stream progress events while orchestrator runs
+            while True:
+                try:
+                    event = await asyncio.wait_for(progress_queue.get(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+                    if task.done():
+                        break
+                    continue
+
+                if event.get("type") == "_done":
                     break
-                continue
 
-            if event.get("type") == "_done":
-                break
+                yield f"data: {json.dumps(event)}\n\n"
 
-            yield f"data: {json.dumps(event)}\n\n"
+            # Ensure the task is fully done before we release the DB session
+            if not task.done():
+                await task
 
-        # Check for errors
-        if error_holder:
-            yield f"data: {json.dumps({'type': 'error', 'message': error_holder['message']})}\n\n"
-            return
+            # Check for errors
+            if error_holder:
+                yield f"data: {json.dumps({'type': 'error', 'message': error_holder['message']})}\n\n"
+                return
 
-        # Stream the reply text in chunks for typewriter effect
-        result = result_holder.get("data", {})
-        reply = result.get("reply", "")
-        if reply:
-            # Stream in ~60-char chunks for smooth typewriter
-            chunk_size = 60
-            for i in range(0, len(reply), chunk_size):
-                chunk = reply[i:i + chunk_size]
-                yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
-                await asyncio.sleep(0.03)  # 30ms between chunks
+            # Stream the reply text in chunks for typewriter effect
+            result = result_holder.get("data", {})
+            reply = result.get("reply", "")
+            if reply:
+                # Stream in ~60-char chunks for smooth typewriter
+                chunk_size = 60
+                for i in range(0, len(reply), chunk_size):
+                    chunk = reply[i:i + chunk_size]
+                    yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
+                    await asyncio.sleep(0.03)  # 30ms between chunks
 
-        # Send full result (without reply text, already streamed)
-        yield f"data: {json.dumps({'type': 'complete', 'data': result})}\n\n"
+            # Send full result (without reply text, already streamed)
+            yield f"data: {json.dumps({'type': 'complete', 'data': result})}\n\n"
+        finally:
+            # Always await task to prevent DB connection leak
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
     return StreamingResponse(
         event_stream(),

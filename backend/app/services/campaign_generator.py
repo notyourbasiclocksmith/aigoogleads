@@ -14,6 +14,7 @@ Pipeline:
 10) Return full preview with expert reasoning for every decision
 """
 import asyncio
+import re
 import uuid
 import json
 import time
@@ -103,6 +104,94 @@ class CampaignGeneratorService:
         self.db = db
         self.tenant_id = tenant_id
         self._biz_name_cache: Optional[str] = None
+
+    @staticmethod
+    def _normalize_trust_signals(raw: Any) -> Dict[str, Any]:
+        """
+        Normalize trust_signals_json to a consistent dict.
+        Handles two formats:
+          1. Scanner format: {"list": ["licensed & insured", "15+ years experience", ...]}
+          2. Structured format: {"years_experience": 15, "google_rating": 4.9, ...}
+        Returns a dict with both structured keys (if parseable) and a "signals_list" key.
+        """
+        if not raw or not isinstance(raw, dict):
+            return {"signals_list": []}
+
+        result: Dict[str, Any] = {}
+        signals_list: list = []
+
+        # Handle scanner format: {"list": [...]}
+        if "list" in raw and isinstance(raw["list"], list):
+            signals_list = [str(s) for s in raw["list"] if s]
+            # Try to parse structured data from string signals
+            for s in signals_list:
+                s_lower = s.lower().strip()
+                # "15+ years experience" or "15 years of experience"
+                m = re.search(r'(\d+)\+?\s*years?', s_lower)
+                if m and "years_experience" not in result:
+                    result["years_experience"] = m.group(1) + "+"
+                # "4.9 star" or "5-star"
+                m = re.search(r'(\d+\.?\d*)\s*[\-\s]?star', s_lower)
+                if m and "google_rating" not in result:
+                    result["google_rating"] = m.group(1)
+                # "100+ reviews" or "200 positive reviews"
+                m = re.search(r'(\d+)\+?\s*(?:positive\s+)?reviews?', s_lower)
+                if m and "review_count" not in result:
+                    result["review_count"] = m.group(1)
+                # "licensed & insured" or "bonded & insured"
+                if "licensed" in s_lower or "bonded" in s_lower:
+                    result["license"] = s.strip()
+                if "guarantee" in s_lower:
+                    result["guarantee"] = s.strip()
+                if "certified" in s_lower:
+                    result.setdefault("certifications", s.strip())
+        else:
+            # Structured format — pass through directly
+            for k, v in raw.items():
+                if v:
+                    result[k] = v
+
+        result["signals_list"] = signals_list
+        return result
+
+    @staticmethod
+    def _build_trust_str(ts: Dict[str, Any]) -> str:
+        """Build a formatted trust signal string for LLM prompts from normalized trust signals."""
+        items = []
+        if ts.get("years_experience"):
+            items.append(f"{ts['years_experience']} years experience")
+        if ts.get("google_rating"):
+            items.append(f"{ts['google_rating']}★ Google rating")
+        if ts.get("review_count"):
+            items.append(f"{ts['review_count']}+ reviews")
+        if ts.get("license"):
+            items.append(f"Licensed: {ts['license']}")
+        if ts.get("insurance"):
+            items.append(f"Insurance: {ts['insurance']}")
+        if ts.get("certifications"):
+            certs = ts["certifications"] if isinstance(ts["certifications"], list) else [ts["certifications"]]
+            items.append(f"Certifications: {', '.join(str(c) for c in certs)}")
+        if ts.get("service_radius"):
+            items.append(f"Service area: {ts['service_radius']}")
+        if ts.get("business_hours"):
+            items.append(f"Hours: {ts['business_hours']}")
+        if ts.get("response_time"):
+            items.append(f"Response time: {ts['response_time']}")
+        if ts.get("guarantee"):
+            items.append(f"Guarantee: {ts['guarantee']}")
+        # Include any extra structured keys
+        handled = {"years_experience", "google_rating", "review_count", "license",
+                   "insurance", "certifications", "service_radius", "business_hours",
+                   "response_time", "guarantee", "signals_list"}
+        for k, v in ts.items():
+            if k not in handled and v:
+                items.append(f"{k.replace('_', ' ').title()}: {v}")
+        # Append raw scanner signals not already covered
+        for s in ts.get("signals_list", []):
+            s_lower = s.lower()
+            if not any(s_lower in item.lower() for item in items):
+                items.append(s)
+        return ", ".join(items) if items else "none provided"
 
     @staticmethod
     def _safe_int(val, default: int = 0) -> int:
@@ -1535,13 +1624,30 @@ Return JSON: {{
     ) -> Dict[str, Any]:
         services = intent.get("services", ["General Service"])
         locations = intent.get("locations", [])
-        offers = intent.get("offers", [])
-        usps = intent.get("usps", [])
+
+        # Merge offers from intent + business profile (deduplicated)
+        intent_offers = intent.get("offers", [])
+        bp_offers = business_profile.offers_json if isinstance(business_profile.offers_json, list) else []
+        bp_offer_texts = [o if isinstance(o, str) else o.get("text", "") for o in bp_offers]
+        offers = list(dict.fromkeys(intent_offers + [o for o in bp_offer_texts if o]))
+
+        # Merge USPs from intent + business profile (deduplicated)
+        intent_usps = intent.get("usps", [])
+        bp_usps = business_profile.usp_json if isinstance(business_profile.usp_json, list) else []
+        bp_usp_texts = [u if isinstance(u, str) else u.get("text", "") for u in bp_usps]
+        usps = list(dict.fromkeys(intent_usps + [u for u in bp_usp_texts if u]))
+
         phone = business_profile.phone or ""
         website = business_profile.website_url or ""
         industry = (business_profile.industry_classification or "general").lower()
         brand_voice = business_profile.brand_voice_json or {}
         tone = brand_voice.get("tone", "professional")
+
+        # Extract trust signals from business profile for ad personalization
+        # Format may be {"list": ["licensed & insured", ...]} or {"years_experience": 15, ...}
+        raw_ts = business_profile.trust_signals_json or {}
+        trust_signals = self._normalize_trust_signals(raw_ts)
+        biz_description = business_profile.description or ""
 
         # Fetch business name from tenant
         tenant = await self.db.get(Tenant, self.tenant_id)
@@ -1627,6 +1733,7 @@ Return JSON: {{
                 urgency=intent.get("urgency"), competitor_insights=competitor_insights,
                 campaign_type=campaign_type, business_name=business_name,
                 website=website, raw_prompt=intent.get("raw_prompt", ""),
+                trust_signals=trust_signals, biz_description=biz_description,
             )
             if not llm_copy:
                 logger.warning("Primary AI ad copy failed, retrying with simplified prompt", service=svc)
@@ -1749,6 +1856,17 @@ Return JSON: {{
         industry = (business_profile.industry_classification or "general").lower()
         business_name = await self._get_business_name()
 
+        # Extract trust signals + merge USPs/offers from business profile
+        trust_signals = self._normalize_trust_signals(business_profile.trust_signals_json or {})
+        bp_usps = business_profile.usp_json if isinstance(business_profile.usp_json, list) else []
+        usps = list(dict.fromkeys(
+            intent.get("usps", []) + [u if isinstance(u, str) else u.get("text", "") for u in bp_usps]
+        ))
+        bp_offers = business_profile.offers_json if isinstance(business_profile.offers_json, list) else []
+        offers = list(dict.fromkeys(
+            intent.get("offers", []) + [o if isinstance(o, str) else o.get("text", "") for o in bp_offers]
+        ))
+
         primary_service = services[0] if services else "Service"
         urgency_tag = "Emergency" if intent.get("urgency") == "high" else "Standard"
         campaign_name = f"{primary_service} | CALL | {urgency_tag}"
@@ -1774,6 +1892,7 @@ Return JSON: {{
                 industry=industry, business_name=business_name,
                 urgency=intent.get("urgency"), competitor_insights=competitor_insights,
                 raw_prompt=intent.get("raw_prompt", ""),
+                trust_signals=trust_signals, usps=usps,
             )
             if not call_copy:
                 loc = locations[0] if locations else "Your Area"
@@ -1808,8 +1927,8 @@ Return JSON: {{
         ]))
 
         extensions = await self._generate_extensions_ai(
-            business_profile, services, intent.get("offers", []),
-            intent.get("usps", []), competitor_insights, intent,
+            business_profile, services, offers,
+            usps, competitor_insights, intent,
         )
 
         return {
@@ -1851,7 +1970,8 @@ Return JSON: {{
     async def _generate_call_ad_copy_llm(
         self, service: str, locations: List[str], phone: str, industry: str,
         business_name: str, urgency: Optional[str], competitor_insights: Dict,
-        raw_prompt: str = "",
+        raw_prompt: str = "", trust_signals: Optional[Dict] = None,
+        usps: Optional[List[str]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Generate call-only ad copy via AI. Returns headline1/2, description1/2."""
         if not settings.OPENAI_API_KEY:
@@ -1860,10 +1980,14 @@ Return JSON: {{
         loc = locations[0] if locations else "local area"
         comp_gaps = ", ".join(competitor_insights.get("gaps", competitor_insights.get("differentiation_angles", []))) or "none"
         is_emergency = urgency == "high"
+        ts = trust_signals or {}
+        trust_str = self._build_trust_str(ts)
+        usp_str = " | ".join(usps[:5]) if usps else "none provided"
 
         system = """You are a Google Ads Call-Only ad specialist. Generate ad copy that maximizes
 phone calls. Call-Only ads show the phone number directly — the user taps to call.
-You respond ONLY with valid JSON. Count characters precisely."""
+You respond ONLY with valid JSON. Count characters precisely.
+CRITICAL: Include the business name and real trust signals in the ad copy."""
 
         user_msg = f"""Generate a Call-Only ad for:
 Business: {business_name}
@@ -1872,16 +1996,19 @@ Industry: {industry}
 Location: {loc}
 Phone: {phone}
 Urgency: {'HIGH — emergency' if is_emergency else 'standard'}
+Trust signals: {trust_str}
+USPs: {usp_str}
 Competitor gaps: {comp_gaps}
 User request: "{raw_prompt}"
 
 CALL-ONLY AD FORMAT:
-- headline1: ≤30 chars — must contain the service name. This is the main hook.
-- headline2: ≤30 chars — location or trust signal
-- description1: ≤35 chars — value proposition or urgency trigger
-- description2: ≤35 chars — CTA or differentiator
+- headline1: ≤30 chars — must contain the service name + business identity. Example: "{service[:15]} | {business_name[:12]}"
+- headline2: ≤30 chars — trust signal or location. Example: "{ts.get('years_experience', '10')}+ Yrs Experience" or "Serving {loc}"
+- description1: ≤35 chars — value proposition from user request pain points
+- description2: ≤35 chars — CTA with differentiator
 
-Extract pain points from the user request for maximum relevance.
+Extract SPECIFIC pain points from the user request. Do NOT use generic copy.
+Include "{business_name}" in at least one headline if it fits in ≤30 chars.
 
 Return JSON:
 {{
@@ -1922,6 +2049,17 @@ Return JSON:
         industry = (business_profile.industry_classification or "general").lower()
         business_name = await self._get_business_name()
 
+        # Extract trust signals + merge USPs/offers from business profile
+        trust_signals = self._normalize_trust_signals(business_profile.trust_signals_json or {})
+        bp_usps = business_profile.usp_json if isinstance(business_profile.usp_json, list) else []
+        usps = list(dict.fromkeys(
+            intent.get("usps", []) + [u if isinstance(u, str) else u.get("text", "") for u in bp_usps]
+        ))
+        bp_offers = business_profile.offers_json if isinstance(business_profile.offers_json, list) else []
+        offers = list(dict.fromkeys(
+            intent.get("offers", []) + [o if isinstance(o, str) else o.get("text", "") for o in bp_offers]
+        ))
+
         primary_service = services[0] if services else "Service"
         campaign_name = f"{primary_service} | PMAX | {'Emergency' if intent.get('urgency') == 'high' else 'Standard'}"
 
@@ -1934,8 +2072,8 @@ Return JSON:
             services=services, locations=locations, phone=phone, website=website,
             industry=industry, business_name=business_name,
             urgency=intent.get("urgency"), competitor_insights=competitor_insights,
-            raw_prompt=intent.get("raw_prompt", ""), usps=intent.get("usps", []),
-            offers=intent.get("offers", []),
+            raw_prompt=intent.get("raw_prompt", ""), usps=usps,
+            offers=offers, trust_signals=trust_signals,
         )
 
         if not pmax_assets:
@@ -1974,8 +2112,8 @@ Return JSON:
             asset_groups.append(svc_assets)
 
         extensions = await self._generate_extensions_ai(
-            business_profile, services, intent.get("offers", []),
-            intent.get("usps", []), competitor_insights, intent,
+            business_profile, services, offers,
+            usps, competitor_insights, intent,
         )
 
         return {
@@ -2017,7 +2155,7 @@ Return JSON:
         self, services: List[str], locations: List[str], phone: str, website: str,
         industry: str, business_name: str, urgency: Optional[str],
         competitor_insights: Dict, raw_prompt: str = "", usps: List[str] = None,
-        offers: List[str] = None,
+        offers: List[str] = None, trust_signals: Optional[Dict] = None,
     ) -> Optional[Dict[str, Any]]:
         """Generate Performance Max text assets via AI."""
         if not settings.OPENAI_API_KEY:
@@ -2029,9 +2167,14 @@ Return JSON:
         offer_block = ", ".join(offers[:3]) if offers else "none"
         comp_gaps = ", ".join(competitor_insights.get("gaps", competitor_insights.get("differentiation_angles", []))) or "none"
 
+        # Build trust signal summary
+        ts = trust_signals or {}
+        trust_str = self._build_trust_str(ts)
+
         system = """You are a Google Ads Performance Max specialist. Generate text assets for
 PMax asset groups. PMax serves across Search, Display, YouTube, Gmail, and Maps.
-Assets must work in ALL these contexts. Respond ONLY with valid JSON."""
+Assets must work in ALL these contexts. Respond ONLY with valid JSON.
+CRITICAL: Include the business name and real trust signals (years experience, rating, etc.) in the assets."""
 
         user_msg = f"""Generate PMax text assets for:
 Business: {business_name}
@@ -2041,17 +2184,20 @@ Location: {loc}
 Phone: {phone or 'N/A'}
 Website: {website or 'N/A'}
 Urgency: {'HIGH' if urgency == 'high' else 'standard'}
+Trust signals: {trust_str}
 USPs: {usp_block}
 Offers: {offer_block}
 Competitor gaps: {comp_gaps}
 User request: "{raw_prompt}"
 
 PMAX TEXT ASSET REQUIREMENTS:
-- headlines: 5 headlines, each ≤30 chars — keyword-rich, diverse
-- long_headlines: 5 long headlines, each ≤90 chars — expanded value props
-- descriptions: 5 descriptions, each ≤90 chars — persuasive, varied
+- headlines: 5 headlines, each ≤30 chars — keyword-rich, diverse, include business name
+- long_headlines: 5 long headlines, each ≤90 chars — expanded value props with trust signals
+- descriptions: 5 descriptions, each ≤90 chars — persuasive, varied, include trust signals
 - business_name: ≤25 chars
 
+Include "{business_name}" in at least 2 headlines.
+Use REAL trust signals (years experience, rating) — NOT generic phrases.
 Headlines must work on Search AND as Display/YouTube overlays.
 Descriptions must be compelling standalone AND in combination.
 
@@ -2093,6 +2239,17 @@ Return JSON:
         industry = (business_profile.industry_classification or "general").lower()
         business_name = await self._get_business_name()
 
+        # Extract trust signals + merge USPs/offers from business profile
+        trust_signals = self._normalize_trust_signals(business_profile.trust_signals_json or {})
+        bp_usps = business_profile.usp_json if isinstance(business_profile.usp_json, list) else []
+        usps = list(dict.fromkeys(
+            intent.get("usps", []) + [u if isinstance(u, str) else u.get("text", "") for u in bp_usps]
+        ))
+        bp_offers = business_profile.offers_json if isinstance(business_profile.offers_json, list) else []
+        offers = list(dict.fromkeys(
+            intent.get("offers", []) + [o if isinstance(o, str) else o.get("text", "") for o in bp_offers]
+        ))
+
         primary_service = services[0] if services else "Service"
         campaign_name = f"{primary_service} | DISPLAY | {'Remarketing' if intent.get('goal') == 'remarketing' else 'Prospecting'}"
 
@@ -2105,8 +2262,8 @@ Return JSON:
             services=services, locations=locations, phone=phone, website=website,
             industry=industry, business_name=business_name,
             urgency=intent.get("urgency"), competitor_insights=competitor_insights,
-            raw_prompt=intent.get("raw_prompt", ""), usps=intent.get("usps", []),
-            offers=intent.get("offers", []),
+            raw_prompt=intent.get("raw_prompt", ""), usps=usps,
+            offers=offers, trust_signals=trust_signals,
         )
 
         if not display_copy:
@@ -2152,8 +2309,8 @@ Return JSON:
             ad_groups.append(ad_group)
 
         extensions = await self._generate_extensions_ai(
-            business_profile, services, intent.get("offers", []),
-            intent.get("usps", []), competitor_insights, intent,
+            business_profile, services, offers,
+            usps, competitor_insights, intent,
         )
 
         return {
@@ -2194,7 +2351,7 @@ Return JSON:
         self, services: List[str], locations: List[str], phone: str, website: str,
         industry: str, business_name: str, urgency: Optional[str],
         competitor_insights: Dict, raw_prompt: str = "", usps: List[str] = None,
-        offers: List[str] = None,
+        offers: List[str] = None, trust_signals: Optional[Dict] = None,
     ) -> Optional[Dict[str, Any]]:
         """Generate responsive display ad copy via AI."""
         if not settings.OPENAI_API_KEY:
@@ -2206,9 +2363,14 @@ Return JSON:
         offer_block = ", ".join(offers[:3]) if offers else "none"
         comp_gaps = ", ".join(competitor_insights.get("gaps", competitor_insights.get("differentiation_angles", []))) or "none"
 
+        # Build trust signal summary
+        ts = trust_signals or {}
+        trust_str = self._build_trust_str(ts)
+
         system = """You are a Google Display Network specialist. Generate responsive display ad copy
 that works across websites, apps, and Gmail. Display ads are visual — copy must be
-punchy, brand-forward, and work with image overlays. Respond ONLY with valid JSON."""
+punchy, brand-forward, and work with image overlays. Respond ONLY with valid JSON.
+CRITICAL: Include the business name and real trust signals in the copy."""
 
         user_msg = f"""Generate responsive display ad copy for:
 Business: {business_name}
@@ -2217,17 +2379,20 @@ Industry: {industry}
 Location: {loc}
 Phone: {phone or 'N/A'}
 Urgency: {'HIGH' if urgency == 'high' else 'standard'}
+Trust signals: {trust_str}
 USPs: {usp_block}
 Offers: {offer_block}
 Competitor gaps: {comp_gaps}
 User request: "{raw_prompt}"
 
 RESPONSIVE DISPLAY AD FORMAT:
-- short_headlines: 5 headlines, each ≤30 chars — punchy, brand-forward
-- long_headline: 1 expanded headline, ≤90 chars — full value prop
-- descriptions: 5 descriptions, each ≤90 chars — persuasive, varied
+- short_headlines: 5 headlines, each ≤30 chars — punchy, brand-forward, include business name
+- long_headline: 1 expanded headline, ≤90 chars — full value prop with trust signals
+- descriptions: 5 descriptions, each ≤90 chars — persuasive, varied, include trust signals
 - business_name: ≤25 chars
 
+Include "{business_name}" in at least 1 headline.
+Use REAL trust signals (years experience, rating) — NOT generic phrases.
 Display ads appear on websites/apps — they need to INTERRUPT attention.
 Use bold claims, urgency, and specific numbers (not vague superlatives).
 
@@ -2266,6 +2431,8 @@ Return JSON:
         business_name: str,
         website: str,
         raw_prompt: str = "",
+        trust_signals: Optional[Dict] = None,
+        biz_description: str = "",
     ) -> Optional[Dict[str, Any]]:
         """
         Use OpenAI to generate expert-quality Google Ads RSA copy.
@@ -2286,6 +2453,14 @@ Return JSON:
         comp_themes = ", ".join(competitor_insights.get("common_themes", [])) or "unknown"
         comp_gaps = ", ".join(competitor_insights.get("gaps", competitor_insights.get("differentiation_angles", []))) or "none identified"
         comp_weaknesses = ", ".join(competitor_insights.get("weaknesses", [])) or "unknown"
+
+        # Build trust signals block from business profile
+        ts = trust_signals or {}
+        trust_str = self._build_trust_str(ts)
+        if trust_str and trust_str != "none provided":
+            trust_block = "\n".join(f"  - {item.strip()}" for item in trust_str.split(", ") if item.strip())
+        else:
+            trust_block = "  (none provided — use generic trust language)"
 
         is_emergency = urgency == "high" or industry in (
             "locksmith", "plumbing", "hvac", "towing", "restoration", "pest control",
@@ -2317,13 +2492,22 @@ You respond ONLY with valid JSON. No markdown, no explanation outside JSON."""
 ║  GOOGLE ADS RSA GENERATION — EXPERT BRIEF                       ║
 ╚══════════════════════════════════════════════════════════════════╝
 
-── CLIENT PROFILE ──────────────────────────────────────────────
+── CLIENT PROFILE (BUSINESS IDENTITY — USE THIS IN ADS!) ──────
 Business:       {business_name or '[Name not set]'}
 Industry:       {industry}
 Website:        {website or 'N/A'}
 Phone:          {phone or 'N/A'}
 Brand tone:     {tone}
 Service areas:  {loc_list}
+{'Description:    ' + biz_description if biz_description else ''}
+
+── TRUST SIGNALS (INJECT THESE INTO HEADLINES & DESCRIPTIONS!) ─
+{trust_block}
+
+CRITICAL: You MUST use these trust signals in your ad copy. They are REAL,
+verified facts about this business. Ads with specific trust signals
+(e.g. "15+ Years Experience", "4.9★ Rating") outperform generic ads by 30-50%.
+Include the business name "{business_name}" in at least 2 headlines.
 
 ── AD GROUP CONTEXT ────────────────────────────────────────────
 Target service: {service}

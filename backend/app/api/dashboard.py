@@ -477,7 +477,7 @@ async def get_health_check(
             "campaigns_total": cs.total if cs else 0,
             "campaigns_enabled": cs.enabled if cs else 0,
             "autonomy_mode": autonomy_mode,
-            "last_optimization": lc.created_at.isoformat() if lc else None,
+            "last_optimization": lc.started_at.isoformat() if lc else None,
             "last_optimization_status": lc.status if lc else None,
             "last_scan_id": last_scan_id,
             "last_scan_problems": last_scan_problems,
