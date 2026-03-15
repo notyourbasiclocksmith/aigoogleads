@@ -39,7 +39,7 @@ def _client_config() -> dict:
     }
 
 
-def get_authorization_url(tenant_id: str) -> str:
+def get_authorization_url(tenant_id: str, origin: str = "onboarding") -> str:
     """Generate GBP OAuth authorization URL."""
     flow = Flow.from_client_config(
         _client_config(),
@@ -50,7 +50,7 @@ def get_authorization_url(tenant_id: str) -> str:
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
-        state=f"gbp:{tenant_id}",
+        state=f"gbp:{tenant_id}:{origin}",
     )
     return authorization_url
 

@@ -22,11 +22,14 @@ router = APIRouter()
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @router.get("/oauth/authorize")
-async def gbp_authorize(user: CurrentUser = Depends(require_tenant)):
+async def gbp_authorize(
+    user: CurrentUser = Depends(require_tenant),
+    origin: str = Query("onboarding"),
+):
     """Get GBP OAuth authorization URL."""
     from app.services.gbp_oauth_service import get_authorization_url
-    url = get_authorization_url(user.tenant_id)
-    return {"authorization_url": url}
+    url = get_authorization_url(user.tenant_id, origin=origin)
+    return {"auth_url": url, "authorization_url": url}
 
 
 @router.get("/oauth/callback")
@@ -46,9 +49,11 @@ async def gbp_callback(
     result = await exchange_code_for_tokens(code, tenant_id, db)
     await db.commit()
 
-    # Redirect to frontend
+    # Redirect to frontend — settings or onboarding depending on origin
     frontend_url = settings.APP_URL
-    return RedirectResponse(url=f"{frontend_url}/onboarding?gbp=connected", status_code=302)
+    origin = parts[2] if len(parts) > 2 else "onboarding"
+    redirect_path = "/settings" if origin == "settings" else "/onboarding"
+    return RedirectResponse(url=f"{frontend_url}{redirect_path}?gbp=connected", status_code=302)
 
 
 @router.get("/oauth/status")
@@ -69,6 +74,29 @@ async def gbp_status(
         "location_name": conn.location_name if conn else None,
         "last_sync": conn.last_sync_at.isoformat() if conn and conn.last_sync_at else None,
     }
+
+
+@router.delete("/oauth/disconnect")
+async def gbp_disconnect(
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Disconnect GBP by deactivating the connection."""
+    from sqlalchemy import select
+    from app.models.gbp_connection import GBPConnection
+
+    result = await db.execute(
+        select(GBPConnection).where(GBPConnection.tenant_id == user.tenant_id)
+    )
+    conn = result.scalar_one_or_none()
+    if not conn:
+        raise HTTPException(status_code=404, detail="No GBP connection found")
+
+    conn.is_active = False
+    conn.access_token_encrypted = None
+    conn.refresh_token_encrypted = None
+    await db.commit()
+    return {"status": "disconnected"}
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

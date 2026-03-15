@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
-import { Save, Shield, Bell, Users, Link2, RefreshCw, CheckCircle2, XCircle, Loader2, BarChart3, Zap, AlertTriangle, Target, ExternalLink, Send } from "lucide-react";
+import { Save, Shield, Bell, Users, Link2, RefreshCw, CheckCircle2, XCircle, Loader2, BarChart3, Zap, AlertTriangle, Target, ExternalLink, Send, MapPin, Globe, Star, Clock, Building2, Share2 } from "lucide-react";
 
 export default function SettingsPage() {
   const [profile, setProfile] = useState<any>({});
@@ -186,34 +186,295 @@ export default function SettingsPage() {
                 <label className="text-sm font-medium">Business Name</label>
                 <Input
                   value={profile.business_name || ""}
-                  onChange={(e) => setProfile({ ...profile, business_name: e.target.value })}
+                  onChange={(e: any) => setProfile({ ...profile, business_name: e.target.value })}
                 />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">Industry</label>
                 <Input
                   value={profile.industry || ""}
-                  onChange={(e) => setProfile({ ...profile, industry: e.target.value })}
+                  onChange={(e: any) => setProfile({ ...profile, industry: e.target.value })}
                 />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">Phone</label>
                 <Input
                   value={profile.phone || ""}
-                  onChange={(e) => setProfile({ ...profile, phone: e.target.value })}
+                  onChange={(e: any) => setProfile({ ...profile, phone: e.target.value })}
                 />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">Website</label>
                 <Input
                   value={profile.website_url || ""}
-                  onChange={(e) => setProfile({ ...profile, website_url: e.target.value })}
+                  onChange={(e: any) => setProfile({ ...profile, website_url: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2 md:col-span-2">
+                <label className="text-sm font-medium">Business Description</label>
+                <textarea
+                  className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  value={profile.description || ""}
+                  onChange={(e: any) => setProfile({ ...profile, description: e.target.value })}
+                  placeholder="Describe your business..."
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Service Area</label>
+                <Input
+                  value={profile.service_area || ""}
+                  onChange={(e: any) => setProfile({ ...profile, service_area: e.target.value })}
+                  placeholder="e.g. Miami, FL"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Conversion Goal</label>
+                <select
+                  value={profile.conversion_goal || "calls"}
+                  onChange={(e: any) => setProfile({ ...profile, conversion_goal: e.target.value })}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                >
+                  <option value="calls">Phone Calls</option>
+                  <option value="form_submissions">Form Submissions</option>
+                  <option value="bookings">Bookings</option>
+                  <option value="store_visits">Store Visits</option>
+                  <option value="purchases">Purchases</option>
+                </select>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Monthly Budget ($)</label>
+                <Input
+                  type="number"
+                  value={profile.monthly_budget || ""}
+                  onChange={(e: any) => setProfile({ ...profile, monthly_budget: parseInt(e.target.value) || 0 })}
+                  placeholder="1000"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Service Radius (miles)</label>
+                <Input
+                  type="number"
+                  value={profile.service_radius_miles || ""}
+                  onChange={(e: any) => setProfile({ ...profile, service_radius_miles: parseInt(e.target.value) || 0 })}
+                  placeholder="25"
                 />
               </div>
             </div>
             <Button onClick={saveProfile} disabled={saving}>
               <Save className="w-4 h-4 mr-2" /> {saving ? "Saving..." : "Save Profile"}
             </Button>
+          </CardContent>
+        </Card>
+
+        {/* Location & Address */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <MapPin className="w-5 h-5" /> Location & Address
+            </CardTitle>
+            <CardDescription>
+              {profile.gbp_connected
+                ? "Auto-populated from Google Business Profile"
+                : "Your business address for geo-targeting"}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {profile.gbp_connected && (
+              <div className="flex items-center gap-2 p-3 rounded-lg bg-green-50 border border-green-200 text-sm text-green-800 mb-2">
+                <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+                <span>Synced from GBP{profile.gbp_location_name ? `: ${profile.gbp_location_name}` : ""}</span>
+                {profile.google_rating && (
+                  <Badge className="ml-auto bg-amber-100 text-amber-800 border-amber-200">
+                    <Star className="w-3 h-3 mr-1" /> {profile.google_rating} ({profile.review_count || 0} reviews)
+                  </Badge>
+                )}
+              </div>
+            )}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2 md:col-span-2">
+                <label className="text-sm font-medium">Street Address</label>
+                <Input
+                  value={profile.address || ""}
+                  onChange={(e: any) => setProfile({ ...profile, address: e.target.value })}
+                  placeholder="123 Main St"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">City</label>
+                <Input
+                  value={profile.city || ""}
+                  onChange={(e: any) => setProfile({ ...profile, city: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">State</label>
+                <Input
+                  value={profile.state || ""}
+                  onChange={(e: any) => setProfile({ ...profile, state: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">ZIP Code</label>
+                <Input
+                  value={profile.zip_code || ""}
+                  onChange={(e: any) => setProfile({ ...profile, zip_code: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Primary Category</label>
+                <Input
+                  value={profile.primary_category || ""}
+                  disabled
+                  className="bg-slate-50"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Years of Experience</label>
+                <Input
+                  type="number"
+                  value={profile.years_experience || ""}
+                  onChange={(e: any) => setProfile({ ...profile, years_experience: parseInt(e.target.value) || 0 })}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">License Info</label>
+                <Input
+                  value={profile.license_info || ""}
+                  onChange={(e: any) => setProfile({ ...profile, license_info: e.target.value })}
+                  placeholder="e.g. Licensed & Insured, #12345"
+                />
+              </div>
+            </div>
+            <Button onClick={saveProfile} disabled={saving}>
+              <Save className="w-4 h-4 mr-2" /> {saving ? "Saving..." : "Save Address"}
+            </Button>
+          </CardContent>
+        </Card>
+
+        {/* Social & Online Presence */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Share2 className="w-5 h-5" /> Social & Online Presence
+            </CardTitle>
+            <CardDescription>Your social media profiles and GBP listing</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Facebook URL</label>
+                <Input
+                  value={profile.facebook_url || ""}
+                  onChange={(e: any) => setProfile({ ...profile, facebook_url: e.target.value })}
+                  placeholder="https://facebook.com/yourbusiness"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Instagram URL</label>
+                <Input
+                  value={profile.instagram_url || ""}
+                  onChange={(e: any) => setProfile({ ...profile, instagram_url: e.target.value })}
+                  placeholder="https://instagram.com/yourbusiness"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">TikTok URL</label>
+                <Input
+                  value={profile.tiktok_url || ""}
+                  onChange={(e: any) => setProfile({ ...profile, tiktok_url: e.target.value })}
+                  placeholder="https://tiktok.com/@yourbusiness"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">GBP Listing URL</label>
+                <Input
+                  value={profile.gbp_link || ""}
+                  onChange={(e: any) => setProfile({ ...profile, gbp_link: e.target.value })}
+                  placeholder="https://g.page/yourbusiness"
+                />
+              </div>
+            </div>
+            <Button onClick={saveProfile} disabled={saving}>
+              <Save className="w-4 h-4 mr-2" /> {saving ? "Saving..." : "Save Social Links"}
+            </Button>
+          </CardContent>
+        </Card>
+
+        {/* GBP Connection */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Building2 className="w-5 h-5" /> Google Business Profile
+            </CardTitle>
+            <CardDescription>Connect your GBP to auto-sync reviews, hours, and enable post scheduling</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {profile.gbp_connected ? (
+              <div className="p-4 rounded-lg border space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-medium">{profile.gbp_location_name || "Google Business Profile"}</p>
+                    <p className="text-sm text-muted-foreground">
+                      {profile.google_rating && <span className="mr-3"><Star className="w-3 h-3 inline mr-1" />{profile.google_rating} ({profile.review_count} reviews)</span>}
+                      {profile.primary_category && <span>{profile.primary_category}</span>}
+                    </p>
+                  </div>
+                  <Badge variant="default">Connected</Badge>
+                </div>
+                {profile.gbp_last_sync && (
+                  <p className="text-xs text-muted-foreground">
+                    <Clock className="w-3 h-3 inline mr-1" /> Last synced: {new Date(profile.gbp_last_sync).toLocaleString()}
+                  </p>
+                )}
+                <div className="flex items-center gap-3">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      try {
+                        await api.post("/api/gbp/reviews/sync");
+                        const p = await api.get("/api/settings/profile").catch(() => ({}));
+                        setProfile(p || {});
+                      } catch (e: any) { alert(e.message || "Sync failed"); }
+                    }}
+                  >
+                    <RefreshCw className="w-4 h-4 mr-2" /> Sync Now
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200"
+                    onClick={async () => {
+                      if (!confirm("Disconnect Google Business Profile?")) return;
+                      try {
+                        await api.delete("/api/gbp/oauth/disconnect");
+                        const p = await api.get("/api/settings/profile").catch(() => ({}));
+                        setProfile(p || {});
+                      } catch (e: any) { alert(e.message || "Failed to disconnect"); }
+                    }}
+                  >
+                    <XCircle className="w-4 h-4 mr-2" /> Disconnect
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-6">
+                <Building2 className="w-10 h-10 text-slate-300 mx-auto mb-3" />
+                <p className="text-sm text-muted-foreground mb-3">Connect your Google Business Profile to auto-populate address, hours, rating, and enable post scheduling &amp; review management.</p>
+                <Button
+                  onClick={async () => {
+                    try {
+                      const res = await api.get("/api/gbp/oauth/authorize?origin=settings");
+                      if (res.auth_url) window.location.href = res.auth_url;
+                    } catch (e: any) {
+                      alert(e.message || "Failed to start GBP connection");
+                    }
+                  }}
+                >
+                  <Building2 className="w-4 h-4 mr-2" /> Connect Google Business Profile
+                </Button>
+              </div>
+            )}
           </CardContent>
         </Card>
 

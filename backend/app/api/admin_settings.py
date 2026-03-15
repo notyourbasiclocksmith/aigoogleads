@@ -11,6 +11,8 @@ from app.models.user import User
 from app.models.tenant import Tenant
 from app.models.business_profile import BusinessProfile
 from app.models.integration_google_ads import IntegrationGoogleAds
+from app.models.social_profile import SocialProfile
+from app.models.gbp_connection import GBPConnection
 
 router = APIRouter()
 
@@ -49,6 +51,22 @@ async def get_profile(
     )
     acct = acct_result.scalar_one_or_none()
     notifications = ((profile.constraints_json or {}).get("notifications", {})) if profile else {}
+
+    # Social links
+    social_result = await db.execute(
+        select(SocialProfile).where(SocialProfile.tenant_id == user.tenant_id)
+    )
+    socials = social_result.scalars().all()
+    social_map = {s.platform: s.url for s in socials}
+
+    # GBP connection status
+    gbp_result = await db.execute(
+        select(GBPConnection).where(GBPConnection.tenant_id == user.tenant_id)
+    )
+    gbp_conn = gbp_result.scalar_one_or_none()
+
+    constraints = (profile.constraints_json or {}) if profile else {}
+
     return {
         "business_name": tenant.name if tenant else "",
         "industry": tenant.industry if tenant else "",
@@ -56,6 +74,32 @@ async def get_profile(
         "website_url": profile.website_url if profile else "",
         "description": profile.description if profile else "",
         "google_ads_customer_id": acct.customer_id if acct else None,
+        # Social links
+        "facebook_url": social_map.get("facebook", ""),
+        "instagram_url": social_map.get("instagram", ""),
+        "tiktok_url": social_map.get("tiktok", ""),
+        "gbp_link": profile.gbp_link if profile else "",
+        # Service area & conversion
+        "service_area": (profile.locations_json or {}).get("primary", "") if profile else "",
+        "conversion_goal": profile.primary_conversion_goal if profile else "calls",
+        "monthly_budget": constraints.get("monthly_budget", 1000),
+        # GBP structured fields
+        "address": profile.address if profile else "",
+        "city": profile.city if profile else "",
+        "state": profile.state if profile else "",
+        "zip_code": profile.zip_code if profile else "",
+        "google_rating": profile.google_rating if profile else None,
+        "review_count": profile.review_count if profile else None,
+        "primary_category": profile.primary_category if profile else "",
+        "business_hours": profile.business_hours_json if profile and isinstance(profile.business_hours_json, dict) else {},
+        "service_radius_miles": profile.service_radius_miles if profile else None,
+        "years_experience": profile.years_experience if profile else None,
+        "license_info": profile.license_info if profile else "",
+        # GBP connection
+        "gbp_connected": bool(gbp_conn and gbp_conn.access_token_encrypted and gbp_conn.is_active),
+        "gbp_location_name": gbp_conn.location_name if gbp_conn else None,
+        "gbp_last_sync": gbp_conn.last_sync_at.isoformat() if gbp_conn and gbp_conn.last_sync_at else None,
+        # Notifications
         "notification_email": notifications.get("notification_email", ""),
         "email_alerts": notifications.get("email_alerts", True),
         "weekly_report": notifications.get("weekly_report", True),
@@ -70,6 +114,24 @@ class UpdateProfileRequest(BaseModel):
     phone: Optional[str] = None
     website_url: Optional[str] = None
     description: Optional[str] = None
+    # Social links
+    facebook_url: Optional[str] = None
+    instagram_url: Optional[str] = None
+    tiktok_url: Optional[str] = None
+    gbp_link: Optional[str] = None
+    # Service area & conversion
+    service_area: Optional[str] = None
+    conversion_goal: Optional[str] = None
+    monthly_budget: Optional[int] = None
+    # Structured fields
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    zip_code: Optional[str] = None
+    years_experience: Optional[int] = None
+    license_info: Optional[str] = None
+    service_radius_miles: Optional[int] = None
+    # Notifications
     notification_email: Optional[str] = None
     email_alerts: Optional[bool] = None
     weekly_report: Optional[bool] = None
@@ -100,8 +162,34 @@ async def update_profile(
             profile.website_url = req.website_url
         if req.description is not None:
             profile.description = req.description
-        # Persist notification preferences
-        notifications = (profile.constraints_json or {}).get("notifications", {})
+        if req.gbp_link is not None:
+            profile.gbp_link = req.gbp_link
+        if req.conversion_goal is not None:
+            profile.primary_conversion_goal = req.conversion_goal
+        if req.address is not None:
+            profile.address = req.address
+        if req.city is not None:
+            profile.city = req.city
+        if req.state is not None:
+            profile.state = req.state
+        if req.zip_code is not None:
+            profile.zip_code = req.zip_code
+        if req.years_experience is not None:
+            profile.years_experience = req.years_experience
+        if req.license_info is not None:
+            profile.license_info = req.license_info
+        if req.service_radius_miles is not None:
+            profile.service_radius_miles = req.service_radius_miles
+        if req.service_area is not None:
+            locations = profile.locations_json or {}
+            locations["primary"] = req.service_area
+            profile.locations_json = locations
+
+        # Persist budget + notification preferences in constraints_json
+        constraints = profile.constraints_json or {}
+        if req.monthly_budget is not None:
+            constraints["monthly_budget"] = req.monthly_budget
+        notifications = constraints.get("notifications", {})
         if req.notification_email is not None:
             notifications["notification_email"] = req.notification_email
         if req.email_alerts is not None:
@@ -112,10 +200,31 @@ async def update_profile(
             notifications["recommendation_alerts"] = req.recommendation_alerts
         if req.budget_alerts is not None:
             notifications["budget_alerts"] = req.budget_alerts
-        if any(v is not None for v in [req.notification_email, req.email_alerts, req.weekly_report, req.recommendation_alerts, req.budget_alerts]):
-            constraints = profile.constraints_json or {}
-            constraints["notifications"] = notifications
-            profile.constraints_json = constraints
+        constraints["notifications"] = notifications
+        profile.constraints_json = constraints
+
+    # Update social links
+    social_fields = {
+        "facebook": req.facebook_url,
+        "instagram": req.instagram_url,
+        "tiktok": req.tiktok_url,
+    }
+    for platform, url in social_fields.items():
+        if url is None:
+            continue
+        existing = await db.execute(
+            select(SocialProfile).where(
+                and_(SocialProfile.tenant_id == user.tenant_id, SocialProfile.platform == platform)
+            )
+        )
+        sp = existing.scalar_one_or_none()
+        if url:  # non-empty → upsert
+            if sp:
+                sp.url = url
+            else:
+                db.add(SocialProfile(tenant_id=user.tenant_id, platform=platform, url=url))
+        elif sp:  # empty → delete
+            await db.delete(sp)
 
     await db.flush()
     return {"status": "ok"}
