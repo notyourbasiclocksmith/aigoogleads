@@ -91,6 +91,11 @@ celery_app.conf.beat_schedule = {
         "task": "app.jobs.operator_tasks.run_autonomous_optimizer_task",
         "schedule": crontab(minute=15, hour="*/4"),  # 0:15, 4:15, 8:15, 12:15, 16:15, 20:15
     },
+    # LSA auto-sync — every 15 minutes (lightweight, leads + conversations only)
+    "lsa-auto-sync-15m": {
+        "task": "app.jobs.tasks.sync_all_lsa_leads",
+        "schedule": crontab(minute="*/15"),
+    },
     # LSA auto-dispute — runs twice daily (10 AM and 6 PM UTC)
     "lsa-auto-dispute-twice-daily": {
         "task": "app.jobs.tasks.auto_dispute_lsa_leads",

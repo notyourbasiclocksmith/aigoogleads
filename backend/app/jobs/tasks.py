@@ -1729,6 +1729,146 @@ async def _auto_dispute_lsa_leads_async():
         logger.info("LSA auto-dispute complete", disputed=disputed, failed=failed)
 
 
+# ── LSA AUTO-SYNC (lightweight, every 15 min) ──────────────────────
+
+@celery_app.task(name="app.jobs.tasks.sync_all_lsa_leads")
+def sync_all_lsa_leads():
+    """Lightweight auto-sync of LSA leads + conversations for all tenants."""
+    import asyncio
+    asyncio.run(_sync_all_lsa_leads_async())
+
+
+async def _sync_all_lsa_leads_async():
+    from app.core.database import async_session_factory
+    from app.models.integration_google_ads import IntegrationGoogleAds
+    from app.models.lsa_lead import LSALead
+    from app.models.lsa_conversation import LSAConversation
+    from app.integrations.google_ads.client import GoogleAdsClient
+    from datetime import datetime, timezone
+
+    async with async_session_factory() as db:
+        result = await db.execute(
+            select(IntegrationGoogleAds).where(IntegrationGoogleAds.is_active == True)
+        )
+        integrations = result.scalars().all()
+
+        if not integrations:
+            logger.info("LSA auto-sync: no active integrations")
+            return
+
+        total_leads = 0
+        total_convos = 0
+
+        for integration in integrations:
+            tenant_id = integration.tenant_id
+            try:
+                client = GoogleAdsClient(
+                    customer_id=integration.customer_id,
+                    refresh_token_encrypted=integration.refresh_token_encrypted,
+                    login_customer_id=integration.login_customer_id,
+                )
+
+                # Fetch LSA leads (last 30 days)
+                lsa_leads = await client.get_lsa_leads(days=30)
+                lsa_resource_to_uuid = {}
+
+                for ll in lsa_leads:
+                    existing = await db.execute(
+                        select(LSALead).where(
+                            LSALead.tenant_id == tenant_id,
+                            LSALead.google_lead_id == ll["lead_id"],
+                        )
+                    )
+                    lead_obj = existing.scalar_one_or_none()
+                    if not lead_obj:
+                        lead_obj = LSALead(
+                            tenant_id=tenant_id,
+                            google_customer_id=integration.customer_id,
+                            lead_resource_name=ll["resource_name"],
+                            google_lead_id=ll["lead_id"],
+                            lead_type=ll["lead_type"],
+                            category_id=ll.get("category_id"),
+                            service_id=ll.get("service_id"),
+                            lead_status=ll.get("lead_status"),
+                            locale=ll.get("locale"),
+                            contact_name=ll.get("contact_name"),
+                            contact_phone=ll.get("contact_phone"),
+                            contact_email=ll.get("contact_email"),
+                            lead_charged=ll.get("lead_charged", False),
+                            credit_state=ll.get("credit_state"),
+                            lead_creation_datetime=ll.get("creation_date_time"),
+                            synced_at=datetime.now(timezone.utc),
+                        )
+                        db.add(lead_obj)
+                        await db.flush()
+                    else:
+                        lead_obj.lead_status = ll.get("lead_status") or lead_obj.lead_status
+                        lead_obj.lead_charged = ll.get("lead_charged", lead_obj.lead_charged)
+                        lead_obj.credit_state = ll.get("credit_state") or lead_obj.credit_state
+                        lead_obj.contact_name = ll.get("contact_name") or lead_obj.contact_name
+                        lead_obj.contact_phone = ll.get("contact_phone") or lead_obj.contact_phone
+                        lead_obj.contact_email = ll.get("contact_email") or lead_obj.contact_email
+                        lead_obj.synced_at = datetime.now(timezone.utc)
+                    lsa_resource_to_uuid[ll["resource_name"]] = lead_obj.id
+                    total_leads += 1
+
+                await db.flush()
+
+                # Fetch LSA conversations
+                lsa_convos = await client.get_lsa_conversations(days=30)
+                for lc in lsa_convos:
+                    lead_rn = lc.get("lead_resource_name", "")
+                    parent_uuid = lsa_resource_to_uuid.get(lead_rn)
+                    if not parent_uuid:
+                        lookup = await db.execute(
+                            select(LSALead).where(LSALead.lead_resource_name == lead_rn)
+                        )
+                        found = lookup.scalar_one_or_none()
+                        if found:
+                            parent_uuid = found.id
+                        else:
+                            continue
+
+                    existing_lc = await db.execute(
+                        select(LSAConversation).where(
+                            LSAConversation.conversation_resource_name == lc["resource_name"],
+                        )
+                    )
+                    conv_obj = existing_lc.scalar_one_or_none()
+                    if not conv_obj:
+                        conv_obj = LSAConversation(
+                            tenant_id=tenant_id,
+                            lead_id=parent_uuid,
+                            conversation_resource_name=lc["resource_name"],
+                            channel=lc["channel"],
+                            participant_type=lc.get("participant_type"),
+                            event_datetime=lc.get("event_date_time"),
+                            call_duration_ms=lc.get("call_duration_ms"),
+                            call_recording_url=lc.get("call_recording_url"),
+                            message_text=lc.get("message_text"),
+                            attachment_urls=lc.get("attachment_urls"),
+                            synced_at=datetime.now(timezone.utc),
+                        )
+                        db.add(conv_obj)
+                    else:
+                        conv_obj.call_recording_url = lc.get("call_recording_url") or conv_obj.call_recording_url
+                        conv_obj.call_duration_ms = lc.get("call_duration_ms") or conv_obj.call_duration_ms
+                        conv_obj.synced_at = datetime.now(timezone.utc)
+                    total_convos += 1
+
+                await db.flush()
+
+            except Exception as e:
+                logger.warning("LSA auto-sync failed for tenant",
+                               tenant_id=tenant_id, error=str(e))
+                continue
+
+        await db.commit()
+        logger.info("LSA auto-sync complete",
+                     integrations=len(integrations),
+                     leads=total_leads, conversations=total_convos)
+
+
 # ── SEARCH TERM MINING AI ─────────────────────────────────────────
 
 @celery_app.task(name="app.jobs.tasks.mine_search_terms_task")
