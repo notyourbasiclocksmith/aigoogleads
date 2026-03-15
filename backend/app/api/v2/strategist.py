@@ -473,6 +473,8 @@ async def ai_edit_landing_page(
 ):
     """Apply an AI prompt-based edit to a landing page variant."""
     from app.services.landing_page_generator import LandingPageGenerator
+    from app.models.business_profile import BusinessProfile
+    from app.models.tenant import Tenant
 
     lp = await db.get(LandingPage, page_id)
     if not lp or str(lp.tenant_id) != str(user.tenant_id):
@@ -482,11 +484,31 @@ async def ai_edit_landing_page(
     if not variant or str(variant.landing_page_id) != page_id:
         raise HTTPException(404, "Variant not found")
 
+    # Load business context so AI can reference real business details
+    bp_result = await db.execute(
+        select(BusinessProfile).where(BusinessProfile.tenant_id == user.tenant_id)
+    )
+    bp = bp_result.scalar_one_or_none()
+    tenant = await db.get(Tenant, str(user.tenant_id))
+    business_context = {
+        "business_name": tenant.name if tenant else "",
+        "phone": bp.phone if bp else "",
+        "website": bp.website_url if bp else "",
+        "city": bp.city if bp else "",
+        "state": bp.state if bp else "",
+        "google_rating": bp.google_rating if bp else None,
+        "review_count": bp.review_count if bp else None,
+        "industry": bp.industry_classification if bp else (tenant.industry if tenant else ""),
+        "trust_signals": bp.trust_signals_json if bp else {},
+        "services": bp.services_json if bp else {},
+    }
+
     gen = LandingPageGenerator(db, str(user.tenant_id))
     result = await gen.ai_edit_variant(
         variant_content=variant.content_json or {},
         edit_prompt=req.prompt,
         strategy=lp.strategy_json,
+        business_context=business_context,
     )
 
     if result.get("error"):

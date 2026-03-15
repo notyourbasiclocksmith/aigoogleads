@@ -144,27 +144,90 @@ class LandingPageGenerator:
         variant_content: Dict,
         edit_prompt: str,
         strategy: Dict = None,
+        business_context: Dict = None,
     ) -> Dict[str, Any]:
-        """Apply a prompt-based edit to a landing page variant's content."""
+        """Apply a prompt-based edit to a landing page variant's content.
+        Handles everything from small tweaks to full redesigns."""
         if not self.client:
             return {"error": "AI not configured"}
 
-        system = """You are an expert landing page editor. The user will give you the current
-landing page content as JSON and an edit instruction. Apply the edit precisely,
-preserving the overall page structure. Return the COMPLETE updated content JSON
-with all sections — not just the changed parts.
-Respond ONLY with valid JSON matching the exact same structure as the input."""
+        business_context = business_context or {}
 
-        prompt = f"""CURRENT LANDING PAGE CONTENT:
-{json.dumps(variant_content, indent=2)[:6000]}
+        system = """You are an elite landing page designer and conversion expert who creates
+stunning, professional, high-converting landing pages for local service businesses.
 
-EDIT INSTRUCTION:
+You can handle ANY type of edit instruction — from small text changes to complete redesigns.
+When the user asks to "redesign", "make professional", or requests broad changes, you should
+dramatically improve the entire page: better headlines, stronger copy, more compelling CTAs,
+professional structure, and polished content.
+
+CAPABILITIES:
+- Redesign entire pages with professional, modern content
+- Add/update business branding (name, phone, logo references)
+- Improve copy for conversions (urgency, trust, social proof)
+- Restructure sections for better flow
+- Add new sections (testimonials, FAQ, trust bars, service lists)
+- Make pages more professional, modern, and visually compelling
+
+RULES:
+- ALWAYS return the COMPLETE updated content JSON with ALL sections
+- Maintain the same JSON structure/schema as the input
+- Use REAL business details provided (name, phone, city, etc.) — never placeholders
+- Phone number must appear in hero CTA and footer CTA at minimum
+- Every headline should be compelling and conversion-focused
+- For redesigns: be bold — significantly improve headlines, copy, CTAs, and structure
+- Respond ONLY with valid JSON matching the input structure"""
+
+        # Build business identity block
+        biz_lines = []
+        if business_context.get("business_name"):
+            biz_lines.append(f"BUSINESS NAME: {business_context['business_name']}")
+        if business_context.get("phone"):
+            biz_lines.append(f"PHONE: {business_context['phone']}")
+        if business_context.get("website"):
+            biz_lines.append(f"WEBSITE: {business_context['website']}")
+        if business_context.get("city"):
+            loc = business_context["city"]
+            if business_context.get("state"):
+                loc += f", {business_context['state']}"
+            biz_lines.append(f"LOCATION: {loc}")
+        if business_context.get("industry"):
+            biz_lines.append(f"INDUSTRY: {business_context['industry']}")
+        if business_context.get("google_rating"):
+            biz_lines.append(f"GOOGLE RATING: {business_context['google_rating']} ({business_context.get('review_count', 0)} reviews)")
+        if business_context.get("trust_signals"):
+            ts = business_context["trust_signals"]
+            if isinstance(ts, dict):
+                ts_items = [f"{k}: {v}" for k, v in ts.items() if v]
+            elif isinstance(ts, list):
+                ts_items = ts[:6]
+            else:
+                ts_items = []
+            if ts_items:
+                biz_lines.append(f"TRUST SIGNALS: {', '.join(ts_items)}")
+
+        biz_block = "\n".join(biz_lines) if biz_lines else "(no business profile loaded)"
+
+        content_str = json.dumps(variant_content, indent=2)
+        # Allow up to 12K chars for content (was 6K)
+        if len(content_str) > 12000:
+            content_str = content_str[:12000] + "\n... (truncated)"
+
+        prompt = f"""── BUSINESS IDENTITY (use these REAL details) ──
+{biz_block}
+
+── CURRENT LANDING PAGE CONTENT ──
+{content_str}
+
+── EDIT INSTRUCTION ──
 {edit_prompt}
 
-Return the complete updated content JSON with the edit applied.
-Keep all existing sections and structure intact — only modify what the instruction asks for."""
+Apply the edit instruction above. Return the COMPLETE updated content JSON.
+If the instruction is a broad redesign request, make dramatic improvements across
+all sections — better headlines, stronger copy, more compelling CTAs, and professional polish.
+Use the real business name, phone, and details throughout."""
 
-        result = await self._call_ai(system, prompt, temperature=0.3)
+        result = await self._call_ai(system, prompt, temperature=0.4, max_tokens=16000)
         if not result:
             return {"error": "AI failed to apply edit"}
         return {"content": result, "edit_applied": edit_prompt}
@@ -234,7 +297,7 @@ Keep all existing sections and structure intact — only modify what the instruc
             ],
         }
 
-    async def _call_ai(self, system: str, user_prompt: str, temperature: float = 0.6) -> Optional[Dict]:
+    async def _call_ai(self, system: str, user_prompt: str, temperature: float = 0.6, max_tokens: int = 4000) -> Optional[Dict]:
         try:
             resp = await self.client.chat.completions.create(
                 model=settings.OPENAI_MODEL,
@@ -244,7 +307,7 @@ Keep all existing sections and structure intact — only modify what the instruc
                 ],
                 response_format={"type": "json_object"},
                 temperature=temperature,
-                max_tokens=4000,
+                max_tokens=max_tokens,
             )
             content = resp.choices[0].message.content
             if content:
