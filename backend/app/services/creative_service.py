@@ -77,12 +77,20 @@ class CreativeService:
             industry = (self.profile.industry_classification or "local service").lower()
             phone = self.profile.phone or ""
             website = self.profile.website_url or ""
-            raw_usps = self.profile.usp_json if isinstance(self.profile.usp_json, list) else []
+            def _unwrap(raw) -> list:
+                if isinstance(raw, list):
+                    return raw
+                if isinstance(raw, dict):
+                    for k in ("list", "cities", "items"):
+                        if isinstance(raw.get(k), list):
+                            return raw[k]
+                return []
+            raw_usps = _unwrap(self.profile.usp_json)
             usps = [u if isinstance(u, str) else u.get("text", "") for u in raw_usps][:5]
-            raw_svcs = self.profile.services_json if isinstance(self.profile.services_json, list) else []
+            raw_svcs = _unwrap(self.profile.services_json)
             services_list = [s if isinstance(s, str) else s.get("name", "") for s in raw_svcs][:8]
-            raw_trust = self.profile.trust_signals_json if isinstance(self.profile.trust_signals_json, list) else []
-            trust_signals = [t if isinstance(t, str) else t.get("text", "") for t in raw_trust][:5]
+            raw_trust = _unwrap(self.profile.trust_signals_json)
+            trust_signals = [str(t) if isinstance(t, str) else t.get("text", str(t)) for t in raw_trust][:8]
 
         usp_block = "\n".join(f"  - {u}" for u in usps) if usps else "  (none provided)"
         svc_block = ", ".join(services_list) if services_list else service

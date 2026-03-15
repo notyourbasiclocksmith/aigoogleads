@@ -44,6 +44,9 @@ class LandingPageGenerator:
         offers: List[str] = None,
         campaign_keywords: List[str] = None,
         campaign_headlines: List[str] = None,
+        trust_signals: List[str] = None,
+        description: str = "",
+        constraints: Dict[str, Any] = None,
     ) -> Dict[str, Any]:
         """
         Full pipeline: strategy → copy → trust → CRO audit → 3 variants → save.
@@ -56,6 +59,8 @@ class LandingPageGenerator:
         offers = offers or []
         campaign_keywords = campaign_keywords or []
         campaign_headlines = campaign_headlines or []
+        trust_signals = trust_signals or []
+        constraints = constraints or {}
 
         context = {
             "service": service,
@@ -68,6 +73,9 @@ class LandingPageGenerator:
             "offers": offers,
             "campaign_keywords": campaign_keywords,
             "campaign_headlines": campaign_headlines,
+            "trust_signals": trust_signals,
+            "description": description,
+            "constraints": constraints,
         }
 
         # Agent 1: Strategy
@@ -251,6 +259,10 @@ Keep all existing sections and structure intact — only modify what the instruc
 for local service businesses. You determine the best offer angle, messaging tone,
 CTA strategy, and page structure for maximum conversions. Respond ONLY with valid JSON."""
 
+        trust_block = "\n".join(f"  - {t}" for t in ctx.get('trust_signals', [])[:8]) or "  (none)"
+        hours = ctx.get('constraints', {}).get('hours', 'N/A')
+        is_emergency = ctx.get('constraints', {}).get('emergency', False)
+
         prompt = f"""Create a landing page strategy for this campaign:
 
 SERVICE: {ctx['service']}
@@ -258,8 +270,14 @@ LOCATION: {ctx['location']}
 INDUSTRY: {ctx['industry']}
 BUSINESS: {ctx['business_name']}
 PHONE: {ctx['phone']}
+WEBSITE: {ctx.get('website', 'N/A')}
+DESCRIPTION: {ctx.get('description', '') or 'N/A'}
+HOURS: {hours}
+EMERGENCY SERVICE: {'YES' if is_emergency else 'No'}
 USPs: {json.dumps(ctx['usps'][:5])}
 OFFERS: {json.dumps(ctx['offers'][:5])}
+TRUST SIGNALS (real — use these, NOT generic placeholders):
+{trust_block}
 CAMPAIGN KEYWORDS: {json.dumps(ctx['campaign_keywords'][:10])}
 
 Return JSON:
@@ -301,12 +319,27 @@ CRO specialist, and mobile UX designer. You create complete, high-converting lan
 content ready for production. Every element is optimized for conversions.
 Respond ONLY with valid JSON."""
 
+        trust_block = "\n".join(f"  - {t}" for t in ctx.get('trust_signals', [])[:8]) or "  (none)"
+        hours = ctx.get('constraints', {}).get('hours', 'N/A')
+        is_emergency = ctx.get('constraints', {}).get('emergency', False)
+
         prompt = f"""Generate 3 landing page variants for this campaign.
 
-SERVICE: {ctx['service']}
-LOCATION: {ctx['location']}
+── BUSINESS IDENTITY (use these REAL details — NOT placeholders) ──
 BUSINESS: {ctx['business_name']}
 PHONE: {ctx['phone']}
+WEBSITE: {ctx.get('website', 'N/A')}
+DESCRIPTION: {ctx.get('description', '') or 'N/A'}
+INDUSTRY: {ctx.get('industry', '')}
+HOURS: {hours}
+EMERGENCY SERVICE: {'YES — this is an emergency/urgent service' if is_emergency else 'Standard'}
+
+── TRUST SIGNALS (use EXACTLY these — do NOT invent fake ones) ──
+{trust_block}
+
+── CAMPAIGN CONTEXT ──
+SERVICE: {ctx['service']}
+LOCATION: {ctx['location']}
 STRATEGY: {json.dumps(strategy)}
 CAMPAIGN HEADLINES: {json.dumps(ctx['campaign_headlines'][:5])}
 KEYWORDS: {json.dumps(ctx['campaign_keywords'][:10])}
@@ -328,15 +361,15 @@ Return JSON:
       "angle": "emergency",
       "content": {{
         "hero": {{
-          "headline": "Attention-grabbing headline (max 60 chars)",
-          "subheadline": "Supporting line that reinforces value (max 120 chars)",
+          "headline": "Attention-grabbing headline with business name (max 60 chars)",
+          "subheadline": "Supporting line with location + trust signal (max 120 chars)",
           "cta_text": "Call Now — Free Estimate",
           "cta_phone": "{ctx['phone']}",
           "urgency_badge": "Available 24/7" or null,
           "hero_image_prompt": "Description for AI image generation"
         }},
         "trust_bar": {{
-          "items": ["Licensed & Insured", "4.9★ Google Rating", "500+ Jobs Done", "Same-Day Service"]
+          "items": ["use REAL trust signals from above — e.g. actual years, actual rating, actual credentials"]
         }},
         "services_section": {{
           "heading": "Our {ctx['service']} Services",
@@ -346,16 +379,16 @@ Return JSON:
           ]
         }},
         "why_us_section": {{
-          "heading": "Why Choose Us",
+          "heading": "Why Choose {ctx['business_name']}",
           "reasons": [
-            {{"title": "...", "description": "...", "icon": "..."}},
+            {{"title": "...", "description": "Use real trust signals, years, rating...", "icon": "..."}},
             ...
           ]
         }},
         "reviews_section": {{
           "heading": "What Our Customers Say",
           "reviews": [
-            {{"name": "John D.", "rating": 5, "text": "Realistic review text...", "service": "..."}},
+            {{"name": "John D.", "rating": 5, "text": "Realistic review mentioning {ctx['service']}...", "service": "..."}},
             ...
           ]
         }},
@@ -378,12 +411,15 @@ Return JSON:
   ]
 }}
 
-IMPORTANT:
+CRITICAL RULES:
+- Include "{ctx['business_name']}" in hero headlines and why_us headings
+- Use REAL trust signals from above in trust_bar items — NOT generic "Licensed & Insured" unless that IS the real signal
+- Phone number {ctx['phone']} must appear 3+ times per page
 - Every headline must include the service name and location
-- Phone number must appear 3+ times per page
 - CTA must be visible without scrolling
-- Reviews must feel authentic (varied names, specific details)
-- FAQ answers must be helpful and include keywords naturally"""
+- Reviews must feel authentic (varied names, specific details, mention the service)
+- FAQ answers must be helpful and include keywords naturally
+- why_us reasons should reference actual years of experience, rating, credentials from trust signals"""
 
         result = await self._call_ai(system, prompt, temperature=0.7)
         if result and "variants" in result:

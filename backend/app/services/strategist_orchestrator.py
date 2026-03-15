@@ -162,23 +162,50 @@ class StrategistOrchestrator:
         )
         tenant_name = tenant_result.scalar_one_or_none() or ""
 
-        services = p.services_json if isinstance(p.services_json, list) else []
+        def _extract_list(raw) -> list:
+            """Unwrap {"list": [...]} or {"cities": [...]} dict wrapper, or plain list."""
+            if isinstance(raw, list):
+                return raw
+            if isinstance(raw, dict):
+                for key in ("list", "cities", "items"):
+                    if isinstance(raw.get(key), list):
+                        return raw[key]
+            return []
+
+        services = _extract_list(p.services_json)
         svc_names = [s if isinstance(s, str) else s.get("name", "") for s in services]
-        locations = p.locations_json if isinstance(p.locations_json, list) else []
+        locations = _extract_list(p.locations_json)
         loc_names = [l if isinstance(l, str) else l.get("name", "") for l in locations]
-        usps = p.usp_json if isinstance(p.usp_json, list) else []
+        usps = _extract_list(p.usp_json)
         usp_texts = [u if isinstance(u, str) else u.get("text", "") for u in usps]
-        offers = p.offers_json if isinstance(p.offers_json, list) else []
+        offers = _extract_list(p.offers_json)
         offer_texts = [o if isinstance(o, str) else o.get("text", "") for o in offers]
+
+        # Trust signals — normalize from scanner dict or structured dict
+        raw_ts = p.trust_signals_json if isinstance(p.trust_signals_json, dict) else {}
+        ts_list = _extract_list(p.trust_signals_json)
+        trust_signals_texts = [str(t) if isinstance(t, str) else t.get("text", str(t)) for t in ts_list]
+
+        # Brand voice
+        bv = p.brand_voice_json if isinstance(p.brand_voice_json, dict) else {}
+
+        # Constraints (hours, emergency flag, etc.)
+        constraints = p.constraints_json if isinstance(p.constraints_json, dict) else {}
+
         return {
             "business_name": tenant_name,
             "industry": p.industry_classification or "",
             "phone": p.phone or "",
             "website": p.website_url or "",
+            "description": p.description or "",
             "services": svc_names,
             "locations": loc_names,
             "usps": usp_texts,
             "offers": offer_texts,
+            "trust_signals": trust_signals_texts,
+            "trust_signals_raw": raw_ts,
+            "brand_voice": bv,
+            "constraints": constraints,
             "conversion_goal": p.primary_conversion_goal or "calls",
         }
 
@@ -1253,6 +1280,9 @@ Audit and improve this intent extraction. Return complete improved JSON."""
             offers=profile.get("offers", []) if profile else [],
             campaign_keywords=keywords[:20],
             campaign_headlines=headlines[:10],
+            trust_signals=profile.get("trust_signals", []) if profile else [],
+            description=profile.get("description", "") if profile else "",
+            constraints=profile.get("constraints", {}) if profile else {},
         )
         state["landing_page"] = lp
         return {"landing_page": lp}
