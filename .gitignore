@@ -52,3 +52,7 @@ dump.rdb
 
 .vercel
 .env*.local
+
+# Env snapshots (contain secrets)
+env_snapshot_*.json
+tmp_*.py
