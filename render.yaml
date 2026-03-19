@@ -1,0 +1,81 @@
+services:
+  # ── Backend API ──────────────────────────────────────────────────────
+  - type: web
+    name: aigoogleads-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: aigoogleads-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: aigoogleads-redis
+          type: redis
+          property: connectionString
+      - key: APP_ENV
+        value: production
+    healthCheckPath: /api/health
+
+  # ── Celery Worker ────────────────────────────────────────────────────
+  - type: worker
+    name: aigoogleads-celery-worker
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: aigoogleads-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: aigoogleads-redis
+          type: redis
+          property: connectionString
+      - key: APP_ENV
+        value: production
+    startCommand: "celery -A app.jobs.celery_app worker --loglevel=info --concurrency=2"
+
+  # ── Celery Beat (scheduler) ─────────────────────────────────────────
+  - type: worker
+    name: aigoogleads-celery-beat
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: aigoogleads-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: aigoogleads-redis
+          type: redis
+          property: connectionString
+      - key: APP_ENV
+        value: production
+    startCommand: "celery -A app.jobs.celery_app beat --loglevel=info"
+
+  # ── Frontend ─────────────────────────────────────────────────────────
+  - type: web
+    name: aigoogleads-frontend
+    runtime: docker
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        value: https://aigoogleads-backend.onrender.com
+
+  # ── Redis ────────────────────────────────────────────────────────────
+  - type: redis
+    name: aigoogleads-redis
+    plan: free
+
+databases:
+  - name: aigoogleads-db
+    plan: free
+    databaseName: aigoogleads_db
+    user: aigoogleads_user
