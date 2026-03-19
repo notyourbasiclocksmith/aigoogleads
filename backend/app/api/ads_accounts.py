@@ -299,6 +299,40 @@ async def select_customer(
     account.account_name = req.account_name or f"Account {clean_id}"
     if req.login_customer_id:
         account.login_customer_id = req.login_customer_id.replace("-", "").strip()
+    else:
+        # Auto-detect MCC (login_customer_id) by checking accessible customers
+        try:
+            refresh_token = decrypt_token(account.refresh_token_encrypted)
+            from google.ads.googleads.client import GoogleAdsClient as GAdsClient
+            credentials = {
+                "developer_token": settings.GOOGLE_ADS_DEVELOPER_TOKEN,
+                "client_id": settings.GOOGLE_ADS_CLIENT_ID,
+                "client_secret": settings.GOOGLE_ADS_CLIENT_SECRET,
+                "refresh_token": refresh_token,
+                "use_proto_plus": True,
+            }
+            gads_client = GAdsClient.load_from_dict(credentials)
+            customer_service = gads_client.get_service("CustomerService")
+            accessible = customer_service.list_accessible_customers()
+            ga_service = gads_client.get_service("GoogleAdsService")
+            for rn in accessible.resource_names:
+                cid = rn.split("/")[-1]
+                if cid == clean_id:
+                    continue  # skip the selected account itself
+                try:
+                    q = "SELECT customer.id, customer.manager FROM customer LIMIT 1"
+                    for row in ga_service.search(customer_id=cid, query=q):
+                        if row.customer.manager:
+                            account.login_customer_id = cid
+                            logger.info("Auto-detected MCC as login_customer_id",
+                                        mcc_id=cid, customer_id=clean_id)
+                            break
+                except Exception:
+                    continue
+                if account.login_customer_id:
+                    break
+        except Exception as e:
+            logger.warning("Could not auto-detect MCC for login_customer_id", error=str(e))
 
     # Clean up other pending duplicates AND existing duplicates with the same customer_id
     await db.execute(
