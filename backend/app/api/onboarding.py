@@ -298,7 +298,9 @@ async def onboarding_status(
     )
     steps["step3"] = (count_result.scalar() or 0) > 0
 
-    return {"steps": steps, "complete": all(steps.values())}
+    # Step3 (Google Ads) is optional — don't block onboarding completion
+    required_steps = {k: v for k, v in steps.items() if k != "step3"}
+    return {"steps": steps, "complete": all(required_steps.values())}
 
 
 @router.get("/analysis-status")

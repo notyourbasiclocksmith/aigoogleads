@@ -74,6 +74,91 @@ const autonomyModes = [
   },
 ];
 
+const AI_ANALYSIS_STEPS = [
+  { label: "Analyzing your industry", delay: 0 },
+  { label: "Scanning competitor landscape", delay: 800 },
+  { label: "Building keyword strategy", delay: 1800 },
+  { label: "Calibrating AI optimization engine", delay: 3000 },
+  { label: "Preparing your dashboard", delay: 4200 },
+];
+
+function AIAnalysisScreen() {
+  const router = useRouter();
+  const [activeStep, setActiveStep] = useState(0);
+  const [allDone, setAllDone] = useState(false);
+
+  useEffect(() => {
+    AI_ANALYSIS_STEPS.forEach((s, i) => {
+      setTimeout(() => setActiveStep(i + 1), s.delay + 600);
+    });
+    // All done after last step
+    const totalTime = AI_ANALYSIS_STEPS[AI_ANALYSIS_STEPS.length - 1].delay + 1500;
+    setTimeout(() => setAllDone(true), totalTime);
+    setTimeout(() => router.push("/dashboard"), totalTime + 1500);
+  }, [router]);
+
+  return (
+    <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+      <div className="w-full max-w-md mx-auto px-6 text-center">
+        {!allDone ? (
+          <>
+            <div className="w-20 h-20 mx-auto rounded-2xl bg-gradient-to-br from-blue-500/20 to-indigo-500/20 border border-blue-500/30 flex items-center justify-center mb-8">
+              <Sparkles className="w-10 h-10 text-blue-400 animate-pulse" />
+            </div>
+            <h2 className="text-2xl font-bold text-white mb-2">Setting Up Your AI</h2>
+            <p className="text-slate-400 text-sm mb-10">
+              Our AI is analyzing your business to build your personalized marketing strategy.
+            </p>
+            <div className="space-y-3 text-left">
+              {AI_ANALYSIS_STEPS.map((s, i) => {
+                const isDone = activeStep > i;
+                const isActive = activeStep === i;
+                return (
+                  <div
+                    key={s.label}
+                    className={`flex items-center gap-3 p-3 rounded-xl transition-all duration-500 ${
+                      isDone
+                        ? "bg-emerald-500/5 border border-emerald-500/20"
+                        : isActive
+                        ? "bg-blue-500/5 border border-blue-500/20"
+                        : "bg-slate-800/20 border border-slate-800/30 opacity-40"
+                    }`}
+                  >
+                    {isDone ? (
+                      <CheckCircle2 className="w-5 h-5 text-emerald-400 flex-shrink-0" />
+                    ) : isActive ? (
+                      <Loader2 className="w-5 h-5 text-blue-400 animate-spin flex-shrink-0" />
+                    ) : (
+                      <div className="w-5 h-5 rounded-full border border-slate-600 flex-shrink-0" />
+                    )}
+                    <span className={`text-sm font-medium ${isDone ? "text-emerald-300" : isActive ? "text-blue-300" : "text-slate-500"}`}>
+                      {s.label}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        ) : (
+          <div className="animate-in fade-in duration-500">
+            <div className="w-20 h-20 mx-auto rounded-2xl bg-gradient-to-br from-emerald-500/20 to-teal-500/20 border border-emerald-500/30 flex items-center justify-center mb-6">
+              <Rocket className="w-10 h-10 text-emerald-400" />
+            </div>
+            <h2 className="text-2xl font-bold text-white mb-2">You&apos;re All Set!</h2>
+            <p className="text-slate-400 text-sm">
+              Your AI marketing assistant is ready. Launching your dashboard...
+            </p>
+            <div className="flex items-center justify-center gap-2 mt-6">
+              <Loader2 className="w-4 h-4 text-emerald-400 animate-spin" />
+              <span className="text-xs text-slate-500">Redirecting...</span>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function OnboardingContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -213,7 +298,7 @@ function OnboardingContent() {
       } else if (step === 4) {
         await api.post("/api/onboarding/step5", { autonomy_mode: autonomyMode });
         setOnboardingComplete(true);
-        setTimeout(() => router.push("/dashboard"), 2500);
+        // AIAnalysisScreen handles the redirect to dashboard
         return;
       }
       setStep(step + 1);
@@ -227,25 +312,7 @@ function OnboardingContent() {
   const progress = ((step + 1) / steps.length) * 100;
 
   if (onboardingComplete) {
-    return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
-        <div className="text-center space-y-6 animate-in fade-in duration-500">
-          <div className="w-24 h-24 mx-auto rounded-3xl bg-gradient-to-br from-emerald-500/20 to-teal-500/20 border border-emerald-500/30 flex items-center justify-center">
-            <CheckCircle2 className="w-12 h-12 text-emerald-400" />
-          </div>
-          <div>
-            <h2 className="text-3xl font-bold text-white mb-2">You&apos;re All Set!</h2>
-            <p className="text-slate-400 max-w-md mx-auto">
-              Your AI marketing assistant is ready. Redirecting to your dashboard...
-            </p>
-          </div>
-          <div className="flex items-center justify-center gap-2">
-            <Loader2 className="w-4 h-4 text-emerald-400 animate-spin" />
-            <span className="text-sm text-slate-500">Setting up your workspace</span>
-          </div>
-        </div>
-      </div>
-    );
+    return <AIAnalysisScreen />;
   }
 
   return (

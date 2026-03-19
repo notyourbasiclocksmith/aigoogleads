@@ -97,6 +97,7 @@ export default function DashboardPage() {
   const [campSortDir, setCampSortDir] = useState<CampSortDir>("desc");
   const [onboarding, setOnboarding] = useState<any>(null);
   const [comparison, setComparison] = useState<any>(null);
+  const [leadsToday, setLeadsToday] = useState<any>(null);
 
   useEffect(() => {
     loadData();
@@ -105,7 +106,7 @@ export default function DashboardPage() {
   async function loadData() {
     setLoading(true);
     try {
-      const [kpiData, healthData, alertData, campData, trendData, summaryData, recsData, onboardData, compData] = await Promise.all([
+      const [kpiData, healthData, alertData, campData, trendData, summaryData, recsData, onboardData, compData, leadsData] = await Promise.all([
         api.get(`/api/dashboard/kpis?days=${days}`).catch(() => null),
         api.get(`/api/dashboard/health-check?days=${days}`).catch(() => null),
         api.get("/api/dashboard/alerts").catch(() => []),
@@ -115,6 +116,7 @@ export default function DashboardPage() {
         api.get("/api/ads/google-recommendations?status=pending").catch(() => []),
         api.get("/api/dashboard/onboarding-status").catch(() => null),
         api.get(`/api/dashboard/kpis-comparison?days=${days}`).catch(() => null),
+        api.get("/api/dashboard/leads-today").catch(() => null),
       ]);
       setKpis(kpiData);
       setHealth(healthData);
@@ -125,6 +127,7 @@ export default function DashboardPage() {
       setRecCount(Array.isArray(recsData) ? recsData.length : 0);
       setOnboarding(onboardData);
       setComparison(compData);
+      setLeadsToday(leadsData);
     } catch (e) {
       console.error(e);
     } finally {
@@ -300,6 +303,110 @@ export default function DashboardPage() {
               </div>
             </CardContent>
           </Card>
+        )}
+
+        {/* ── LEADS TODAY HERO ──────────────────────────────────────────── */}
+        {!loading && leadsToday && (
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
+            <Card className="border-0 bg-gradient-to-br from-emerald-50 to-teal-50/40 overflow-hidden">
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[13px] text-emerald-600/70 font-medium">Leads Today</span>
+                  <div className="w-9 h-9 rounded-xl bg-emerald-100 flex items-center justify-center">
+                    <PhoneCall className="w-[18px] h-[18px] text-emerald-600" />
+                  </div>
+                </div>
+                <div className="text-[32px] font-bold tracking-tight text-emerald-700">
+                  {leadsToday.today.conversions}
+                </div>
+                <div className="text-[11px] text-emerald-500/70 mt-1">
+                  {leadsToday.yesterday.conversions > 0
+                    ? `${leadsToday.yesterday.conversions} yesterday`
+                    : "No leads yesterday"}
+                  {leadsToday.avg_daily_leads > 0 && ` · ${leadsToday.avg_daily_leads}/day avg`}
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="border-0 bg-gradient-to-br from-blue-50 to-indigo-50/40 overflow-hidden">
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[13px] text-blue-600/70 font-medium">Cost Per Lead</span>
+                  <div className="w-9 h-9 rounded-xl bg-blue-100 flex items-center justify-center">
+                    <Target className="w-[18px] h-[18px] text-blue-600" />
+                  </div>
+                </div>
+                <div className="text-[32px] font-bold tracking-tight text-blue-700">
+                  {leadsToday.today.cpl > 0 ? formatCurrency(leadsToday.today.cpl) : "—"}
+                </div>
+                <div className="text-[11px] text-blue-500/70 mt-1">
+                  {leadsToday.avg_cpl_7d > 0 ? `${formatCurrency(leadsToday.avg_cpl_7d)} avg (7d)` : "No data yet"}
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="border-0 bg-gradient-to-br from-orange-50 to-amber-50/40 overflow-hidden">
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[13px] text-orange-600/70 font-medium">Spend Today</span>
+                  <div className="w-9 h-9 rounded-xl bg-orange-100 flex items-center justify-center">
+                    <DollarSign className="w-[18px] h-[18px] text-orange-600" />
+                  </div>
+                </div>
+                <div className="text-[32px] font-bold tracking-tight text-orange-700">
+                  {formatCurrency(leadsToday.today.cost)}
+                </div>
+                <div className="text-[11px] text-orange-500/70 mt-1">
+                  {leadsToday.yesterday.cost > 0 ? `${formatCurrency(leadsToday.yesterday.cost)} yesterday` : "No spend yesterday"}
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="border-0 bg-gradient-to-br from-purple-50 to-violet-50/40 overflow-hidden">
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[13px] text-purple-600/70 font-medium">Clicks Today</span>
+                  <div className="w-9 h-9 rounded-xl bg-purple-100 flex items-center justify-center">
+                    <MousePointerClick className="w-[18px] h-[18px] text-purple-600" />
+                  </div>
+                </div>
+                <div className="text-[32px] font-bold tracking-tight text-purple-700">
+                  {leadsToday.today.clicks}
+                </div>
+                <div className="text-[11px] text-purple-500/70 mt-1">
+                  {leadsToday.yesterday.clicks > 0 ? `${leadsToday.yesterday.clicks} yesterday` : "No clicks yesterday"}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
+        {/* ── WELCOME EMPTY STATE (no performance data yet) ────────────── */}
+        {!loading && !kpis && !leadsToday && (
+          <div className="rounded-3xl bg-gradient-to-br from-[#1a1a2e] via-[#16213e] to-[#0f3460] p-10 text-white relative overflow-hidden text-center">
+            <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_rgba(99,102,241,0.15),transparent_50%)]" />
+            <div className="relative z-10 max-w-lg mx-auto py-4">
+              <div className="w-16 h-16 rounded-2xl bg-white/10 flex items-center justify-center mx-auto mb-5 ring-1 ring-white/10">
+                <Rocket className="w-7 h-7 text-indigo-400" />
+              </div>
+              <h2 className="text-[22px] font-semibold tracking-tight mb-2">Welcome to IgniteAds</h2>
+              <p className="text-white/40 text-[14px] leading-relaxed mb-6">
+                Connect your Google Ads account or create your first AI-powered campaign to start seeing live performance data here.
+              </p>
+              <div className="flex items-center justify-center gap-3">
+                <Button
+                  onClick={() => (window.location.href = "/get-customers")}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white h-11 px-6 text-[13px] font-semibold rounded-xl"
+                >
+                  <Zap className="w-4 h-4 mr-2" /> Get Customers
+                </Button>
+                <Button
+                  onClick={() => (window.location.href = "/settings")}
+                  variant="outline"
+                  className="border-white/20 text-white/70 hover:text-white hover:bg-white/10 h-11 px-6 text-[13px] font-semibold rounded-xl"
+                >
+                  <Link2 className="w-4 h-4 mr-2" /> Connect Google Ads
+                </Button>
+              </div>
+            </div>
+          </div>
         )}
 
         {/* ── STATUS HERO ─────────────────────────────────────────────── */}
@@ -732,7 +839,19 @@ export default function DashboardPage() {
           </CardHeader>
           <CardContent className="pt-4">
             {campaigns.length === 0 ? (
-              <p className="text-slate-400 text-[13px]">No campaigns found. Use the Command Console to create your first campaign.</p>
+              <div className="text-center py-10">
+                <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center mx-auto mb-4">
+                  <Rocket className="w-6 h-6 text-slate-400" />
+                </div>
+                <h3 className="text-[15px] font-semibold text-slate-700 mb-1.5">No campaigns yet</h3>
+                <p className="text-slate-400 text-[13px] mb-5 max-w-sm mx-auto">Create your first AI-powered campaign to start getting leads and tracking performance.</p>
+                <Button
+                  onClick={() => (window.location.href = "/get-customers")}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white h-10 px-6 text-[13px] font-semibold rounded-xl"
+                >
+                  <Zap className="w-4 h-4 mr-2" /> Get Customers
+                </Button>
+              </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-[13px]">

@@ -1,40 +1,46 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
+import { useOnboardingGuard } from "@/hooks/use-onboarding-guard";
 import {
-  LayoutDashboard, Megaphone, Wand2, Palette,
+  LayoutDashboard, Megaphone, Wand2,
   Search, Zap, FlaskConical, FileText, Settings, LogOut,
   Shield, Building2, GitBranch, Plug, Scale,
-  CreditCard, Bell, Trophy, Crosshair, Brain,
-  MessageSquare, Key, Image, Globe, Lightbulb, Compass, Phone,
-  ChevronDown, Menu, X, Sparkles,
+  CreditCard, Trophy, Crosshair, Brain,
+  MessageSquare, Key, Image, Globe, Phone,
+  ChevronDown, Menu, X, Sparkles, Users, MapPin,
 } from "lucide-react";
+
+interface NavItem {
+  label: string;
+  href: string;
+  icon: any;
+  highlight?: boolean;
+}
 
 interface NavSection {
   title: string;
-  items: { label: string; href: string; icon: any }[];
+  items: NavItem[];
   collapsible?: boolean;
+  adminOnly?: boolean;
 }
 
-const navSections: NavSection[] = [
+const coreNav: NavSection[] = [
   {
     title: "",
     items: [
       { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+      { label: "Get Customers", href: "/get-customers", icon: Users, highlight: true },
     ],
   },
   {
-    title: "AI Power",
+    title: "AI Intelligence",
     items: [
-      { label: "AI Marketing Operator", href: "/strategist", icon: Sparkles },
+      { label: "AI Operator", href: "/strategist", icon: Sparkles },
       { label: "Fix My Ads", href: "/operator", icon: Brain },
-      { label: "Campaign Builder", href: "/ads/prompt", icon: Wand2 },
-      { label: "Ad Copy Studio", href: "/creative", icon: Palette },
-      { label: "Landing Page Studio", href: "/ads/landing-page-studio", icon: Globe },
-      { label: "Auto Optimizer", href: "/operator/live", icon: Zap },
     ],
   },
   {
@@ -48,57 +54,108 @@ const navSections: NavSection[] = [
     ],
   },
   {
-    title: "Growth AI",
+    title: "Leads & Local",
     items: [
-      { label: "Search Term Mining", href: "/growth/search-mining", icon: Search },
-      { label: "Expand Services", href: "/growth/expand", icon: Zap },
-      { label: "Bulk Campaigns", href: "/growth/bulk-generate", icon: Megaphone },
+      { label: "Calls & Leads", href: "/calls", icon: Phone },
+      { label: "GBP Manager", href: "/gbp", icon: MapPin },
     ],
   },
   {
-    title: "Intelligence",
+    title: "",
     items: [
-      { label: "Recommendations", href: "/ads/recommendations", icon: Lightbulb },
-      { label: "Audit", href: "/audit", icon: Shield },
-      { label: "Competitors", href: "/intel/competitors", icon: Search },
-      { label: "Keyword Research", href: "/ads/keyword-research", icon: Compass },
-      { label: "Reports", href: "/reports", icon: FileText },
-    ],
-  },
-  {
-    title: "Calls & Leads",
-    items: [
-      { label: "Calls Dashboard", href: "/calls", icon: Phone },
-      { label: "LSA Leads", href: "/lsa", icon: Phone },
-    ],
-  },
-  {
-    title: "Settings",
-    items: [
-      { label: "Account & Sync", href: "/settings", icon: Settings },
-      { label: "Billing", href: "/v2/billing", icon: CreditCard },
-      { label: "Notifications", href: "/v2/notifications", icon: Bell },
-    ],
-  },
-  {
-    title: "Advanced",
-    collapsible: true,
-    items: [
-      { label: "MCC / Agency", href: "/v2/mcc", icon: Building2 },
-      { label: "Experiments", href: "/experiments", icon: FlaskConical },
-      { label: "Conversions", href: "/v2/conversions", icon: Crosshair },
-      { label: "Change History", href: "/v2/changes", icon: GitBranch },
-      { label: "Connectors", href: "/v2/connectors", icon: Plug },
-      { label: "Policy", href: "/v2/policy", icon: Scale },
-      { label: "AI Quality", href: "/v2/evaluation", icon: Trophy },
+      { label: "Settings", href: "/settings", icon: Settings },
     ],
   },
 ];
+
+const advancedNav: NavSection = {
+  title: "Advanced",
+  collapsible: true,
+  adminOnly: true,
+  items: [
+    { label: "Campaign Builder", href: "/ads/prompt", icon: Wand2 },
+    { label: "Landing Page Studio", href: "/ads/landing-page-studio", icon: Globe },
+    { label: "Search Mining", href: "/growth/search-mining", icon: Search },
+    { label: "Expand Services", href: "/growth/expand", icon: Zap },
+    { label: "Bulk Campaigns", href: "/growth/bulk-generate", icon: Megaphone },
+    { label: "Recommendations", href: "/ads/recommendations", icon: Sparkles },
+    { label: "Audit", href: "/audit", icon: Shield },
+    { label: "Competitors", href: "/intel/competitors", icon: Search },
+    { label: "Keyword Research", href: "/ads/keyword-research", icon: Search },
+    { label: "Reports", href: "/reports", icon: FileText },
+    { label: "LSA Leads", href: "/lsa", icon: Phone },
+    { label: "Billing", href: "/v2/billing", icon: CreditCard },
+    { label: "MCC / Agency", href: "/v2/mcc", icon: Building2 },
+    { label: "Experiments", href: "/experiments", icon: FlaskConical },
+    { label: "Conversions", href: "/v2/conversions", icon: Crosshair },
+    { label: "Change History", href: "/v2/changes", icon: GitBranch },
+    { label: "Connectors", href: "/v2/connectors", icon: Plug },
+    { label: "Policy", href: "/v2/policy", icon: Scale },
+    { label: "AI Quality", href: "/v2/evaluation", icon: Trophy },
+  ],
+};
 
 export function Sidebar() {
   const pathname = usePathname();
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  useEffect(() => {
+    // Show advanced menu for admin/dev users
+    try {
+      const token = localStorage.getItem("token");
+      if (token) {
+        const payload = JSON.parse(atob(token.split(".")[1]));
+        if (payload.role === "admin_dev" || payload.role === "owner") {
+          setShowAdvanced(true);
+        }
+      }
+    } catch {}
+  }, []);
+
+  const allSections = showAdvanced ? [...coreNav, advancedNav] : coreNav;
+
+  function renderNavItem(item: NavItem) {
+    const isActive = pathname === item.href || pathname?.startsWith(item.href + "/");
+    const Icon = item.icon;
+
+    if (item.highlight) {
+      return (
+        <Link
+          key={item.href}
+          href={item.href}
+          onClick={() => setMobileOpen(false)}
+          className={cn(
+            "flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all duration-150",
+            isActive
+              ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-500/25"
+              : "bg-gradient-to-r from-blue-600/10 to-indigo-600/10 text-blue-400 hover:from-blue-600/20 hover:to-indigo-600/20 hover:text-blue-300 border border-blue-500/20"
+          )}
+        >
+          <Icon className="w-[18px] h-[18px] flex-shrink-0" />
+          {item.label}
+        </Link>
+      );
+    }
+
+    return (
+      <Link
+        key={item.href}
+        href={item.href}
+        onClick={() => setMobileOpen(false)}
+        className={cn(
+          "flex items-center gap-3 px-3 py-2 rounded-xl text-[13px] font-medium transition-all duration-150",
+          isActive
+            ? "bg-white/[0.12] text-white shadow-sm"
+            : "text-white/50 hover:bg-white/[0.06] hover:text-white/80"
+        )}
+      >
+        <Icon className="w-[18px] h-[18px] flex-shrink-0" />
+        {item.label}
+      </Link>
+    );
+  }
 
   const sidebarContent = (
     <>
@@ -109,7 +166,7 @@ export function Sidebar() {
           </div>
           <div>
             <div className="font-semibold text-[15px] leading-tight tracking-tight">IgniteAds.ai</div>
-            <div className="text-[11px] text-white/40 font-medium">AI CMO Platform</div>
+            <div className="text-[11px] text-white/40 font-medium">AI Marketing System</div>
           </div>
         </Link>
         <button onClick={() => setMobileOpen(false)} className="lg:hidden text-white/40 hover:text-white/70 p-1">
@@ -118,10 +175,10 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 overflow-y-auto py-3 px-3">
-        {navSections.map((section) => {
+        {allSections.map((section, idx) => {
           const isCollapsed = section.collapsible && !advancedOpen;
           return (
-            <div key={section.title || "top"} className="mb-1">
+            <div key={section.title || `section-${idx}`} className="mb-1">
               {section.title && (
                 <div
                   className={cn(
@@ -143,26 +200,7 @@ export function Sidebar() {
               )}
               {!isCollapsed && (
                 <div className="space-y-0.5">
-                  {section.items.map((item) => {
-                    const isActive = pathname === item.href || pathname?.startsWith(item.href + "/");
-                    const Icon = item.icon;
-                    return (
-                      <Link
-                        key={item.href + item.label}
-                        href={item.href}
-                        onClick={() => setMobileOpen(false)}
-                        className={cn(
-                          "flex items-center gap-3 px-3 py-2 rounded-xl text-[13px] font-medium transition-all duration-150",
-                          isActive
-                            ? "bg-white/[0.12] text-white shadow-sm"
-                            : "text-white/50 hover:bg-white/[0.06] hover:text-white/80"
-                        )}
-                      >
-                        <Icon className="w-[18px] h-[18px] flex-shrink-0" />
-                        {item.label}
-                      </Link>
-                    );
-                  })}
+                  {section.items.map(renderNavItem)}
                 </div>
               )}
             </div>
@@ -174,6 +212,7 @@ export function Sidebar() {
         <button
           onClick={() => {
             localStorage.removeItem("token");
+            localStorage.removeItem("tenant_id");
             window.location.href = "/login";
           }}
           className="flex items-center gap-3 px-3 py-2 rounded-xl text-[13px] text-white/35 hover:bg-white/[0.06] hover:text-white/70 w-full transition-all duration-150"
@@ -217,8 +256,18 @@ export function Sidebar() {
 }
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
+  const { ready, loading } = useOnboardingGuard();
+
+  if (loading || !ready) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" />
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-[#f8f9fb]">
+    <div className="min-h-screen bg-[#0a0a0f]">
       <Sidebar />
       <main className="lg:pl-[260px]">
         <div className="p-4 pt-16 lg:pt-0 lg:p-8 xl:p-10 max-w-[1440px] mx-auto">{children}</div>

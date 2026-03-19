@@ -782,3 +782,268 @@ async def list_expansions(
         }
         for r in recs
     ]
+
+
+# ── AUTO-BUILD ("Get Customers" flow) ────────────────────────────
+
+class AutoBuildRequest(BaseModel):
+    business_type: str  # e.g. "locksmith", "roofer"
+    location: str  # e.g. "Dallas, TX"
+    budget_monthly: int = 1500  # monthly budget in USD
+    goal: str = "leads"  # leads, calls, brand_awareness
+    urgency: str = "high"  # low, medium, high
+
+
+@router.post("/auto-build")
+async def auto_build_campaign(
+    req: AutoBuildRequest,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    "Get Customers" one-click campaign builder.
+    Takes business type, location, budget, and goal — builds a full campaign.
+    Returns the campaign draft with AI reasoning.
+    """
+    from app.models.business_profile import BusinessProfile
+    from app.models.tenant import Tenant
+    from app.services.campaign_generator import CampaignGeneratorService
+    from app.models.campaign import Campaign
+
+    # Load business profile
+    bp_result = await db.execute(
+        select(BusinessProfile).where(BusinessProfile.tenant_id == user.tenant_id)
+    )
+    bp = bp_result.scalar_one_or_none()
+    if not bp:
+        raise HTTPException(400, "Complete onboarding first — no business profile found")
+
+    # Load tenant for google customer ID
+    tenant = await db.get(Tenant, user.tenant_id)
+    if not tenant:
+        raise HTTPException(404, "Tenant not found")
+
+    # Get Google Ads customer ID
+    from app.models.integration import IntegrationGoogleAds
+    int_result = await db.execute(
+        select(IntegrationGoogleAds).where(
+            IntegrationGoogleAds.tenant_id == user.tenant_id,
+            IntegrationGoogleAds.is_active == True,
+        )
+    )
+    integration = int_result.scalar_one_or_none()
+    google_customer_id = integration.customer_id if integration else None
+
+    # Build a rich prompt from the form data
+    daily_budget = round(req.budget_monthly / 30)
+    prompt = (
+        f"Create a {req.urgency}-urgency Google Ads campaign for a {req.business_type} "
+        f"business in {req.location}. "
+        f"Monthly budget: ${req.budget_monthly} (${daily_budget}/day). "
+        f"Primary goal: {req.goal}. "
+        f"Focus on high-intent, ready-to-buy keywords. "
+        f"Include call extensions and location targeting for {req.location}."
+    )
+
+    # Generate campaign
+    generator = CampaignGeneratorService(db, str(user.tenant_id))
+    try:
+        draft = await generator.generate_from_prompt(
+            prompt=prompt,
+            business_profile=bp,
+            google_customer_id=google_customer_id,
+        )
+    except Exception as e:
+        logger.error("Auto-build campaign generation failed", error=str(e))
+        raise HTTPException(500, f"Campaign generation failed: {str(e)}")
+
+    # Save as draft Campaign record
+    camp_data = draft.get("campaign", {})
+    campaign = Campaign(
+        tenant_id=user.tenant_id,
+        google_customer_id=google_customer_id,
+        type=camp_data.get("type", "SEARCH"),
+        name=camp_data.get("name", f"{req.business_type.title()} — {req.location}"),
+        status="DRAFT",
+        objective=req.goal,
+        budget_micros=daily_budget * 1_000_000,
+        bidding_strategy=camp_data.get("bidding_strategy", "MAXIMIZE_CONVERSIONS"),
+        settings_json={
+            "locations": camp_data.get("locations", []),
+            "schedule": camp_data.get("schedule", {}),
+            "device_bids": camp_data.get("device_bids", {}),
+            "network": camp_data.get("settings", {}).get("network", "SEARCH"),
+            "ad_groups": draft.get("ad_groups", []),
+            "asset_groups": draft.get("asset_groups", []),
+            "extensions": draft.get("extensions", {}),
+            "keyword_strategy": draft.get("keyword_strategy", {}),
+            "reasoning": draft.get("reasoning", {}),
+            "builder_log": draft.get("builder_log", {}),
+            "compliance": draft.get("compliance", {}),
+            "source": "get_customers_auto_build",
+        },
+        is_draft=True,
+    )
+    db.add(campaign)
+    await db.commit()
+    await db.refresh(campaign)
+
+    return {
+        "success": True,
+        "campaign_id": campaign.id,
+        "campaign_name": campaign.name,
+        "campaign_type": camp_data.get("type", "SEARCH"),
+        "budget_daily": daily_budget,
+        "budget_monthly": req.budget_monthly,
+        "ad_groups": len(draft.get("ad_groups", [])),
+        "keywords": draft.get("keyword_strategy", {}).get("total_keywords", 0),
+        "ads": sum(len(ag.get("ads", [])) for ag in draft.get("ad_groups", [])),
+        "compliance": draft.get("compliance", {}),
+        "reasoning": draft.get("reasoning", {}),
+        "builder_log": draft.get("builder_log", {}),
+        "draft": draft,
+    }
+
+
+@router.post("/auto-build/stream")
+async def auto_build_stream(
+    req: AutoBuildRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    SSE streaming version of auto-build for live progress UI.
+    """
+    from app.models.business_profile import BusinessProfile
+    from app.models.tenant import Tenant
+    from app.services.campaign_generator import CampaignGeneratorService
+    from app.models.campaign import Campaign
+
+    bp_result = await db.execute(
+        select(BusinessProfile).where(BusinessProfile.tenant_id == user.tenant_id)
+    )
+    bp = bp_result.scalar_one_or_none()
+    if not bp:
+        raise HTTPException(400, "Complete onboarding first")
+
+    from app.models.integration import IntegrationGoogleAds
+    int_result = await db.execute(
+        select(IntegrationGoogleAds).where(
+            IntegrationGoogleAds.tenant_id == user.tenant_id,
+            IntegrationGoogleAds.is_active == True,
+        )
+    )
+    integration = int_result.scalar_one_or_none()
+    google_customer_id = integration.customer_id if integration else None
+
+    daily_budget = round(req.budget_monthly / 30)
+    prompt = (
+        f"Create a {req.urgency}-urgency Google Ads campaign for a {req.business_type} "
+        f"business in {req.location}. Monthly budget: ${req.budget_monthly} (${daily_budget}/day). "
+        f"Primary goal: {req.goal}. Focus on high-intent keywords. "
+        f"Include call extensions and location targeting for {req.location}."
+    )
+
+    progress_queue: asyncio.Queue = asyncio.Queue()
+
+    async def event_stream():
+        result_holder = {}
+        error_holder = {}
+
+        async def run_build():
+            try:
+                generator = CampaignGeneratorService(db, str(user.tenant_id))
+                draft = await generator.generate_from_prompt(
+                    prompt=prompt,
+                    business_profile=bp,
+                    google_customer_id=google_customer_id,
+                    progress_queue=progress_queue,
+                )
+                # Save campaign
+                camp_data = draft.get("campaign", {})
+                campaign = Campaign(
+                    tenant_id=user.tenant_id,
+                    google_customer_id=google_customer_id,
+                    type=camp_data.get("type", "SEARCH"),
+                    name=camp_data.get("name", f"{req.business_type.title()} — {req.location}"),
+                    status="DRAFT",
+                    objective=req.goal,
+                    budget_micros=daily_budget * 1_000_000,
+                    bidding_strategy=camp_data.get("bidding_strategy", "MAXIMIZE_CONVERSIONS"),
+                    settings_json={
+                        "ad_groups": draft.get("ad_groups", []),
+                        "asset_groups": draft.get("asset_groups", []),
+                        "extensions": draft.get("extensions", {}),
+                        "keyword_strategy": draft.get("keyword_strategy", {}),
+                        "reasoning": draft.get("reasoning", {}),
+                        "builder_log": draft.get("builder_log", {}),
+                        "compliance": draft.get("compliance", {}),
+                        "source": "get_customers_auto_build",
+                    },
+                    is_draft=True,
+                )
+                db.add(campaign)
+                await db.commit()
+                await db.refresh(campaign)
+
+                result_holder["data"] = {
+                    "success": True,
+                    "campaign_id": campaign.id,
+                    "campaign_name": campaign.name,
+                    "campaign_type": camp_data.get("type", "SEARCH"),
+                    "budget_daily": daily_budget,
+                    "ad_groups": len(draft.get("ad_groups", [])),
+                    "keywords": draft.get("keyword_strategy", {}).get("total_keywords", 0),
+                    "ads": sum(len(ag.get("ads", [])) for ag in draft.get("ad_groups", [])),
+                    "compliance": draft.get("compliance", {}),
+                    "reasoning": draft.get("reasoning", {}),
+                }
+            except Exception as e:
+                logger.error("Auto-build stream error", error=str(e))
+                error_holder["message"] = str(e)
+            finally:
+                await progress_queue.put({"type": "_done"})
+
+        task = asyncio.create_task(run_build())
+
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(progress_queue.get(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+                    if task.done():
+                        break
+                    continue
+
+                if event.get("type") == "_done":
+                    break
+
+                yield f"data: {json.dumps(event)}\n\n"
+
+            if not task.done():
+                await task
+
+            if error_holder:
+                yield f"data: {json.dumps({'type': 'error', 'message': error_holder['message']})}\n\n"
+                return
+
+            yield f"data: {json.dumps({'type': 'complete', 'data': result_holder.get('data', {})})}\n\n"
+        finally:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

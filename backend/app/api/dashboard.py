@@ -485,6 +485,64 @@ async def get_health_check(
     }
 
 
+@router.get("/leads-today")
+async def get_leads_today(
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Today's conversions (leads) and cost-per-lead for the hero card."""
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+
+    async def _day_stats(d: date):
+        r = await db.execute(
+            select(
+                func.sum(PerformanceDaily.conversions).label("conversions"),
+                func.sum(PerformanceDaily.cost_micros).label("cost_micros"),
+                func.sum(PerformanceDaily.clicks).label("clicks"),
+            ).where(
+                PerformanceDaily.tenant_id == user.tenant_id,
+                PerformanceDaily.entity_type == "campaign",
+                PerformanceDaily.date == d,
+            )
+        )
+        row = r.one_or_none()
+        conv = float(row.conversions or 0) if row else 0.0
+        cost = float(row.cost_micros or 0) / 1_000_000 if row else 0.0
+        clicks = int(row.clicks or 0) if row else 0
+        cpl = round(cost / conv, 2) if conv > 0 else 0
+        return {"conversions": round(conv, 1), "cost": round(cost, 2), "clicks": clicks, "cpl": cpl}
+
+    today_stats = await _day_stats(today)
+    yesterday_stats = await _day_stats(yesterday)
+
+    # 7-day average for context
+    week_ago = today - timedelta(days=7)
+    r7 = await db.execute(
+        select(
+            func.sum(PerformanceDaily.conversions).label("conversions"),
+            func.sum(PerformanceDaily.cost_micros).label("cost_micros"),
+        ).where(
+            PerformanceDaily.tenant_id == user.tenant_id,
+            PerformanceDaily.entity_type == "campaign",
+            PerformanceDaily.date >= week_ago,
+            PerformanceDaily.date < today,
+        )
+    )
+    r7row = r7.one_or_none()
+    week_conv = float(r7row.conversions or 0) if r7row else 0.0
+    week_cost = float(r7row.cost_micros or 0) / 1_000_000 if r7row else 0.0
+    avg_daily_leads = round(week_conv / 7, 1) if week_conv > 0 else 0
+    avg_cpl = round(week_cost / week_conv, 2) if week_conv > 0 else 0
+
+    return {
+        "today": today_stats,
+        "yesterday": yesterday_stats,
+        "avg_daily_leads": avg_daily_leads,
+        "avg_cpl_7d": avg_cpl,
+    }
+
+
 @router.get("/campaigns")
 async def get_dashboard_campaigns(
     days: int = 30,
