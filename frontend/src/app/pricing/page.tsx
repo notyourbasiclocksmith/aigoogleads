@@ -7,7 +7,7 @@ import {
   Star, Users, BarChart3, Lock, TrendingUp, ChevronDown,
 } from "lucide-react";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// Use relative URLs so requests go through Next.js rewrite proxy
 
 const plans = [
   {
@@ -121,7 +121,7 @@ function PricingPageContent() {
         router.push(`/register?plan=${planId}`);
         return;
       }
-      const res = await fetch(`${API_URL}/api/v2/billing/checkout`, {
+      const res = await fetch(`/api/v2/billing/checkout`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

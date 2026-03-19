@@ -9,7 +9,7 @@ import {
 
 import { api } from "@/lib/api";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// Use relative URLs so requests go through Next.js rewrite proxy (Vercel → Render)
 
 const planDetails: Record<string, { name: string; price: number; icon: any; color: string }> = {
   starter: { name: "Starter", price: 97, icon: Rocket, color: "from-blue-500 to-blue-600" },
@@ -41,7 +41,7 @@ function RegisterContent() {
 
     try {
       // 1. Register account
-      const registerRes = await fetch(`${API_URL}/api/auth/register`, {
+      const registerRes = await fetch(`/api/auth/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password, full_name: fullName }),
@@ -52,7 +52,7 @@ function RegisterContent() {
       }
 
       // 2. Login to get token
-      const loginRes = await fetch(`${API_URL}/api/auth/login`, {
+      const loginRes = await fetch(`/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),

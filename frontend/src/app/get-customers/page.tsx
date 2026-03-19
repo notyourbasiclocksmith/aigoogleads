@@ -112,8 +112,7 @@ export default function GetCustomersPage() {
 
     try {
       const token = localStorage.getItem("token");
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
-      const response = await fetch(`${apiUrl}/api/v2/strategist/auto-build/stream`, {
+      const response = await fetch(`/api/v2/strategist/auto-build/stream`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
