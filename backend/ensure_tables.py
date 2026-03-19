@@ -10,11 +10,17 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+# Set a dummy async URL so the database module doesn't fail on import
+os.environ.setdefault("DATABASE_URL", os.environ.get("DATABASE_URL_SYNC", "postgresql+asyncpg://localhost/dummy"))
+
 from sqlalchemy import create_engine, text
+from sqlalchemy.orm import DeclarativeBase
+
+# Import Base and all models to register them
 from app.core.database import Base
 from app.models import *  # noqa: F401, F403
 
-DB_URL = os.environ.get("DATABASE_URL", "")
+DB_URL = os.environ.get("DATABASE_URL_SYNC", os.environ.get("DATABASE_URL", ""))
 if not DB_URL:
     print("ERROR: Set DATABASE_URL environment variable")
     sys.exit(1)
@@ -23,7 +29,17 @@ if not DB_URL:
 DB_URL = DB_URL.replace("postgresql+asyncpg://", "postgresql://")
 
 print(f"Connecting to: {DB_URL[:50]}...")
-engine = create_engine(DB_URL)
+
+# Handle SSL for Render managed PostgreSQL
+connect_args = {}
+if "sslmode=require" in DB_URL or "render.com" in DB_URL:
+    import ssl
+    ssl_ctx = ssl.create_default_context()
+    ssl_ctx.check_hostname = False
+    ssl_ctx.verify_mode = ssl.CERT_NONE
+    connect_args["sslmode"] = "require"
+
+engine = create_engine(DB_URL, connect_args=connect_args)
 
 # Check existing tables
 with engine.connect() as conn:

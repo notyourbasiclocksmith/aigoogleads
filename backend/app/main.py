@@ -14,7 +14,21 @@ logger = structlog.get_logger()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting Ignite Ads AI backend", env=settings.APP_ENV)
-    # Run Alembic migrations on startup
+
+    # 1. Ensure all tables exist (create_all is safe — won't drop/alter existing)
+    try:
+        from sqlalchemy import create_engine
+        from app.core.database import Base
+        import app.models  # noqa: F401 — trigger model registration
+        sync_url = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+        sync_engine = create_engine(sync_url, pool_pre_ping=True)
+        Base.metadata.create_all(sync_engine)
+        sync_engine.dispose()
+        logger.info("Database tables verified (create_all)")
+    except Exception as e:
+        logger.error("create_all failed", error=str(e))
+
+    # 2. Run Alembic migrations on startup
     import subprocess, os
     try:
         result = subprocess.run(
