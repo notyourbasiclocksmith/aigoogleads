@@ -71,7 +71,7 @@ function RegisterContent() {
       const tenantId = loginData.tenants?.[0]?.tenant_id;
       if (!tenantId) {
         // Create tenant if none exists
-        const createData = await api.post("/api/workspace/tenants", { name: companyName || fullName });
+        const createData = await api.post("/api/tenants", { name: companyName || fullName });
         if (createData.tenant?.id) {
           localStorage.setItem("tenant_id", createData.tenant.id);
         } else if (createData.tenant_id) {
