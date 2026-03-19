@@ -14,7 +14,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, RetryError
 
 from app.core.config import settings
 from app.core.security import decrypt_token
-from app.integrations.google_ads.oauth import refresh_access_token
+from app.integrations.google_ads.oauth import refresh_access_token, OAuthTokenExpiredError
 
 logger = structlog.get_logger()
 
@@ -36,7 +36,10 @@ class GoogleAdsClient:
     async def _ensure_token(self):
         if self._access_token and self._token_expires_at and datetime.now(timezone.utc) < self._token_expires_at:
             return
-        tokens = await refresh_access_token(self._refresh_token)
+        try:
+            tokens = await refresh_access_token(self._refresh_token)
+        except OAuthTokenExpiredError:
+            raise  # Let this bubble up with the user-friendly message
         if tokens:
             self._access_token = tokens["access_token"]
             expires_in = tokens.get("expires_in", 3500)

@@ -99,3 +99,23 @@ app.include_router(strategist.router, prefix="/api/v2/strategist", tags=["V2 Cam
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok", "version": "2.0.0"}
+
+
+# Global exception handler for expired Google Ads tokens
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    from app.integrations.google_ads.oauth import OAuthTokenExpiredError
+    if isinstance(exc, OAuthTokenExpiredError):
+        return JSONResponse(
+            status_code=401,
+            content={
+                "detail": str(exc),
+                "error_code": "GOOGLE_ADS_TOKEN_EXPIRED",
+                "action": "reconnect",
+            },
+        )
+    # Re-raise all other exceptions to default handler
+    raise exc

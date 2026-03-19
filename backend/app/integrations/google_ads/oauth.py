@@ -55,6 +55,11 @@ async def exchange_code_for_tokens(auth_code: str) -> Optional[Dict[str, Any]]:
         }
 
 
+class OAuthTokenExpiredError(Exception):
+    """Raised when the refresh token has been expired or revoked by Google."""
+    pass
+
+
 async def refresh_access_token(refresh_token: str) -> Optional[Dict[str, Any]]:
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -67,10 +72,16 @@ async def refresh_access_token(refresh_token: str) -> Optional[Dict[str, Any]]:
             },
         )
         if resp.status_code != 200:
+            body = resp.text[:500]
             logger.error("OAuth token refresh failed",
                          status=resp.status_code,
-                         response=resp.text[:500],
+                         response=body,
                          client_id_prefix=settings.GOOGLE_ADS_CLIENT_ID[:15])
+            if "invalid_grant" in body:
+                raise OAuthTokenExpiredError(
+                    "Your Google Ads connection has expired or been revoked. "
+                    "Please reconnect your account in Settings → Google Ads → Reconnect."
+                )
             return None
         data = resp.json()
         return {
