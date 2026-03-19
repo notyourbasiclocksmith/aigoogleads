@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { AppLayout } from "@/components/layout/sidebar";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -9,7 +10,8 @@ import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import { Save, Shield, Bell, Users, Link2, RefreshCw, CheckCircle2, XCircle, Loader2, BarChart3, Zap, AlertTriangle, Target, ExternalLink, Send, MapPin, Globe, Star, Clock, Building2, Share2 } from "lucide-react";
 
-export default function SettingsPage() {
+function SettingsContent() {
+  const searchParams = useSearchParams();
   const [profile, setProfile] = useState<any>({});
   const [guardrails, setGuardrails] = useState<any>({});
   const [accounts, setAccounts] = useState<any[]>([]);
@@ -47,6 +49,15 @@ export default function SettingsPage() {
     }).finally(() => setLoading(false));
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
+
+  // Handle OAuth callback redirect from Google
+  useEffect(() => {
+    if (searchParams.get("oauth_success") === "true") {
+      loadAccessibleCustomers();
+    } else if (searchParams.get("oauth_error")) {
+      setPickerError(`Google Ads connection failed: ${searchParams.get("oauth_error")}`);
+    }
+  }, [searchParams]);
 
   const startPolling = useCallback((accountId: string) => {
     if (pollRef.current) clearInterval(pollRef.current);
@@ -929,5 +940,13 @@ export default function SettingsPage() {
         </Card>
       </div>
     </AppLayout>
+  );
+}
+
+export default function SettingsPage() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center min-h-screen"><Loader2 className="w-8 h-8 animate-spin text-blue-500" /></div>}>
+      <SettingsContent />
+    </Suspense>
   );
 }

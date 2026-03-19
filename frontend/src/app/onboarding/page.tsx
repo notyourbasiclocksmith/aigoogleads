@@ -242,8 +242,10 @@ function OnboardingContent() {
   // Check if onboarding is already complete — redirect to dashboard
   // Also pre-populate fields from saved data if still in progress
   useEffect(() => {
+    // Don't redirect if we're handling an OAuth callback
+    const isOAuthCallback = searchParams.get("oauth_success") === "true" || searchParams.get("oauth_error");
     api.get("/api/onboarding/status").then((status: any) => {
-      if (status?.complete) {
+      if (status?.complete && !isOAuthCallback) {
         router.push("/dashboard");
         return;
       }

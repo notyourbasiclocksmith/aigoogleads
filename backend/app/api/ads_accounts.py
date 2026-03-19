@@ -46,19 +46,21 @@ async def oauth_callback(
         logger.warning("OAuth callback error", error=error)
         return RedirectResponse(url=f"{frontend_url}/onboarding?oauth_error={error or 'no_code'}")
 
-    # state = "tenant_id:user_id"
+    # state = "tenant_id:user_id" or "tenant_id:user_id:origin"
     parts = state.split(":")
-    if len(parts) != 2:
+    if len(parts) < 2:
         return RedirectResponse(url=f"{frontend_url}/onboarding?oauth_error=invalid_state")
 
-    tenant_id, user_id = parts
+    tenant_id, user_id = parts[0], parts[1]
+    origin = parts[2] if len(parts) > 2 else "onboarding"
+    redirect_page = "settings" if origin == "settings" else "onboarding"
 
     from app.integrations.google_ads.oauth import exchange_code_for_tokens
     tokens = await exchange_code_for_tokens(code)
 
     if not tokens or not tokens.get("refresh_token"):
         logger.error("Failed to exchange OAuth code for tokens")
-        return RedirectResponse(url=f"{frontend_url}/onboarding?oauth_error=token_exchange_failed")
+        return RedirectResponse(url=f"{frontend_url}/{redirect_page}?oauth_error=token_exchange_failed")
 
     # Reuse existing pending integration if one exists (avoid duplicates from repeated OAuth)
     async with async_session_factory() as db:
@@ -91,7 +93,7 @@ async def oauth_callback(
 
         await db.commit()
 
-    return RedirectResponse(url=f"{frontend_url}/onboarding?oauth_success=true")
+    return RedirectResponse(url=f"{frontend_url}/{redirect_page}?oauth_success=true")
 
 
 @router.get("")
@@ -183,7 +185,7 @@ async def reconnect_oauth(
 ):
     """Generate a fresh OAuth URL so the user can re-authorize Google Ads."""
     from app.integrations.google_ads.oauth import get_oauth_url
-    url = get_oauth_url(state=f"{user.tenant_id}:{user.user_id}")
+    url = get_oauth_url(state=f"{user.tenant_id}:{user.user_id}:settings")
     return {"oauth_url": url}
 
 
