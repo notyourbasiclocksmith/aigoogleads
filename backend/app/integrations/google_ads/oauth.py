@@ -20,7 +20,7 @@ def get_oauth_url(state: str = "") -> str:
         "response_type": "code",
         "scope": SCOPES,
         "access_type": "offline",
-        "prompt": "consent",
+        "prompt": "consent select_account",
         "state": state,
     }
     qs = "&".join(f"{k}={v}" for k, v in params.items())
