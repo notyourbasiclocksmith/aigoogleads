@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     # Google REST APIs (PageSpeed Insights, etc.)
     GOOGLE_API_KEY: str = ""
 
+    # Jarvis Brain S2S
+    BRAIN_API_KEY: str = ""
+
     # CallFlux Bridge (cross-platform LSA + call data)
     CALLFLUX_BRIDGE_API_KEY: str = ""
     CALLFLUX_API_URL: str = ""  # e.g. https://callflux-api.onrender.com
