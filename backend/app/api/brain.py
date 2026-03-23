@@ -607,7 +607,12 @@ async def brain_conversions(
     tenant_id: str = Depends(_tenant_id),
     db: AsyncSession = Depends(get_db),
 ):
-    q = select(Conversion).where(Conversion.tenant_id == tenant_id)
+    start, end = _date_range(date_from, date_to)
+    q = select(Conversion).where(
+        Conversion.tenant_id == tenant_id,
+        Conversion.created_at >= start,
+        Conversion.created_at <= end,
+    )
     if action:
         q = q.where(Conversion.type == action)
     rows = (await db.execute(q)).scalars().all()
@@ -632,9 +637,12 @@ async def brain_call_conversions(
     tenant_id: str = Depends(_tenant_id),
     db: AsyncSession = Depends(get_db),
 ):
+    start, end = _date_range(date_from, date_to)
     q = select(Conversion).where(
         Conversion.tenant_id == tenant_id,
         Conversion.type == "PHONE_CALL",
+        Conversion.created_at >= start,
+        Conversion.created_at <= end,
     )
     rows = (await db.execute(q)).scalars().all()
     return [
