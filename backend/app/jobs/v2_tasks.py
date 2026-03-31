@@ -48,9 +48,11 @@ async def _evaluate_rollback_triggers_async():
     from app.core.database import async_session_factory
     from app.models.tenant import Tenant
     from app.models.v2.rollback_policy import RollbackPolicy
+    from app.models.performance_daily import PerformanceDaily
     from app.services.v2.change_management import evaluate_rollback_triggers
     from app.services.v2.notification_service import dispatch_notification
-    from sqlalchemy import select, and_
+    from sqlalchemy import select, and_, func
+    from datetime import date, timedelta
 
     async with async_session_factory() as db:
         try:
@@ -58,10 +60,61 @@ async def _evaluate_rollback_triggers_async():
             result = await db.execute(stmt)
             policies = result.scalars().all()
 
+            today = date.today()
+            current_start = today - timedelta(days=7)
+            baseline_start = today - timedelta(days=14)
+            baseline_end = today - timedelta(days=8)
+
             for policy in policies:
-                # Stub: in production, fetch actual current vs baseline metrics
-                current_metrics = {"conversions": 10, "cpa": 45, "spend": 500}
-                baseline_metrics = {"conversions": 12, "cpa": 40, "spend": 450}
+                # Query actual current metrics (last 7 days)
+                current_q = await db.execute(
+                    select(
+                        func.sum(PerformanceDaily.conversions).label("conversions"),
+                        func.sum(PerformanceDaily.cost_micros).label("cost_micros"),
+                        func.sum(PerformanceDaily.cpa_micros).label("cpa_micros_sum"),
+                        func.count().label("rows"),
+                    ).where(
+                        and_(
+                            PerformanceDaily.tenant_id == policy.tenant_id,
+                            PerformanceDaily.date >= current_start,
+                            PerformanceDaily.date <= today,
+                        )
+                    )
+                )
+                cur = current_q.one()
+
+                # Query baseline metrics (prior 7 days)
+                base_q = await db.execute(
+                    select(
+                        func.sum(PerformanceDaily.conversions).label("conversions"),
+                        func.sum(PerformanceDaily.cost_micros).label("cost_micros"),
+                        func.sum(PerformanceDaily.cpa_micros).label("cpa_micros_sum"),
+                        func.count().label("rows"),
+                    ).where(
+                        and_(
+                            PerformanceDaily.tenant_id == policy.tenant_id,
+                            PerformanceDaily.date >= baseline_start,
+                            PerformanceDaily.date <= baseline_end,
+                        )
+                    )
+                )
+                base = base_q.one()
+
+                if not cur.rows or not base.rows:
+                    # No performance data yet — skip evaluation
+                    continue
+
+                MICROS = 1_000_000
+                current_metrics = {
+                    "conversions": float(cur.conversions or 0),
+                    "cpa": (cur.cpa_micros_sum or 0) / MICROS / max(cur.rows, 1),
+                    "spend": (cur.cost_micros or 0) / MICROS,
+                }
+                baseline_metrics = {
+                    "conversions": float(base.conversions or 0),
+                    "cpa": (base.cpa_micros_sum or 0) / MICROS / max(base.rows, 1),
+                    "spend": (base.cost_micros or 0) / MICROS,
+                }
 
                 eval_result = await evaluate_rollback_triggers(
                     db, policy.tenant_id, current_metrics, baseline_metrics
@@ -100,13 +153,16 @@ async def _record_recommendation_outcomes_async():
     from app.core.database import async_session_factory
     from app.models.recommendation import Recommendation
     from app.models.v2.recommendation_outcome import RecommendationOutcome
+    from app.models.performance_daily import PerformanceDaily
     from app.services.v2.evaluation import record_outcome
-    from sqlalchemy import select, and_
-    from datetime import datetime, timezone, timedelta
+    from sqlalchemy import select, and_, func
+    from datetime import datetime, timezone, timedelta, date as date_type
 
     async with async_session_factory() as db:
         try:
             now = datetime.now(timezone.utc)
+            MICROS = 1_000_000
+
             for window_days in [7, 14, 30]:
                 target_date = now - timedelta(days=window_days)
                 window_start = target_date - timedelta(hours=12)
@@ -115,8 +171,8 @@ async def _record_recommendation_outcomes_async():
                 stmt = select(Recommendation).where(
                     and_(
                         Recommendation.status == "applied",
-                        Recommendation.updated_at >= window_start,
-                        Recommendation.updated_at <= window_end,
+                        Recommendation.applied_at >= window_start,
+                        Recommendation.applied_at <= window_end,
                     )
                 )
                 result = await db.execute(stmt)
@@ -135,11 +191,50 @@ async def _record_recommendation_outcomes_async():
                     if existing.scalars().first():
                         continue
 
-                    # Stub: in production, compute actual metrics delta
+                    # Compute actual before/after performance delta for this tenant
+                    applied_date = rec.applied_at.date() if rec.applied_at else None
+                    if not applied_date:
+                        continue
+
+                    before_start = applied_date - timedelta(days=window_days)
+                    before_end = applied_date - timedelta(days=1)
+                    after_start = applied_date
+                    after_end = applied_date + timedelta(days=window_days - 1)
+
+                    async def _agg(start, end):
+                        q = await db.execute(
+                            select(
+                                func.sum(PerformanceDaily.conversions).label("conversions"),
+                                func.sum(PerformanceDaily.cost_micros).label("cost_micros"),
+                                func.sum(PerformanceDaily.conv_value).label("conv_value"),
+                            ).where(
+                                and_(
+                                    PerformanceDaily.tenant_id == rec.tenant_id,
+                                    PerformanceDaily.date >= start,
+                                    PerformanceDaily.date <= end,
+                                )
+                            )
+                        )
+                        return q.one()
+
+                    before = await _agg(before_start, before_end)
+                    after = await _agg(after_start, after_end)
+
+                    before_conversions = float(before.conversions or 0)
+                    after_conversions = float(after.conversions or 0)
+                    before_spend = (before.cost_micros or 0) / MICROS
+                    after_spend = (after.cost_micros or 0) / MICROS
+                    before_cpa = before_spend / before_conversions if before_conversions else 0
+                    after_cpa = after_spend / after_conversions if after_conversions else 0
+                    before_roas = (float(before.conv_value or 0)) / before_spend if before_spend else 0
+                    after_roas = (float(after.conv_value or 0)) / after_spend if after_spend else 0
+
                     actual_metrics = {
-                        "conversions_delta": 2,
-                        "cpa_delta": -3,
-                        "roas_delta": 0.15,
+                        "conversions_delta": round(after_conversions - before_conversions, 2),
+                        "cpa_delta": round(after_cpa - before_cpa, 4),
+                        "roas_delta": round(after_roas - before_roas, 4),
+                        "spend_before": round(before_spend, 2),
+                        "spend_after": round(after_spend, 2),
                     }
                     await record_outcome(db, rec.id, window_days, actual_metrics)
 
@@ -186,8 +281,109 @@ def sync_mcc_accounts_task(tenant_id: str):
 
 async def _sync_mcc_accounts_async(tenant_id: str):
     from app.core.database import async_session_factory
-    logger.info("MCC account sync triggered (stub)", tenant_id=tenant_id)
-    # In production: call Google Ads API to list accessible customers
+    from app.models.integration_google_ads import IntegrationGoogleAds
+    from app.models.v2.google_ads_accessible_account import GoogleAdsAccessibleAccount
+    from app.core.config import settings
+    from sqlalchemy import select, and_
+    from datetime import datetime, timezone
+    import httpx
+
+    logger.info("MCC account sync started", tenant_id=tenant_id)
+
+    async with async_session_factory() as db:
+        try:
+            int_stmt = select(IntegrationGoogleAds).where(
+                and_(
+                    IntegrationGoogleAds.tenant_id == tenant_id,
+                    IntegrationGoogleAds.is_active == True,
+                )
+            )
+            int_result = await db.execute(int_stmt)
+            integration = int_result.scalars().first()
+
+            if not integration:
+                logger.warning("No active Google Ads integration for MCC sync", tenant_id=tenant_id)
+                return
+
+            manager_id = (integration.login_customer_id or integration.customer_id).replace("-", "")
+            headers = {
+                "Authorization": f"Bearer {integration.access_token_cache}",
+                "developer-token": settings.GOOGLE_ADS_DEVELOPER_TOKEN,
+                "login-customer-id": manager_id,
+                "Content-Type": "application/json",
+            }
+
+            # Use the Google Ads Query Language to list accessible customers
+            query = (
+                "SELECT customer_client.client_customer, customer_client.descriptive_name, "
+                "customer_client.currency_code, customer_client.time_zone, "
+                "customer_client.status "
+                "FROM customer_client "
+                "WHERE customer_client.level <= 1"
+            )
+            api_url = f"https://googleads.googleapis.com/v17/customers/{manager_id}/googleAds:search"
+
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(api_url, json={"query": query}, headers=headers)
+
+            if resp.status_code != 200:
+                logger.error(
+                    "Google Ads MCC API error",
+                    tenant_id=tenant_id,
+                    status_code=resp.status_code,
+                    body=resp.text[:500],
+                )
+                return
+
+            rows = resp.json().get("results", [])
+            now = datetime.now(timezone.utc)
+
+            for row in rows:
+                cc = row.get("customerClient", {})
+                raw_resource = cc.get("clientCustomer", "")
+                # resource name format: customers/1234567890
+                customer_id = raw_resource.split("/")[-1] if "/" in raw_resource else raw_resource
+
+                if not customer_id or customer_id == manager_id:
+                    continue
+
+                # Upsert accessible account record
+                existing_q = await db.execute(
+                    select(GoogleAdsAccessibleAccount).where(
+                        and_(
+                            GoogleAdsAccessibleAccount.tenant_id == tenant_id,
+                            GoogleAdsAccessibleAccount.customer_id == customer_id,
+                        )
+                    )
+                )
+                account = existing_q.scalars().first()
+
+                if account:
+                    account.descriptive_name = cc.get("descriptiveName")
+                    account.currency = cc.get("currencyCode")
+                    account.timezone = cc.get("timeZone")
+                    account.status = cc.get("status")
+                    account.last_seen_at = now
+                else:
+                    db.add(
+                        GoogleAdsAccessibleAccount(
+                            tenant_id=tenant_id,
+                            manager_customer_id=manager_id,
+                            customer_id=customer_id,
+                            descriptive_name=cc.get("descriptiveName"),
+                            currency=cc.get("currencyCode"),
+                            timezone=cc.get("timeZone"),
+                            status=cc.get("status"),
+                            last_seen_at=now,
+                        )
+                    )
+
+            await db.commit()
+            logger.info("MCC account sync complete", tenant_id=tenant_id, accounts_found=len(rows))
+
+        except Exception as e:
+            await db.rollback()
+            logger.error("sync_mcc_accounts failed", tenant_id=tenant_id, error=str(e))
 
 
 # ── Offline Conversion Upload to Google ──
@@ -201,7 +397,10 @@ def push_offline_conversions_task(tenant_id: str, upload_id: str):
 async def _push_offline_conversions_async(tenant_id: str, upload_id: str):
     from app.core.database import async_session_factory
     from app.models.v2.offline_conversion import OfflineConversion
+    from app.models.integration_google_ads import IntegrationGoogleAds
+    from app.core.config import settings
     from sqlalchemy import select, and_
+    import httpx
 
     async with async_session_factory() as db:
         try:
@@ -214,11 +413,88 @@ async def _push_offline_conversions_async(tenant_id: str, upload_id: str):
             )
             result = await db.execute(stmt)
             conversions = result.scalars().all()
-            # Stub: would call Google Ads ConversionUploadService
-            for conv in conversions:
-                conv.status = "uploaded"
+
+            if not conversions:
+                logger.info("No pending offline conversions found", tenant_id=tenant_id, upload_id=upload_id)
+                return
+
+            # Fetch the Google Ads integration for this tenant to get credentials
+            int_stmt = select(IntegrationGoogleAds).where(
+                and_(
+                    IntegrationGoogleAds.tenant_id == tenant_id,
+                    IntegrationGoogleAds.is_active == True,
+                )
+            )
+            int_result = await db.execute(int_stmt)
+            integration = int_result.scalars().first()
+
+            if not integration:
+                logger.error("No active Google Ads integration for tenant", tenant_id=tenant_id)
+                for conv in conversions:
+                    conv.status = "failed"
+                await db.commit()
+                return
+
+            # Build the Google Ads API click conversions payload
+            customer_id = conversions[0].google_customer_id.replace("-", "")
+            click_conversions = [
+                {
+                    "gclid": conv.gclid,
+                    "conversionAction": f"customers/{customer_id}/conversionActions/{conv.conversion_name}",
+                    "conversionDateTime": conv.conversion_time.strftime("%Y-%m-%d %H:%M:%S+00:00"),
+                    "conversionValue": float(conv.value or 0),
+                    "currencyCode": conv.currency or "USD",
+                }
+                for conv in conversions
+            ]
+
+            payload = {
+                "conversions": click_conversions,
+                "partialFailure": True,
+            }
+
+            api_url = (
+                f"https://googleads.googleapis.com/v17/customers/{customer_id}"
+                f"/conversionUploads:uploadClickConversions"
+            )
+            headers = {
+                "Authorization": f"Bearer {integration.access_token_cache}",
+                "developer-token": settings.GOOGLE_ADS_DEVELOPER_TOKEN,
+                "Content-Type": "application/json",
+            }
+            if integration.login_customer_id:
+                headers["login-customer-id"] = integration.login_customer_id
+
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(api_url, json=payload, headers=headers)
+
+            if resp.status_code == 200:
+                resp_data = resp.json()
+                partial_errors = resp_data.get("partialFailureError")
+                if partial_errors:
+                    logger.warning(
+                        "Offline conversion upload partial failure",
+                        tenant_id=tenant_id,
+                        errors=partial_errors,
+                    )
+                for conv in conversions:
+                    conv.status = "uploaded"
+                logger.info(
+                    "Offline conversions uploaded to Google Ads",
+                    tenant_id=tenant_id,
+                    count=len(conversions),
+                )
+            else:
+                logger.error(
+                    "Google Ads conversion upload API error",
+                    tenant_id=tenant_id,
+                    status_code=resp.status_code,
+                    body=resp.text[:500],
+                )
+                for conv in conversions:
+                    conv.status = "failed"
+
             await db.commit()
-            logger.info("Offline conversions pushed (stub)", tenant_id=tenant_id, count=len(conversions))
         except Exception as e:
             await db.rollback()
             logger.error("push_offline_conversions failed", error=str(e))

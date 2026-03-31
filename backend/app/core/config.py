@@ -1,5 +1,9 @@
 from pydantic_settings import BaseSettings
+from pydantic import model_validator
 from typing import List
+
+_INSECURE_JWT_SECRET = "change-me-to-a-random-secret-key"
+_INSECURE_ENCRYPTION_KEY = "change-me-generate-fernet-key"
 
 
 class Settings(BaseSettings):
@@ -11,13 +15,13 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
 
     # JWT
-    JWT_SECRET: str = "change-me-to-a-random-secret-key"
+    JWT_SECRET: str = _INSECURE_JWT_SECRET
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRY_MINUTES: int = 60
     JWT_REFRESH_EXPIRY_DAYS: int = 30
 
     # Encryption
-    ENCRYPTION_KEY: str = "change-me-generate-fernet-key"
+    ENCRYPTION_KEY: str = _INSECURE_ENCRYPTION_KEY
 
     # Google Ads
     GOOGLE_ADS_DEVELOPER_TOKEN: str = ""
@@ -86,6 +90,22 @@ class Settings(BaseSettings):
     GBP_CLIENT_ID: str = ""
     GBP_CLIENT_SECRET: str = ""
     GBP_REDIRECT_URI: str = "http://localhost:8000/api/gbp/oauth/callback"
+
+    @model_validator(mode="after")
+    def _reject_insecure_defaults_in_production(self) -> "Settings":
+        if self.APP_ENV != "development":
+            errors = []
+            if self.JWT_SECRET == _INSECURE_JWT_SECRET:
+                errors.append("JWT_SECRET is set to the insecure default value")
+            if self.ENCRYPTION_KEY == _INSECURE_ENCRYPTION_KEY:
+                errors.append("ENCRYPTION_KEY is set to the insecure default value")
+            if errors:
+                raise ValueError(
+                    f"Insecure default secrets detected in {self.APP_ENV!r} environment: "
+                    + "; ".join(errors)
+                    + ". Set secure random values via environment variables."
+                )
+        return self
 
     @property
     def cors_origins_list(self) -> List[str]:

@@ -97,15 +97,25 @@ async def list_plans():
 @router.post("/webhook")
 async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     """Handle Stripe webhook events."""
-    import json
+    import stripe
+    from app.core.config import settings
+
     body = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+
+    if not settings.STRIPE_WEBHOOK_SECRET:
+        raise HTTPException(500, "Webhook secret not configured")
+
     try:
-        event = json.loads(body)
+        event = stripe.Webhook.construct_event(
+            body, sig_header, settings.STRIPE_WEBHOOK_SECRET
+        )
+    except stripe.error.SignatureVerificationError:
+        raise HTTPException(400, "Invalid webhook signature")
     except Exception:
         raise HTTPException(400, "Invalid payload")
 
-    # In production, verify webhook signature with STRIPE_WEBHOOK_SECRET
-    event_type = event.get("type", "")
-    data = event.get("data", {})
+    event_type = event["type"]
+    data = event["data"]
     result = await handle_webhook_event(db, event_type, data)
     return result
