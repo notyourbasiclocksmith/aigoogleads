@@ -230,7 +230,7 @@ class GoogleAdsClient:
             ga_service = client.get_service("GoogleAdsService")
             query = f"""
                 SELECT campaign.id, segments.date,
-                       auction_insight.display_domain,
+                       auction_insight.domain,
                        metrics.auction_insight_search_impression_share,
                        metrics.auction_insight_search_overlap_rate,
                        metrics.auction_insight_search_outranking_share,
@@ -245,7 +245,7 @@ class GoogleAdsClient:
             return [
                 {
                     "date": row.segments.date,
-                    "competitor_domain": row.auction_insight.display_domain,
+                    "competitor_domain": row.auction_insight.domain,
                     "impression_share": row.metrics.auction_insight_search_impression_share,
                     "overlap_rate": row.metrics.auction_insight_search_overlap_rate,
                     "outranking_share": row.metrics.auction_insight_search_outranking_share,
@@ -518,7 +518,7 @@ class GoogleAdsClient:
                    recommendation.campaign_budget_recommendation,
                    recommendation.keyword_recommendation,
                    recommendation.text_ad_recommendation,
-                   recommendation.sitelink_extension_recommendation,
+                   recommendation.sitelink_asset_recommendation,
                    recommendation.responsive_search_ad_recommendation
             FROM recommendation
         """
