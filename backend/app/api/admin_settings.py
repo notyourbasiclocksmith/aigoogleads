@@ -217,7 +217,12 @@ async def update_profile(
                 and_(SocialProfile.tenant_id == user.tenant_id, SocialProfile.platform == platform)
             )
         )
-        sp = existing.scalar_one_or_none()
+        rows = existing.scalars().all()
+        # Deduplicate: keep the first, delete extras
+        if len(rows) > 1:
+            for extra in rows[1:]:
+                await db.delete(extra)
+        sp = rows[0] if rows else None
         if url:  # non-empty → upsert
             if sp:
                 sp.url = url
