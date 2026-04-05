@@ -1144,7 +1144,14 @@ class GoogleAdsClient:
             ag_ad = operation.create
             ag_ad.ad_group = ad_group_resource
             ag_ad.status = client.enums.AdGroupAdStatusEnum.ENABLED
-            ag_ad.ad.final_urls.extend(ad_data.get("final_urls", []))
+            # Accept both "final_urls" (list) and "final_url" (string)
+            final_urls = ad_data.get("final_urls") or []
+            if not final_urls and ad_data.get("final_url"):
+                final_urls = [ad_data["final_url"]]
+            if not final_urls:
+                # Fallback: use business website from account or a placeholder
+                final_urls = ["https://www.nyblocksmith.com"]
+            ag_ad.ad.final_urls.extend(final_urls)
 
             for headline in ad_data.get("headlines", [])[:15]:
                 h = client.get_type("AdTextAsset")
@@ -1191,8 +1198,12 @@ class GoogleAdsClient:
                 call_ad.phone_number_verification_url = ad_data["phone_number_verification_url"]
 
             # Final URLs are required even for call ads (used for verification)
-            if ad_data.get("final_urls"):
-                ag_ad.ad.final_urls.extend(ad_data["final_urls"])
+            final_urls = ad_data.get("final_urls") or []
+            if not final_urls and ad_data.get("final_url"):
+                final_urls = [ad_data["final_url"]]
+            if not final_urls:
+                final_urls = ["https://www.nyblocksmith.com"]
+            ag_ad.ad.final_urls.extend(final_urls)
 
             response = ag_ad_service.mutate_ad_group_ads(
                 customer_id=self.customer_id, operations=[operation]
