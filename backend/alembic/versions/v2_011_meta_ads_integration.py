@@ -14,13 +14,28 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Table may already exist from create_all — check first
     conn = op.get_bind()
     result = conn.execute(sa.text(
         "SELECT 1 FROM information_schema.tables WHERE table_name = 'integration_meta'"
     ))
     if result.fetchone():
-        return  # Table already exists, skip
+        # Table exists (from create_all) but may be missing new columns — add them
+        cols = conn.execute(sa.text(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'integration_meta'"
+        ))
+        existing = {row[0] for row in cols}
+        new_columns = {
+            "page_name": sa.Column("page_name", sa.String(255), nullable=True),
+            "account_name": sa.Column("account_name", sa.String(255), nullable=True),
+            "token_expires_at": sa.Column("token_expires_at", sa.DateTime(timezone=True), nullable=True),
+            "is_active": sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
+            "sync_error": sa.Column("sync_error", sa.String(500), nullable=True),
+            "config_json": sa.Column("config_json", JSONB, nullable=True),
+        }
+        for col_name, col_def in new_columns.items():
+            if col_name not in existing:
+                op.add_column("integration_meta", col_def)
+        return
 
     op.create_table(
         "integration_meta",
