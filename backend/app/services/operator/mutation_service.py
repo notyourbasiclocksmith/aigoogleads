@@ -27,13 +27,23 @@ class GoogleAdsMutationService:
         handlers = {
             "pause_keyword": self._pause_keyword,
             "enable_keyword": self._enable_keyword,
+            "update_keyword_bid": self._update_keyword_bid,
             "add_negative_keyword": self._add_negative_keywords,
             "update_campaign_budget": self._update_budget,
             "pause_campaign": self._pause_campaign,
             "enable_campaign": self._enable_campaign,
+            "pause_ad": self._pause_ad,
+            "enable_ad": self._enable_ad,
+            "pause_ad_group": self._pause_ad_group,
+            "enable_ad_group": self._enable_ad_group,
+            "set_device_bid_modifier": self._set_device_bid_modifier,
+            "add_location_targeting": self._add_location_targeting,
+            "set_ad_schedule": self._set_ad_schedule,
+            "apply_recommendation": self._apply_recommendation,
             "create_campaign": self._create_campaign,
             "create_ad_group": self._create_ad_group,
             "create_responsive_search_ad": self._create_rsa,
+            "create_call_ad": self._create_call_ad,
             "add_keywords": self._add_keywords,
         }
 
@@ -246,4 +256,82 @@ class GoogleAdsMutationService:
         ad_group_resource = payload.get("ad_group_resource")
         keywords = payload.get("keywords", [])
         result = await self.client.create_keywords(ad_group_resource, keywords)
+        return result
+
+    async def _update_keyword_bid(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Update keyword CPC bid."""
+        ad_group_id = payload.get("ad_group_id")
+        criterion_id = payload.get("criterion_id")
+        new_bid = payload.get("new_cpc_bid")  # in dollars
+        result = await self.client.update_keyword_bid(
+            ad_group_id, criterion_id, int(new_bid * 1_000_000)
+        )
+        return result
+
+    async def _pause_ad(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Pause an ad."""
+        result = await self.client.update_ad_status(
+            payload.get("ad_group_id"), payload.get("ad_id"), "PAUSED"
+        )
+        return result
+
+    async def _enable_ad(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Enable an ad."""
+        result = await self.client.update_ad_status(
+            payload.get("ad_group_id"), payload.get("ad_id"), "ENABLED"
+        )
+        return result
+
+    async def _pause_ad_group(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Pause an ad group."""
+        result = await self.client.update_ad_group_status(
+            payload.get("ad_group_id"), "PAUSED"
+        )
+        return result
+
+    async def _enable_ad_group(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Enable an ad group."""
+        result = await self.client.update_ad_group_status(
+            payload.get("ad_group_id"), "ENABLED"
+        )
+        return result
+
+    async def _set_device_bid_modifier(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Set device bid modifier for a campaign."""
+        result = await self.client.set_device_bid_modifier(
+            payload.get("campaign_id"),
+            payload.get("device"),  # MOBILE, DESKTOP, TABLET
+            payload.get("bid_modifier"),  # e.g. 1.2 = +20%
+        )
+        return result
+
+    async def _add_location_targeting(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Add location targeting to a campaign."""
+        result = await self.client.add_location_targeting(
+            payload.get("campaign_id"),
+            payload.get("location_id"),
+        )
+        return result
+
+    async def _set_ad_schedule(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Set ad schedule for a campaign."""
+        result = await self.client.set_ad_schedule(
+            payload.get("campaign_id"),
+            payload.get("day_of_week"),
+            payload.get("start_hour"),
+            payload.get("end_hour"),
+            payload.get("bid_modifier", 1.0),
+        )
+        return result
+
+    async def _apply_recommendation(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply a Google Ads recommendation."""
+        resource_name = payload.get("resource_name")
+        result = await self.client.apply_google_recommendation(resource_name)
+        return result
+
+    async def _create_call_ad(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a call ad."""
+        ad_group_resource = payload.get("ad_group_resource")
+        result = await self.client.create_call_ad(ad_group_resource, payload)
         return result

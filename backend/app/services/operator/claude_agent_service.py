@@ -47,7 +47,7 @@ Always respond with valid JSON matching this schema:
   ],
   "recommended_actions": [
     {
-      "action_type": "pause_keyword|enable_keyword|add_negative_keyword|update_campaign_budget|pause_campaign|enable_campaign|create_campaign|create_ad_group|create_responsive_search_ad|add_keywords",
+      "action_type": "pause_keyword|enable_keyword|update_keyword_bid|add_negative_keyword|update_campaign_budget|pause_campaign|enable_campaign|pause_ad|enable_ad|pause_ad_group|enable_ad_group|set_device_bid_modifier|add_location_targeting|set_ad_schedule|apply_recommendation|create_campaign|create_ad_group|create_responsive_search_ad|create_call_ad|add_keywords",
       "label": "Human-readable action label",
       "reasoning": "Why this action should be taken",
       "risk_level": "low|medium|high",
@@ -62,11 +62,24 @@ Always respond with valid JSON matching this schema:
 
 ACTION PAYLOAD FORMATS:
 - pause_keyword: {"keyword_ids": ["id1", "id2"], "ad_group_id": "123"}
+- enable_keyword: {"keyword_ids": ["id1", "id2"], "ad_group_id": "123"}
+- update_keyword_bid: {"ad_group_id": "123", "criterion_id": "456", "new_cpc_bid": 5.00}
 - add_negative_keyword: {"terms": ["term1", "term2"], "campaign_id": "123"}
 - update_campaign_budget: {"campaign_id": "123", "new_daily_budget": 50.00}
 - pause_campaign: {"campaign_id": "123"}
 - enable_campaign: {"campaign_id": "123"}
+- pause_ad: {"ad_group_id": "123", "ad_id": "456"}
+- enable_ad: {"ad_group_id": "123", "ad_id": "456"}
+- pause_ad_group: {"ad_group_id": "123"}
+- enable_ad_group: {"ad_group_id": "123"}
+- set_device_bid_modifier: {"campaign_id": "123", "device": "MOBILE|DESKTOP|TABLET", "bid_modifier": 1.2}
+- add_location_targeting: {"campaign_id": "123", "location_id": "1014221"}
+- set_ad_schedule: {"campaign_id": "123", "day_of_week": "MONDAY", "start_hour": 8, "end_hour": 20, "bid_modifier": 1.0}
+- apply_recommendation: {"resource_name": "customers/123/recommendations/456"}
 - create_campaign: {"name": "...", "budget_micros": 30000000}
+- create_ad_group: {"campaign_resource": "...", "name": "...", "cpc_bid_micros": 5000000}
+- create_responsive_search_ad: {"ad_group_resource": "...", "headlines": [...], "descriptions": [...], "final_url": "..."}
+- create_call_ad: {"ad_group_resource": "...", "business_name": "...", "phone_number": "...", "headline1": "...", "headline2": "...", "description1": "...", "description2": "...", "final_url": "..."}
 - add_keywords: {"ad_group_resource": "...", "keywords": [{"text": "...", "match_type": "PHRASE"}]}
 
 IMPORTANT: Only use entity IDs that appear in the provided account data. Never fabricate IDs."""
@@ -201,6 +214,21 @@ USER REQUEST: {user_message}"""
                 parts.append(
                     f"  AD {a['ad_id']} ({a['ad_group_name']}) — "
                     f"${a['cost']} | {a['clicks']}cl | CTR:{a['ctr']}% | Conv:{a['conversions']}{strength}"
+                )
+
+        # Conversion tracking
+        conv_actions = ctx.get("conversion_actions", [])
+        if conv_actions:
+            parts.append(f"\nCONVERSION ACTIONS ({len(conv_actions)}):")
+            for ca in conv_actions:
+                included = "✓ included" if ca.get("include_in_conversions") else "✗ excluded"
+                attr = ca.get("attribution_model", "N/A")
+                parts.append(
+                    f"  {ca['name']} (ID:{ca['action_id']}) — "
+                    f"Type:{ca['type']} | Status:{ca['status']} | Category:{ca['category']} | "
+                    f"Counting:{ca.get('counting_type', 'N/A')} | Attribution:{attr} | {included} | "
+                    f"Click lookback:{ca.get('click_through_lookback_days', 'N/A')}d | "
+                    f"View lookback:{ca.get('view_through_lookback_days', 'N/A')}d"
                 )
 
         return "\n".join(parts)
