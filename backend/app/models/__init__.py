@@ -76,4 +76,5 @@ from app.models.v2 import (  # noqa: E402, F401
     OperatorScan, OperatorRecommendation, OperatorChangeSet,
     OperatorMutation, CreativeAudit,
     OptimizationCycle, OptimizationLearning,
+    IntegrationMeta,
 )

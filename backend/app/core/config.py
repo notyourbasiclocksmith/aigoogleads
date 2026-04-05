@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     # Meta Ads
     META_APP_ID: str = ""
     META_APP_SECRET: str = ""
+    META_REDIRECT_URI: str = "http://localhost:8000/api/meta/oauth/callback"
 
     # V2 — Stripe Billing
     STRIPE_SECRET_KEY: str = ""

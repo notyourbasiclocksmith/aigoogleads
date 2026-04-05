@@ -32,6 +32,7 @@ from app.models.v2.operator_mutation import OperatorMutation
 from app.models.v2.creative_audit import CreativeAudit
 from app.models.v2.optimization_cycle import OptimizationCycle
 from app.models.v2.optimization_learning import OptimizationLearning
+from app.models.v2.integration_meta import IntegrationMeta
 
 __all__ = [
     "GoogleAdsAccessibleAccount", "TenantGoogleAdsBinding",
@@ -48,4 +49,5 @@ __all__ = [
     "OperatorScan", "OperatorRecommendation", "OperatorChangeSet",
     "OperatorMutation", "CreativeAudit",
     "OptimizationCycle", "OptimizationLearning",
+    "IntegrationMeta",
 ]

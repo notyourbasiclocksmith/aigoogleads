@@ -29,8 +29,12 @@ function SettingsContent() {
   const [pickerError, setPickerError] = useState("");
   const [manualCustomerId, setManualCustomerId] = useState("");
   const [showManualInput, setShowManualInput] = useState(false);
+  const [metaStatus, setMetaStatus] = useState<any>({ connected: false });
 
   useEffect(() => {
+    // Fetch Meta connection status
+    api.get("/api/meta/oauth/status").then((s: any) => setMetaStatus(s || { connected: false })).catch(() => {});
+
     Promise.all([
       api.get("/api/settings/profile").catch(() => ({})),
       api.get("/api/settings/guardrails").catch(() => ({})),
@@ -837,6 +841,70 @@ function SettingsContent() {
                   }}
                 >
                   <Link2 className="w-4 h-4 mr-2" /> Connect Google Ads
+                </Button>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Meta Ads (Facebook/Instagram) Connection */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Target className="w-5 h-5" /> Meta Ads (Facebook / Instagram)
+            </CardTitle>
+            <CardDescription>Connect your Meta ad account to manage Facebook &amp; Instagram campaigns</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {metaStatus.connected ? (
+              <div className="p-4 rounded-lg border space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-medium">{metaStatus.account_name || "Meta Ad Account"}</p>
+                    <p className="text-sm text-muted-foreground">
+                      {metaStatus.ad_account_id && <span className="mr-3">Account: {metaStatus.ad_account_id}</span>}
+                      {metaStatus.page_name && <span>Page: {metaStatus.page_name}</span>}
+                    </p>
+                  </div>
+                  <Badge variant="default">Connected</Badge>
+                </div>
+                {metaStatus.sync_error && (
+                  <p className="text-xs text-red-600">
+                    <AlertTriangle className="w-3 h-3 inline mr-1" /> {metaStatus.sync_error}
+                  </p>
+                )}
+                <div className="flex items-center gap-3">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200"
+                    onClick={async () => {
+                      if (!confirm("Disconnect Meta Ads?")) return;
+                      try {
+                        await api.delete("/api/meta/oauth/disconnect");
+                        setMetaStatus({ connected: false });
+                      } catch (e: any) { alert(e.message || "Failed to disconnect"); }
+                    }}
+                  >
+                    <XCircle className="w-4 h-4 mr-2" /> Disconnect
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-6">
+                <Target className="w-10 h-10 text-slate-300 mx-auto mb-3" />
+                <p className="text-sm text-muted-foreground mb-3">Connect your Meta Ads account to create and manage Facebook &amp; Instagram ad campaigns through Claude Operator.</p>
+                <Button
+                  onClick={async () => {
+                    try {
+                      const res = await api.get("/api/meta/oauth/authorize?origin=settings");
+                      if (res.auth_url) window.location.href = res.auth_url;
+                    } catch (e: any) {
+                      alert(e.message || "Failed to start Meta connection");
+                    }
+                  }}
+                >
+                  <Target className="w-4 h-4 mr-2" /> Connect Meta Ads
                 </Button>
               </div>
             )}
