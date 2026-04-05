@@ -11,6 +11,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential, RetryError
+from google.protobuf import field_mask_pb2
 
 from app.core.config import settings
 from app.core.security import decrypt_token
@@ -729,8 +730,7 @@ class GoogleAdsClient:
             criterion.resource_name = resource_name
             criterion.cpc_bid_micros = new_cpc_bid_micros
 
-            field_mask = client.get_type("FieldMask")
-            field_mask.paths.append("cpc_bid_micros")
+            field_mask = field_mask_pb2.FieldMask(paths=["cpc_bid_micros"])
             operation.update_mask.CopyFrom(field_mask)
 
             agc_service.mutate_ad_group_criteria(
@@ -757,8 +757,7 @@ class GoogleAdsClient:
             }
             criterion.status = status_map.get(status, client.enums.AdGroupCriterionStatusEnum.PAUSED)
 
-            field_mask = client.get_type("FieldMask")
-            field_mask.paths.append("status")
+            field_mask = field_mask_pb2.FieldMask(paths=["status"])
             operation.update_mask.CopyFrom(field_mask)
 
             agc_service.mutate_ad_group_criteria(
@@ -784,8 +783,7 @@ class GoogleAdsClient:
             }
             ag_ad.status = status_map.get(status, client.enums.AdGroupAdStatusEnum.PAUSED)
 
-            field_mask = client.get_type("FieldMask")
-            field_mask.paths.append("status")
+            field_mask = field_mask_pb2.FieldMask(paths=["status"])
             operation.update_mask.CopyFrom(field_mask)
 
             ag_ad_service.mutate_ad_group_ads(
@@ -811,8 +809,7 @@ class GoogleAdsClient:
             }
             ag.status = status_map.get(status, client.enums.AdGroupStatusEnum.PAUSED)
 
-            field_mask = client.get_type("FieldMask")
-            field_mask.paths.append("status")
+            field_mask = field_mask_pb2.FieldMask(paths=["status"])
             operation.update_mask.CopyFrom(field_mask)
 
             ag_service.mutate_ad_groups(
@@ -1779,8 +1776,7 @@ class GoogleAdsClient:
             }
             campaign.status = status_map.get(status, client.enums.CampaignStatusEnum.PAUSED)
 
-            field_mask = client.get_type("FieldMask")
-            field_mask.paths.append("status")
+            field_mask = field_mask_pb2.FieldMask(paths=["status"])
             operation.update_mask.CopyFrom(field_mask)
 
             campaign_service.mutate_campaigns(
@@ -1802,8 +1798,7 @@ class GoogleAdsClient:
             budget.resource_name = budget_resource
             budget.amount_micros = new_amount_micros
 
-            field_mask = client.get_type("FieldMask")
-            field_mask.paths.append("amount_micros")
+            field_mask = field_mask_pb2.FieldMask(paths=["amount_micros"])
             operation.update_mask.CopyFrom(field_mask)
 
             budget_service.mutate_campaign_budgets(

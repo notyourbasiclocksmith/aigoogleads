@@ -86,8 +86,8 @@ class GoogleAdsMutationService:
                 op = client.get_type("AdGroupCriterionOperation")
                 op.update.resource_name = resource
                 op.update.status = client.enums.AdGroupCriterionStatusEnum.PAUSED
-                fm = client.get_type("FieldMask")
-                fm.paths.append("status")
+                from google.protobuf import field_mask_pb2
+                fm = field_mask_pb2.FieldMask(paths=["status"])
                 op.update_mask.CopyFrom(fm)
 
                 agc_service.mutate_ad_group_criteria(
@@ -121,8 +121,8 @@ class GoogleAdsMutationService:
                 op = client.get_type("AdGroupCriterionOperation")
                 op.update.resource_name = resource
                 op.update.status = client.enums.AdGroupCriterionStatusEnum.ENABLED
-                fm = client.get_type("FieldMask")
-                fm.paths.append("status")
+                from google.protobuf import field_mask_pb2
+                fm = field_mask_pb2.FieldMask(paths=["status"])
                 op.update_mask.CopyFrom(fm)
 
                 agc_service.mutate_ad_group_criteria(
