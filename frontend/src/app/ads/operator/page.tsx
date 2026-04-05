@@ -395,9 +395,20 @@ export default function OperatorPage() {
   const [mode, setMode] = useState<OperatorMode>("auto");
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const customerId = typeof window !== "undefined"
-    ? localStorage.getItem("active_customer_id") || ""
-    : "";
+  const [customerId, setCustomerId] = useState("");
+
+  useEffect(() => {
+    // Auto-detect Google Ads customer ID from connected accounts
+    api.get("/api/ads/accounts").then((accounts: any) => {
+      const accts = Array.isArray(accounts) ? accounts : [];
+      const active = accts.find((a: any) => a.customer_id && a.status === "active");
+      if (active) {
+        setCustomerId(active.customer_id);
+      } else if (accts.length > 0 && accts[0].customer_id) {
+        setCustomerId(accts[0].customer_id);
+      }
+    }).catch(() => {});
+  }, []);
 
   // Unified API for auto mode and explicit channel modes
   const apiBase = mode === "auto" || mode === "gbp" || mode === "image"

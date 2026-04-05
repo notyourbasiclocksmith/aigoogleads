@@ -235,6 +235,79 @@ async def _sync_gbp_reviews_async(tenant_id: str, location_id: str):
             logger.error("GBP review sync failed", tenant_id=tenant_id, error=str(e))
 
 
+@celery_app.task(name="app.jobs.tasks.sync_all_gbp_daily")
+def sync_all_gbp_daily():
+    """Daily GBP sync: location details, reviews, business profile for all connected tenants."""
+    import asyncio
+    asyncio.run(_sync_all_gbp_daily_async())
+
+
+async def _sync_all_gbp_daily_async():
+    from app.core.database import async_session_factory
+    from app.models.gbp_connection import GBPConnection
+    from app.services.gbp_service import GBPService
+
+    async with async_session_factory() as db:
+        result = await db.execute(
+            select(GBPConnection).where(GBPConnection.is_active == True)
+        )
+        connections = result.scalars().all()
+        synced = 0
+        failed = 0
+
+        for conn in connections:
+            try:
+                svc = GBPService(db)
+
+                # Auto-discover account/location if not set
+                if not conn.account_id or not conn.location_id:
+                    accounts = await svc.list_accounts(conn.tenant_id)
+                    if not accounts:
+                        continue
+                    account_name = accounts[0].get("name", "")
+                    locations = await svc.list_locations(conn.tenant_id, account_name)
+                    if not locations:
+                        continue
+                    conn.account_id = account_name
+                    conn.location_id = locations[0].get("name", "")
+
+                # Fetch + sync location
+                location_data = await svc.fetch_location_detail(conn.tenant_id, conn.location_id)
+                if not location_data:
+                    logger.warning("GBP daily sync: location fetch failed", tenant_id=conn.tenant_id)
+                    failed += 1
+                    continue
+
+                loc = await svc.sync_location_to_db(conn.tenant_id, location_data, conn.account_id)
+
+                # Fetch + sync reviews
+                full_name = f"{conn.account_id}/{conn.location_id}"
+                reviews_data = await svc.fetch_reviews(conn.tenant_id, full_name)
+                await svc.sync_reviews_to_db(conn.tenant_id, loc.id, reviews_data)
+                loc.google_rating = reviews_data.get("averageRating")
+                loc.review_count = reviews_data.get("totalReviewCount", 0)
+
+                # Update business profile
+                await svc.populate_business_profile(conn.tenant_id, location_data, reviews_data)
+
+                conn.location_name = loc.business_name
+                conn.last_sync_at = datetime.now(timezone.utc)
+                conn.sync_error = None
+                await db.commit()
+                synced += 1
+            except Exception as e:
+                await db.rollback()
+                logger.error("GBP daily sync failed", tenant_id=conn.tenant_id, error=str(e))
+                try:
+                    conn.sync_error = str(e)[:500]
+                    await db.commit()
+                except Exception:
+                    await db.rollback()
+                failed += 1
+
+        logger.info("GBP daily sync complete", synced=synced, failed=failed, total=len(connections))
+
+
 @celery_app.task(name="app.jobs.tasks.sync_ads_account_task")
 def sync_ads_account_task(tenant_id: str, integration_id: str, full_sync: bool = True):
     import asyncio

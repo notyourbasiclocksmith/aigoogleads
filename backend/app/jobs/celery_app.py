@@ -106,6 +106,11 @@ celery_app.conf.beat_schedule = {
         "task": "app.jobs.tasks.publish_scheduled_gbp_posts",
         "schedule": crontab(minute="*/5"),
     },
+    # GBP — daily full sync (location, reviews, business profile) at 3 AM UTC
+    "gbp-sync-daily": {
+        "task": "app.jobs.tasks.sync_all_gbp_daily",
+        "schedule": crontab(hour=3, minute=0),
+    },
 }
 
 celery_app.autodiscover_tasks(["app.jobs", "app.jobs.operator_tasks"])
