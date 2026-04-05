@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { AppLayout } from "@/components/layout/sidebar";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import {
   Loader2, Zap, Search, TrendingDown, PlusCircle, Ban,
   DollarSign, BarChart3, Wrench, ChevronDown, ChevronUp,
   Sparkles, Shield, Clock, Globe, Image, Star, MessageSquare,
+  StopCircle,
 } from "lucide-react";
 
 // ── Types ───────────────────────────────────────────────────
@@ -394,6 +395,9 @@ export default function OperatorPage() {
   const [error, setError] = useState("");
   const [mode, setMode] = useState<OperatorMode>("auto");
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const [liveLog, setLiveLog] = useState<string[]>([]);
+  const logTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const [customerId, setCustomerId] = useState("");
 
@@ -437,6 +441,73 @@ export default function OperatorPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  function stopProcess() {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    if (logTimerRef.current) {
+      clearInterval(logTimerRef.current);
+      logTimerRef.current = null;
+    }
+    setSending(false);
+    setLiveLog(prev => [...prev, "Process cancelled by user"]);
+  }
+
+  function startLiveLog(logMode: OperatorMode) {
+    const steps = logMode === "auto"
+      ? [
+          "Classifying intent...",
+          "Checking connected systems...",
+          "Querying Google Ads API...",
+          "Fetching campaign performance (30 days)...",
+          "Pulling keyword data (top 200)...",
+          "Analyzing search term report...",
+          "Loading ad performance...",
+          "Building account context...",
+          "Sending to Claude for analysis...",
+          "Generating findings & recommendations...",
+        ]
+      : logMode === "google_ads"
+        ? [
+            "Connecting to Google Ads API...",
+            "Fetching account info...",
+            "Loading campaign performance...",
+            "Pulling keyword data (top 200 by spend)...",
+            "Analyzing search term report...",
+            "Loading ad performance...",
+            "Fetching conversion tracking config...",
+            "Computing heuristics (wasted spend, low CTR)...",
+            "Sending to Claude for analysis...",
+            "Generating structured recommendations...",
+          ]
+        : logMode === "meta_ads"
+          ? [
+              "Connecting to Meta Ads API...",
+              "Fetching campaigns & ad sets...",
+              "Loading ad performance...",
+              "Sending to Claude for analysis...",
+              "Generating recommendations...",
+            ]
+          : [
+              "Processing request...",
+              "Fetching data...",
+              "Sending to Claude for analysis...",
+              "Generating response...",
+            ];
+
+    setLiveLog([steps[0]]);
+    let stepIdx = 1;
+    logTimerRef.current = setInterval(() => {
+      if (stepIdx < steps.length) {
+        setLiveLog(prev => [...prev, steps[stepIdx]]);
+        stepIdx++;
+      } else {
+        if (logTimerRef.current) clearInterval(logTimerRef.current);
+      }
+    }, 2500);
+  }
+
   async function handleSend(text?: string) {
     const msg = text || input.trim();
     if (!msg || sending) return;
@@ -444,6 +515,14 @@ export default function OperatorPage() {
     setInput("");
     setError("");
     setSending(true);
+    setLiveLog([]);
+
+    // Start live log simulation
+    startLiveLog(mode);
+
+    // Create abort controller
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     const tempUserMsg: Message = {
       id: `temp-${Date.now()}`,
@@ -457,7 +536,6 @@ export default function OperatorPage() {
       let body: any;
 
       if (apiBase === "/api/operator/unified") {
-        // Unified API
         body = {
           conversation_id: conversationId,
           message: msg,
@@ -471,7 +549,6 @@ export default function OperatorPage() {
           message: msg,
         };
       } else {
-        // Google Ads legacy API
         body = {
           conversation_id: conversationId,
           message: msg,
@@ -480,7 +557,7 @@ export default function OperatorPage() {
         };
       }
 
-      const result = await api.post(`${apiBase}/chat`, body);
+      const result = await api.post(`${apiBase}/chat`, body, { signal: controller.signal });
 
       if (!conversationId && result.conversation_id) {
         setConversationId(result.conversation_id);
@@ -504,9 +581,19 @@ export default function OperatorPage() {
       };
       setMessages(prev => [...prev, assistantMsg]);
     } catch (err: any) {
-      setError(err.message || "Failed to send message");
+      if (err.name === "AbortError") {
+        // User cancelled — don't show error
+      } else {
+        setError(err.message || "Failed to send message");
+      }
     } finally {
       setSending(false);
+      abortRef.current = null;
+      if (logTimerRef.current) {
+        clearInterval(logTimerRef.current);
+        logTimerRef.current = null;
+      }
+      setLiveLog([]);
     }
   }
 
@@ -734,15 +821,28 @@ export default function OperatorPage() {
                   <div className={`w-8 h-8 rounded-lg bg-gradient-to-br ${modeCfg.gradient} flex items-center justify-center flex-shrink-0`}>
                     <Bot className="w-4 h-4 text-white" />
                   </div>
-                  <div className="rounded-2xl rounded-tl-md bg-white/[0.03] border border-white/5 px-4 py-3">
-                    <div className="flex items-center gap-2 text-sm text-white/50">
-                      <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
-                      <span>
-                        {mode === "auto"
-                          ? "Classifying intent and querying systems..."
-                          : `Reading ${modeCfg.label} data and analyzing...`}
-                      </span>
+                  <div className="rounded-2xl rounded-tl-md bg-white/[0.03] border border-white/5 px-4 py-3 min-w-[300px]">
+                    <div className="space-y-1.5">
+                      {liveLog.map((step, i) => (
+                        <div key={i} className="flex items-center gap-2 text-xs">
+                          {i === liveLog.length - 1 ? (
+                            <Loader2 className="w-3 h-3 animate-spin text-blue-400 flex-shrink-0" />
+                          ) : (
+                            <CheckCircle className="w-3 h-3 text-emerald-500 flex-shrink-0" />
+                          )}
+                          <span className={i === liveLog.length - 1 ? "text-white/60" : "text-white/30"}>
+                            {step}
+                          </span>
+                        </div>
+                      ))}
                     </div>
+                    <button
+                      onClick={stopProcess}
+                      className="flex items-center gap-1.5 mt-3 px-3 py-1.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs font-medium hover:bg-red-500/20 transition-colors"
+                    >
+                      <StopCircle className="w-3.5 h-3.5" />
+                      Stop
+                    </button>
                   </div>
                 </div>
               )}

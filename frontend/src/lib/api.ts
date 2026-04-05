@@ -9,6 +9,7 @@ interface ApiOptions {
   method?: string;
   body?: any;
   headers?: Record<string, string>;
+  signal?: AbortSignal;
 }
 
 class ApiClient {
@@ -32,7 +33,7 @@ class ApiClient {
   }
 
   async fetch<T = any>(path: string, options: ApiOptions = {}): Promise<T> {
-    const { method = "GET", body, headers = {} } = options;
+    const { method = "GET", body, headers = {}, signal } = options;
     const token = this.getToken();
 
     const fetchHeaders: Record<string, string> = {
@@ -47,6 +48,7 @@ class ApiClient {
       method,
       headers: fetchHeaders,
       body: body ? JSON.stringify(body) : undefined,
+      signal,
     });
 
     if (res.status === 401) {
@@ -69,8 +71,8 @@ class ApiClient {
     return this.fetch<T>(path);
   }
 
-  post<T = any>(path: string, body?: any) {
-    return this.fetch<T>(path, { method: "POST", body });
+  post<T = any>(path: string, body?: any, opts?: { signal?: AbortSignal }) {
+    return this.fetch<T>(path, { method: "POST", body, signal: opts?.signal });
   }
 
   put<T = any>(path: string, body?: any) {

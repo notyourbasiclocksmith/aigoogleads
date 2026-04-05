@@ -1,13 +1,13 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { AppLayout } from "@/components/layout/sidebar";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
-import { Palette, Wand2, Image, Copy, Rocket, Loader2, CheckCircle2, ImagePlus, Download, Upload, Eye, Sparkles } from "lucide-react";
+import { Palette, Wand2, Image, Copy, Rocket, Loader2, CheckCircle2, ImagePlus, Download, Upload, Eye, Sparkles, StopCircle, CheckCircle } from "lucide-react";
 
 type TabType = "copy" | "images";
 
@@ -39,6 +39,9 @@ export default function CreativePage() {
   const [fluxModel, setFluxModel] = useState("flux-pro");
   const [stabilityModel, setStabilityModel] = useState("stable-image-ultra");
   const [googleModel, setGoogleModel] = useState("gemini-2.5-flash-image");
+  const [imgLiveLog, setImgLiveLog] = useState<string[]>([]);
+  const imgAbortRef = useRef<AbortController | null>(null);
+  const imgLogTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // ── Deploy State ──
   const [accounts, setAccounts] = useState<any[]>([]);
@@ -116,10 +119,50 @@ export default function CreativePage() {
   }
 
   // ── Image Generation ──
+  function stopImageGeneration() {
+    if (imgAbortRef.current) {
+      imgAbortRef.current.abort();
+      imgAbortRef.current = null;
+    }
+    if (imgLogTimerRef.current) {
+      clearInterval(imgLogTimerRef.current);
+      imgLogTimerRef.current = null;
+    }
+    setImgGenerating(false);
+    setImgLiveLog(prev => [...prev, "Cancelled by user"]);
+  }
+
   async function handleGenerateImage() {
     setImgGenerating(true);
     setImgError("");
     setImgResults([]);
+
+    // Live log steps
+    const engineName = { dalle: "DALL-E 3", stability: "Stability AI", flux: "Flux.1", google: "Google Gemini" }[imgEngine] || imgEngine;
+    const steps = [
+      "Loading business profile...",
+      `Connecting to ${engineName}...`,
+      `Generating image (${imgAdType} sizes)...`,
+      "Waiting for AI response...",
+      "Processing image...",
+      "Uploading to Cloudinary...",
+      "Adding SEO metadata & EXIF data...",
+      imgAutoUpload ? "Uploading to Google Ads..." : "Finalizing...",
+    ];
+    setImgLiveLog([steps[0]]);
+    let stepIdx = 1;
+    imgLogTimerRef.current = setInterval(() => {
+      if (stepIdx < steps.length) {
+        setImgLiveLog(prev => [...prev, steps[stepIdx]]);
+        stepIdx++;
+      } else if (imgLogTimerRef.current) {
+        clearInterval(imgLogTimerRef.current);
+      }
+    }, 3000);
+
+    const controller = new AbortController();
+    imgAbortRef.current = controller;
+
     try {
       const data = await api.post("/api/creative/image/generate-for-ad", {
         prompt: imgPrompt || undefined,
@@ -131,15 +174,22 @@ export default function CreativePage() {
         stability_model: imgEngine === "stability" ? stabilityModel : undefined,
         flux_model: imgEngine === "flux" ? fluxModel : undefined,
         google_model: imgEngine === "google" ? googleModel : undefined,
-      });
+      }, { signal: controller.signal });
       setImgResults(data.images || []);
       if (data.prompt_used && !imgPrompt) {
         setImgPrompt(data.prompt_used);
       }
     } catch (e: any) {
-      setImgError(e.message || "Image generation failed");
+      if (e.name !== "AbortError") {
+        setImgError(e.message || "Image generation failed");
+      }
     } finally {
       setImgGenerating(false);
+      imgAbortRef.current = null;
+      if (imgLogTimerRef.current) {
+        clearInterval(imgLogTimerRef.current);
+        imgLogTimerRef.current = null;
+      }
     }
   }
 
@@ -567,18 +617,67 @@ export default function CreativePage() {
                   </span>
                 </label>
 
-                {/* Generate Button */}
-                <Button
-                  onClick={handleGenerateImage}
-                  disabled={imgGenerating}
-                  className="w-full h-11 text-[13px] font-semibold rounded-xl bg-purple-600 hover:bg-purple-700 text-white"
-                >
-                  {imgGenerating ? (
-                    <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Generating...</>
-                  ) : (
-                    <><Sparkles className="w-4 h-4 mr-2" /> Generate Images</>
-                  )}
-                </Button>
+                {/* Generate / Stop Buttons */}
+                {imgGenerating ? (
+                  <div className="space-y-3">
+                    <Button
+                      onClick={stopImageGeneration}
+                      className="w-full h-11 text-[13px] font-semibold rounded-xl bg-red-600 hover:bg-red-700 text-white"
+                    >
+                      <StopCircle className="w-4 h-4 mr-2" /> Stop Generation
+                    </Button>
+                    {/* Live Log Panel */}
+                    <div className="bg-slate-900 rounded-xl p-4 space-y-2 max-h-48 overflow-y-auto">
+                      {imgLiveLog.map((step, i) => {
+                        const isLast = i === imgLiveLog.length - 1;
+                        const isCancelled = step === "Cancelled by user";
+                        return (
+                          <div key={i} className="flex items-center gap-2 text-[12px]">
+                            {isCancelled ? (
+                              <StopCircle className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
+                            ) : isLast ? (
+                              <Loader2 className="w-3.5 h-3.5 text-purple-400 animate-spin flex-shrink-0" />
+                            ) : (
+                              <CheckCircle className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+                            )}
+                            <span className={isCancelled ? "text-red-400" : isLast ? "text-purple-300" : "text-emerald-300"}>
+                              {step}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <Button
+                      onClick={() => { setImgLiveLog([]); handleGenerateImage(); }}
+                      className="w-full h-11 text-[13px] font-semibold rounded-xl bg-purple-600 hover:bg-purple-700 text-white"
+                    >
+                      <Sparkles className="w-4 h-4 mr-2" /> Generate Images
+                    </Button>
+                    {/* Show completed/cancelled log */}
+                    {imgLiveLog.length > 0 && (
+                      <div className="bg-slate-900 rounded-xl p-4 space-y-2 max-h-48 overflow-y-auto">
+                        {imgLiveLog.map((step, i) => {
+                          const isCancelled = step === "Cancelled by user";
+                          return (
+                            <div key={i} className="flex items-center gap-2 text-[12px]">
+                              {isCancelled ? (
+                                <StopCircle className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
+                              ) : (
+                                <CheckCircle className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+                              )}
+                              <span className={isCancelled ? "text-red-400" : "text-emerald-300"}>
+                                {step}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* View Google Ads Assets */}
                 <Button
