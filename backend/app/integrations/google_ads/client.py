@@ -1389,6 +1389,69 @@ class GoogleAdsClient:
 
     # ── ASSET / EXTENSION METHODS ───────────────────────────────────
 
+    async def list_assets(self, asset_types: List[str] = None) -> List[Dict[str, Any]]:
+        """List existing assets in the Google Ads account.
+        asset_types: filter by type e.g. ["IMAGE", "SITELINK", "CALLOUT"]
+        If None, returns all image and text assets.
+        """
+        await self._ensure_token()
+        try:
+            client = self._get_client()
+            ga_service = client.get_service("GoogleAdsService")
+
+            type_filter = ""
+            if asset_types:
+                types_str = ", ".join(f"'{t}'" for t in asset_types)
+                type_filter = f"AND asset.type IN ({types_str})"
+
+            query = f"""
+                SELECT asset.id, asset.name, asset.type,
+                       asset.image_asset.file_size, asset.image_asset.full_size.url,
+                       asset.image_asset.full_size.width_pixels, asset.image_asset.full_size.height_pixels,
+                       asset.text_asset.text,
+                       asset.sitelink_asset.link_text, asset.sitelink_asset.description1,
+                       asset.callout_asset.callout_text
+                FROM asset
+                WHERE asset.type IN ('IMAGE', 'SITELINK', 'CALLOUT', 'STRUCTURED_SNIPPET', 'PROMOTION')
+                {type_filter}
+                ORDER BY asset.id DESC
+                LIMIT 100
+            """
+            response = ga_service.search(customer_id=self.customer_id, query=query)
+            assets = []
+            for row in response:
+                a = row.asset
+                asset_data = {
+                    "asset_id": str(a.id),
+                    "name": a.name,
+                    "type": a.type_.name,
+                    "resource_name": a.resource_name,
+                }
+                if a.type_.name == "IMAGE":
+                    try:
+                        asset_data["image_url"] = a.image_asset.full_size.url
+                        asset_data["width"] = a.image_asset.full_size.width_pixels
+                        asset_data["height"] = a.image_asset.full_size.height_pixels
+                        asset_data["file_size"] = a.image_asset.file_size
+                    except Exception:
+                        pass
+                elif a.type_.name == "SITELINK":
+                    try:
+                        asset_data["link_text"] = a.sitelink_asset.link_text
+                        asset_data["description1"] = a.sitelink_asset.description1
+                    except Exception:
+                        pass
+                elif a.type_.name == "CALLOUT":
+                    try:
+                        asset_data["callout_text"] = a.callout_asset.callout_text
+                    except Exception:
+                        pass
+                assets.append(asset_data)
+            return assets
+        except Exception as e:
+            logger.error("Failed to list assets", error=str(e))
+            return []
+
     async def create_sitelink_assets(self, campaign_id: str, sitelinks: List[Dict]) -> Dict[str, Any]:
         """Create sitelink assets and link them to a campaign.
         Each sitelink: {"link_text": str, "final_url": str, "description1": str, "description2": str}

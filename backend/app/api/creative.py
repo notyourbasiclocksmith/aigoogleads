@@ -321,4 +321,207 @@ async def list_image_templates():
             {"id": "roofer_inspection", "name": "Roof Inspection", "prompt": "Professional roofer inspecting shingles on a residential roof, safety harness, clipboard, clear day, trustworthy and thorough inspection"},
             {"id": "generic_trust", "name": "Trust & Team", "prompt": "Small business service team posing confidently in front of branded company vehicle, uniforms, friendly professional appearance, trust and reliability"},
         ],
+        "google_ads_sizes": {
+            "responsive_display": {"sizes": ["1200x628", "1024x1024", "1200x1200"], "description": "Responsive Display Ads"},
+            "performance_max": {"sizes": ["1200x628", "1024x1024", "960x1200"], "description": "Performance Max campaigns"},
+            "discovery": {"sizes": ["1200x628", "1024x1024", "960x1200"], "description": "Discovery/Demand Gen ads"},
+            "youtube_thumbnail": {"sizes": ["1280x720"], "description": "YouTube video thumbnails"},
+        },
+    }
+
+
+# ── GOOGLE ADS ASSET LIBRARY ──────────────────────────────────────
+
+@router.get("/google-ads-assets")
+async def list_google_ads_assets(
+    asset_type: Optional[str] = Query(None, description="Filter: IMAGE, SITELINK, CALLOUT"),
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """List existing assets in the connected Google Ads account."""
+    from app.models.integration_google_ads import IntegrationGoogleAds
+    from app.integrations.google_ads.client import GoogleAdsClient
+
+    result = await db.execute(
+        select(IntegrationGoogleAds).where(
+            IntegrationGoogleAds.tenant_id == user.tenant_id,
+            IntegrationGoogleAds.is_active == True,
+        )
+    )
+    integration = result.scalar_one_or_none()
+    if not integration or not integration.customer_id or integration.customer_id == "pending":
+        return {"assets": [], "message": "No active Google Ads account connected"}
+
+    client = GoogleAdsClient(
+        customer_id=integration.customer_id,
+        refresh_token_encrypted=integration.refresh_token_encrypted,
+        login_customer_id=integration.login_customer_id,
+    )
+
+    types_filter = [asset_type] if asset_type else None
+    assets = await client.list_assets(types_filter)
+    return {"assets": assets, "total": len(assets)}
+
+
+class SmartImageRequest(BaseModel):
+    """Generate images optimized for a specific Google Ads placement."""
+    campaign_id: Optional[str] = None
+    ad_type: str = "responsive_display"  # responsive_display, performance_max, search_companion
+    prompt: Optional[str] = None
+    engine: str = "dalle"
+    style: str = "photorealistic"
+    auto_upload_to_google: bool = False
+
+
+@router.post("/image/generate-for-ad")
+async def generate_image_for_ad(
+    req: SmartImageRequest,
+    user: CurrentUser = Depends(require_analyst),
+    db: AsyncSession = Depends(get_db),
+):
+    """Smart image generation — auto-detects sizes needed for ad type,
+    generates prompt from campaign context, optionally uploads to Google Ads."""
+    from app.integrations.image_generator.client import ImageGeneratorClient
+    from app.models.integration_google_ads import IntegrationGoogleAds
+
+    img_client = ImageGeneratorClient()
+    if not img_client.is_configured:
+        raise HTTPException(503, "Image generator not configured")
+
+    # Load business context
+    bp_result = await db.execute(
+        select(BusinessProfile).where(BusinessProfile.tenant_id == user.tenant_id)
+    )
+    profile = bp_result.scalar_one_or_none()
+    from app.models.tenant import Tenant
+    tenant = await db.get(Tenant, str(user.tenant_id))
+    biz_name = tenant.name if tenant else "Our Business"
+    biz_type = profile.industry_classification if profile else "service"
+
+    # Determine sizes based on ad type
+    size_map = {
+        "responsive_display": ["1792x1024", "1024x1024"],  # landscape + square
+        "performance_max": ["1792x1024", "1024x1024", "1024x1792"],  # all 3
+        "search_companion": ["1024x1024"],  # square only
+        "discovery": ["1792x1024", "1024x1024"],
+    }
+    sizes = size_map.get(req.ad_type, ["1024x1024"])
+
+    # Auto-generate prompt if not provided
+    prompt = req.prompt
+    if not prompt:
+        # Try to get campaign context for better prompts
+        campaign_name = ""
+        if req.campaign_id:
+            try:
+                ads_result = await db.execute(
+                    select(IntegrationGoogleAds).where(
+                        IntegrationGoogleAds.tenant_id == user.tenant_id,
+                        IntegrationGoogleAds.is_active == True,
+                    )
+                )
+                integration = ads_result.scalar_one_or_none()
+                if integration:
+                    from app.integrations.google_ads.client import GoogleAdsClient
+                    ads_client = GoogleAdsClient(
+                        customer_id=integration.customer_id,
+                        refresh_token_encrypted=integration.refresh_token_encrypted,
+                        login_customer_id=integration.login_customer_id,
+                    )
+                    campaigns = await ads_client.get_campaigns()
+                    camp = next((c for c in campaigns if str(c.get("id")) == req.campaign_id), None)
+                    if camp:
+                        campaign_name = camp.get("name", "")
+            except Exception:
+                pass
+
+        prompt = (
+            f"Professional {biz_type} business photo for Google Ads: "
+            f"a certified {biz_type} technician from {biz_name} "
+            f"{'performing ' + campaign_name.lower().split('|')[0].strip() + ' work' if campaign_name else 'providing expert service to a customer'}. "
+            f"Clean branded uniform, professional equipment, well-lit setting. "
+            f"Photorealistic, commercial quality, no text overlays, suitable for Google Ads."
+        )
+
+    metadata = {
+        "businessName": biz_name,
+        "businessType": biz_type,
+        "description": f"Ad image for {biz_name}",
+        "keywords": f"{biz_type}, professional, Google Ads",
+    }
+
+    # Generate one image per required size
+    results = []
+    for size in sizes:
+        result = await img_client.generate_single(
+            prompt=prompt,
+            engine=req.engine,
+            style=req.style,
+            size=size,
+            metadata=metadata,
+        )
+        if result.get("success"):
+            # Save to asset library
+            asset = Asset(
+                tenant_id=user.tenant_id,
+                asset_type="IMAGE",
+                source="ai_image_generator",
+                url=result.get("image_url"),
+                metadata_json={
+                    "filename": result.get("filename"),
+                    "engine": req.engine,
+                    "style": req.style,
+                    "size": size,
+                    "prompt": prompt,
+                    "ad_type": req.ad_type,
+                    "status": "complete",
+                    **metadata,
+                },
+            )
+            db.add(asset)
+            await db.flush()
+
+            img_data = {
+                "asset_id": asset.id,
+                "image_url": result.get("image_url"),
+                "size": size,
+                "status": "complete",
+            }
+
+            # Optionally upload to Google Ads as an asset
+            if req.auto_upload_to_google:
+                try:
+                    ads_result2 = await db.execute(
+                        select(IntegrationGoogleAds).where(
+                            IntegrationGoogleAds.tenant_id == user.tenant_id,
+                            IntegrationGoogleAds.is_active == True,
+                        )
+                    )
+                    integration2 = ads_result2.scalar_one_or_none()
+                    if integration2:
+                        from app.integrations.google_ads.client import GoogleAdsClient
+                        ads_client2 = GoogleAdsClient(
+                            customer_id=integration2.customer_id,
+                            refresh_token_encrypted=integration2.refresh_token_encrypted,
+                            login_customer_id=integration2.login_customer_id,
+                        )
+                        upload_result = await ads_client2.create_image_asset(
+                            result.get("image_url"),
+                            f"{biz_name} - {req.ad_type} - {size}",
+                        )
+                        if upload_result.get("status") == "success":
+                            img_data["google_asset_resource"] = upload_result.get("asset_resource")
+                except Exception as e:
+                    img_data["google_upload_error"] = str(e)[:200]
+
+            results.append(img_data)
+        else:
+            results.append({"size": size, "status": "failed", "error": result.get("error")})
+
+    await db.commit()
+    return {
+        "ad_type": req.ad_type,
+        "images": results,
+        "prompt_used": prompt,
+        "sizes_generated": len([r for r in results if r.get("status") == "complete"]),
     }
