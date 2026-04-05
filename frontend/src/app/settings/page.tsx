@@ -559,6 +559,29 @@ function SettingsContent() {
                       Click below to choose your Google Ads account.
                     </p>
                   </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="ml-auto text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200 flex-shrink-0"
+                    disabled={disconnecting === "ads-pending"}
+                    onClick={async () => {
+                      if (!confirm("Disconnect Google Ads? You can reconnect with a different account.")) return;
+                      setDisconnecting("ads-pending");
+                      try {
+                        const pending = accounts.find((a: any) => a.customer_id === "pending");
+                        if (pending) await api.delete(`/api/ads/accounts/${pending.id}`);
+                        const a = await api.get("/api/ads/accounts").catch(() => []);
+                        setAccounts(Array.isArray(a) ? a : []);
+                        setAccessibleCustomers([]);
+                      } catch (e: any) {
+                        alert(e.message || "Failed to disconnect");
+                      } finally {
+                        setDisconnecting(null);
+                      }
+                    }}
+                  >
+                    {disconnecting === "ads-pending" ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <XCircle className="w-3.5 h-3.5 mr-1" />} Disconnect
+                  </Button>
                 </div>
 
                 {accessibleCustomers.length === 0 && !loadingCustomers && (
