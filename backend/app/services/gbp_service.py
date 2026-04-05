@@ -12,7 +12,7 @@ import httpx
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
-from sqlalchemy import select
+from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.business_profile import BusinessProfile
@@ -338,3 +338,193 @@ class GBPService:
                 return int(value * 0.621371)  # km → miles
         # places-based service area: just return None for now
         return None
+
+
+class GBPBrainService:
+    """
+    GBP Brain Service — bridges Jarvis calls to GBP API.
+    Includes AI-powered review response generation and post content creation.
+    """
+
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def _get_gbp_client(self, tenant_id: str):
+        """Get authenticated GBP client from DB integration record."""
+        from app.integrations.google_business.client import GBPClient
+        from app.models.v2.integration_ga4 import IntegrationGA4
+        result = await self.db.execute(
+            select(IntegrationGA4).where(IntegrationGA4.tenant_id == tenant_id)
+        )
+        integration = result.scalars().first()
+        if not integration:
+            raise ValueError("No Google integration found for GBP access")
+        config = integration.config_json or {}
+        account_id = config.get("gbp_account_id")
+        location_id = config.get("gbp_location_id")
+        if not account_id or not location_id:
+            raise ValueError("GBP account_id and location_id not configured in GA4 config_json")
+        return GBPClient(
+            account_id=account_id,
+            location_id=location_id,
+            refresh_token_encrypted=integration.refresh_token_encrypted,
+        )
+
+    # ── Reviews ─────────────────────────────────────────────────
+
+    async def get_reviews(self, tenant_id: str, page_size: int = 50) -> Dict[str, Any]:
+        client = await self._get_gbp_client(tenant_id)
+        return await client.get_reviews(page_size)
+
+    async def reply_to_review(self, tenant_id: str, review_id: str, reply_text: str) -> Dict[str, Any]:
+        client = await self._get_gbp_client(tenant_id)
+        return await client.reply_to_review(review_id, reply_text)
+
+    async def ai_reply_to_review(
+        self, tenant_id: str, review_id: str,
+        reviewer_name: str, star_rating: int, comment: str,
+        business_name: str = "", tone: str = "professional",
+    ) -> Dict[str, Any]:
+        """Generate an AI reply and post it."""
+        from app.core.config import settings as app_settings
+        import anthropic
+        claude = anthropic.Anthropic(api_key=app_settings.ANTHROPIC_API_KEY)
+        prompt = f"""Write a reply to this Google Business Profile review.
+
+Business: {business_name}
+Reviewer: {reviewer_name}
+Stars: {star_rating}/5
+Review: {comment}
+
+Tone: {tone}
+Rules:
+- Thank them by name
+- If positive (4-5 stars): express gratitude, mention specific praise they gave
+- If negative (1-2 stars): apologize, offer to resolve, provide contact info
+- If neutral (3 stars): thank them, acknowledge feedback, invite them back
+- Keep under 200 words
+- Sound human, not robotic
+- End with business name
+
+Reply:"""
+
+        response = claude.messages.create(
+            model=app_settings.ANTHROPIC_MODEL,
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        reply_text = response.content[0].text.strip()
+
+        # Post the reply
+        client = await self._get_gbp_client(tenant_id)
+        result = await client.reply_to_review(review_id, reply_text)
+        result["ai_generated_reply"] = reply_text
+        return result
+
+    async def delete_review_reply(self, tenant_id: str, review_id: str) -> Dict[str, Any]:
+        client = await self._get_gbp_client(tenant_id)
+        return await client.delete_review_reply(review_id)
+
+    # ── Posts ───────────────────────────────────────────────────
+
+    async def get_posts(self, tenant_id: str) -> Dict[str, Any]:
+        client = await self._get_gbp_client(tenant_id)
+        return await client.get_posts()
+
+    async def create_post(
+        self, tenant_id: str, summary: str, topic_type: str = "STANDARD",
+        media_url: Optional[str] = None, cta_type: Optional[str] = None,
+        cta_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        client = await self._get_gbp_client(tenant_id)
+        return await client.create_post(
+            summary=summary, topic_type=topic_type,
+            media_url=media_url, call_to_action_type=cta_type,
+            call_to_action_url=cta_url,
+        )
+
+    async def ai_create_post(
+        self, tenant_id: str, topic: str, business_name: str = "",
+        business_type: str = "", include_image: bool = False,
+        cta_type: Optional[str] = None, cta_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Use AI to generate post content and optionally an image, then publish."""
+        from app.core.config import settings as app_settings
+        from app.integrations.image_generator.client import ImageGeneratorClient
+        import anthropic
+        claude = anthropic.Anthropic(api_key=app_settings.ANTHROPIC_API_KEY)
+
+        prompt = f"""Write a Google Business Profile post for this business.
+
+Business: {business_name} ({business_type})
+Topic: {topic}
+
+Rules:
+- Keep under 300 words (GBP limit is 1500 chars)
+- Include a clear call to action
+- Use engaging, local-friendly language
+- Include relevant emojis sparingly
+- Mention the business name
+- Make it shareable and informative
+
+Post:"""
+
+        response = claude.messages.create(
+            model=app_settings.ANTHROPIC_MODEL,
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        post_text = response.content[0].text.strip()
+
+        # Generate image if requested
+        media_url = None
+        image_result = None
+        if include_image:
+            img_client = ImageGeneratorClient()
+            if img_client.is_configured:
+                image_result = await img_client.generate_ad_image(
+                    service=topic,
+                    business_name=business_name,
+                    business_type=business_type,
+                    engine="dalle",
+                    style="photorealistic",
+                    size="1024x1024",
+                )
+                if image_result.get("success"):
+                    media_url = image_result.get("image_url")
+
+        # Publish post
+        client = await self._get_gbp_client(tenant_id)
+        result = await client.create_post(
+            summary=post_text, topic_type="STANDARD",
+            media_url=media_url, call_to_action_type=cta_type,
+            call_to_action_url=cta_url,
+        )
+        result["ai_generated_text"] = post_text
+        if image_result:
+            result["image"] = image_result
+        return result
+
+    async def delete_post(self, tenant_id: str, post_name: str) -> Dict[str, Any]:
+        client = await self._get_gbp_client(tenant_id)
+        return await client.delete_post(post_name)
+
+    # ── Business Info ──────────────────────────────────────────
+
+    async def get_business_info(self, tenant_id: str) -> Dict[str, Any]:
+        client = await self._get_gbp_client(tenant_id)
+        return await client.get_business_info()
+
+    async def get_insights(self, tenant_id: str, date_from: str, date_to: str) -> Dict[str, Any]:
+        client = await self._get_gbp_client(tenant_id)
+        return await client.get_insights(date_from, date_to)
+
+    # ── Health ─────────────────────────────────────────────────
+
+    async def health_check(self, tenant_id: str) -> Dict[str, Any]:
+        try:
+            client = await self._get_gbp_client(tenant_id)
+            info = await client.get_business_info()
+            return {"status": "healthy", "business": info.get("title", "Unknown")}
+        except Exception as e:
+            return {"status": "error", "error": str(e)[:200]}

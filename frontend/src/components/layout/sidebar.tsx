@@ -8,8 +8,8 @@ import { useOnboardingGuard } from "@/hooks/use-onboarding-guard";
 import {
   LayoutDashboard, Megaphone, Wand2,
   Search, Zap, FlaskConical, FileText, Settings, LogOut,
-  Shield, Building2, GitBranch, Plug, Scale,
-  CreditCard, Trophy, Crosshair, Brain,
+  Shield, BarChart3, Building2, GitBranch, Plug, Scale,
+  CreditCard, Bell, Trophy, Crosshair, Brain, Bot,
   MessageSquare, Key, Image, Globe, Phone,
   ChevronDown, Menu, X, Sparkles, Users, MapPin,
 } from "lucide-react";
@@ -40,6 +40,7 @@ const coreNav: NavSection[] = [
     title: "AI Intelligence",
     items: [
       { label: "AI Operator", href: "/strategist", icon: Sparkles },
+      { label: "Claude Operator", href: "/ads/operator", icon: Bot },
       { label: "Fix My Ads", href: "/operator", icon: Brain },
     ],
   },
@@ -47,6 +48,7 @@ const coreNav: NavSection[] = [
     title: "Manage Ads",
     items: [
       { label: "Campaigns", href: "/ads/campaigns", icon: Megaphone },
+      { label: "Creative Studio", href: "/creative", icon: Wand2 },
       { label: "Ads", href: "/ads/ads", icon: Image },
       { label: "Keywords", href: "/ads/keywords", icon: Key },
       { label: "Search Terms", href: "/ads/search-terms", icon: MessageSquare },

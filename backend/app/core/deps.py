@@ -6,6 +6,7 @@ from sqlalchemy import select, and_
 from app.core.database import get_db
 from app.core.security import decode_token
 from app.core.permissions import has_permission
+from app.core.config import settings
 
 bearer_scheme = HTTPBearer()
 
@@ -147,3 +148,31 @@ def get_client_info(request: Request) -> dict:
 require_owner = require_role("owner", "admin")
 require_analyst = require_role("owner", "admin", "analyst")
 require_viewer = require_role("owner", "admin", "analyst", "viewer")
+
+
+# ── S2S (Service-to-Service) Auth for Brain API ────────────────────
+class S2SContext:
+    """Context for service-to-service calls (e.g. Jarvis → IgniteAds)."""
+    def __init__(self, tenant_id: str):
+        self.tenant_id = tenant_id
+
+
+async def require_brain_api_key(request: Request) -> S2SContext:
+    """
+    Validates X-API-Key header against BRAIN_API_KEY.
+    Resolves tenant from X-Tenant-Id header.
+    Used for machine-to-machine calls (Jarvis brain, external tools).
+    """
+    api_key = request.headers.get("X-API-Key") or request.headers.get("x-api-key")
+    if not api_key or not settings.BRAIN_API_KEY or api_key != settings.BRAIN_API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing API key",
+        )
+    tenant_id = request.headers.get("X-Tenant-Id") or request.headers.get("x-tenant-id")
+    if not tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="X-Tenant-Id header required",
+        )
+    return S2SContext(tenant_id=tenant_id)

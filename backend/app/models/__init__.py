@@ -40,6 +40,7 @@ from app.models.landing_page import LandingPage, LandingPageVariant, LandingPage
 from app.models.gbp_connection import GBPConnection
 from app.models.gbp_location import GBPLocation
 from app.models.gbp_post import GBPPost, GBPPostTemplate, GBPReview
+from app.models.operator import OperatorConversation, OperatorMessage, ProposedAction, ActionExecutionLog
 
 __all__ = [
     "Tenant", "User", "TenantUser", "IntegrationGoogleAds",
@@ -56,6 +57,7 @@ __all__ = [
     "LandingPage", "LandingPageVariant", "LandingPageEvent",
     "ExpansionRecommendation", "AIGenerationLog",
     "GBPConnection", "GBPLocation", "GBPPost", "GBPPostTemplate", "GBPReview",
+    "OperatorConversation", "OperatorMessage", "ProposedAction", "ActionExecutionLog",
 ]
 
 # V2 Models — imported so Alembic/ORM can discover them

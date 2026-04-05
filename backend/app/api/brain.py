@@ -1094,3 +1094,108 @@ async def brain_lead_attribution(
         }
         for r in rows
     ]
+
+
+# ══════════════════════════════════════════════════════════════
+# V2 Brain API — Service-based thin router (BrainService delegation)
+# Additional endpoints: locations, categories, quality, waste, leads, operator scan
+# ══════════════════════════════════════════════════════════════
+
+from pydantic import BaseModel
+
+try:
+    from app.core.deps import require_brain_api_key, S2SContext
+    from app.services.brain_service import BrainService
+
+    # ── Schemas ─────────────────────────────────────────────────────
+
+    class KeywordPauseRequest(BaseModel):
+        reason: Optional[str] = None
+
+    class KeywordBidRequest(BaseModel):
+        new_bid_micros: int
+        reason: Optional[str] = None
+
+    class CampaignBudgetRequest(BaseModel):
+        new_budget_micros: int
+        reason: Optional[str] = None
+
+    # ── Helper ──────────────────────────────────────────────────────
+
+    def _svc(db: AsyncSession) -> BrainService:
+        return BrainService(db)
+
+    # ── Location & Category (new in v2) ────────────────────────────
+
+    @router.get("/locations/performance")
+    async def location_performance(
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        ctx: S2SContext = Depends(require_brain_api_key),
+        db: AsyncSession = Depends(get_db),
+    ):
+        return await _svc(db).get_location_performance(ctx.tenant_id, date_from, date_to)
+
+    @router.get("/categories/performance")
+    async def category_performance(
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        ctx: S2SContext = Depends(require_brain_api_key),
+        db: AsyncSession = Depends(get_db),
+    ):
+        return await _svc(db).get_category_performance(ctx.tenant_id, date_from, date_to)
+
+    # ── Quality & Waste (new in v2) ────────────────────────────────
+
+    @router.get("/quality/trends")
+    async def quality_trends(
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        ctx: S2SContext = Depends(require_brain_api_key),
+        db: AsyncSession = Depends(get_db),
+    ):
+        return await _svc(db).get_quality_trends(ctx.tenant_id, date_from, date_to)
+
+    @router.get("/waste/high-spend-low-booking")
+    async def wasted_spend(
+        date_from: Optional[str] = None,
+        min_spend: float = 50.0,
+        ctx: S2SContext = Depends(require_brain_api_key),
+        db: AsyncSession = Depends(get_db),
+    ):
+        return await _svc(db).detect_wasted_spend(ctx.tenant_id, date_from, min_spend)
+
+    # ── Lead Attribution (new in v2) ───────────────────────────────
+
+    @router.get("/leads/attribution")
+    async def lead_attribution(
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        ctx: S2SContext = Depends(require_brain_api_key),
+        db: AsyncSession = Depends(get_db),
+    ):
+        return await _svc(db).get_lead_attribution(ctx.tenant_id, date_from, date_to)
+
+    # ── Campaign Budget Update (new in v2) ─────────────────────────
+
+    @router.post("/campaigns/{campaign_id}/budget")
+    async def update_campaign_budget(
+        campaign_id: str,
+        req: CampaignBudgetRequest,
+        ctx: S2SContext = Depends(require_brain_api_key),
+        db: AsyncSession = Depends(get_db),
+    ):
+        return await _svc(db).update_campaign_budget(ctx.tenant_id, campaign_id, req.new_budget_micros, req.reason)
+
+    # ── Operator Scan (new in v2) ──────────────────────────────────
+
+    @router.post("/operator/scan")
+    async def operator_scan(
+        ctx: S2SContext = Depends(require_brain_api_key),
+        db: AsyncSession = Depends(get_db),
+    ):
+        return await _svc(db).run_operator_scan(ctx.tenant_id)
+
+except ImportError:
+    # BrainService or deps not yet available — v2 endpoints will be added later
+    pass

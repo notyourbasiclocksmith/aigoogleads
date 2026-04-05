@@ -54,6 +54,17 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o-mini"
 
+    # Anthropic (Claude)
+    ANTHROPIC_API_KEY: str = ""
+    ANTHROPIC_MODEL: str = "claude-sonnet-4-20250514"
+
+    # S2S Brain API (for Jarvis and external integrations)
+    BRAIN_API_KEY: str = ""
+
+    # Meta Ads
+    META_APP_ID: str = ""
+    META_APP_SECRET: str = ""
+
     # V2 — Stripe Billing
     STRIPE_SECRET_KEY: str = ""
     STRIPE_WEBHOOK_SECRET: str = ""

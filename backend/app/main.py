@@ -5,8 +5,9 @@ import structlog
 
 from app.core.config import settings
 from app.api import auth, tenants, onboarding, dashboard, ads_accounts, ads_audit, ads_prompt, ads_data, campaigns, creative, competitors, optimizations, experiments, reports, admin_settings, lsa, bridge, gbp, brain
-from app.api import workspace
-from app.api.v2 import mcc, conversions, change_mgmt, connectors, policy, billing, notifications, evaluation, operator, growth, strategist
+from app.api import workspace, brain_analytics, brain_gbp, brain_meta, brain_image
+from app.api import operator, operator_meta, operator_unified
+from app.api.v2 import mcc, conversions, change_mgmt, connectors, policy, billing, notifications, evaluation, operator as operator_v2, growth, strategist
 
 logger = structlog.get_logger()
 
@@ -81,7 +82,16 @@ app.include_router(admin_settings.router, prefix="/api/settings", tags=["Setting
 app.include_router(lsa.router, prefix="/api/lsa", tags=["LSA (Local Services Ads)"])
 app.include_router(bridge.router, prefix="/api/bridge", tags=["Bridge (CallFlux ↔ IgniteAds)"])
 app.include_router(gbp.router, prefix="/api/gbp", tags=["Google Business Profile"])
-app.include_router(brain.router, prefix="/api/v1/brain", tags=["Brain S2S (Jarvis)"])
+app.include_router(operator.router, prefix="/api/operator", tags=["Claude Operator"])
+app.include_router(operator_meta.router, prefix="/api/operator/meta", tags=["Claude Meta Operator"])
+app.include_router(operator_unified.router, prefix="/api/operator/unified", tags=["Unified Auto Operator"])
+
+# Brain API (S2S for Jarvis)
+app.include_router(brain.router, prefix="/api/v1/brain", tags=["Brain API"])
+app.include_router(brain_analytics.router, prefix="/api/v1/brain", tags=["Brain Analytics"])
+app.include_router(brain_gbp.router, prefix="/api/v1/brain", tags=["Brain GBP"])
+app.include_router(brain_meta.router, prefix="/api/v1/brain", tags=["Brain Meta Ads"])
+app.include_router(brain_image.router, prefix="/api/v1/brain", tags=["Brain Images"])
 
 # V2 API Routes
 app.include_router(mcc.router, prefix="/api/v2/mcc", tags=["V2 MCC/Agency"])
@@ -92,7 +102,7 @@ app.include_router(policy.router, prefix="/api/v2/policy", tags=["V2 Policy Comp
 app.include_router(billing.router, prefix="/api/v2/billing", tags=["V2 Billing"])
 app.include_router(notifications.router, prefix="/api/v2/notifications", tags=["V2 Notifications"])
 app.include_router(evaluation.router, prefix="/api/v2/evaluation", tags=["V2 Evaluation"])
-app.include_router(operator.router, prefix="/api/v2/operator", tags=["V2 AI Operator"])
+app.include_router(operator_v2.router, prefix="/api/v2/operator", tags=["V2 AI Operator"])
 app.include_router(growth.router, prefix="/api/v2/growth", tags=["V2 Growth Features"])
 app.include_router(strategist.router, prefix="/api/v2/strategist", tags=["V2 Campaign Strategist AI"])
 
