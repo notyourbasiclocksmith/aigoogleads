@@ -17,6 +17,7 @@ from app.services.operator.context_service import GoogleAdsContextService
 from app.services.operator.mutation_service import GoogleAdsMutationService
 from app.services.operator.claude_agent_service import ClaudeAdsAgentService
 from app.services.operator.campaign_agent_pipeline import CampaignAgentPipeline
+from app.services.operator.post_execution_audit import PostExecutionAuditAgent
 
 logger = structlog.get_logger()
 
@@ -491,12 +492,49 @@ class GoogleAdsOperatorService:
         conv.updated_at = datetime.now(timezone.utc)
         await self.db.flush()
 
-        return {
+        # ── POST-EXECUTION AUDIT for deploy_full_campaign ──
+        audit_result = None
+        for action in actions:
+            if action.action_type != "deploy_full_campaign":
+                continue
+            exec_res = next(
+                (r for r in execution_results
+                 if r["action_id"] == action.id and r["status"] in ("success", "partial")),
+                None,
+            )
+            if not exec_res:
+                continue
+
+            try:
+                audit_agent = PostExecutionAuditAgent(self.db, ads_client, tenant_id)
+                spec = action.action_payload or {}
+                deploy_res = exec_res.get("details", {})
+                pipeline_meta = spec.get("_pipeline_metadata", {})
+
+                if await audit_agent.should_audit(spec, deploy_res, pipeline_meta):
+                    audit_result = await audit_agent.run_audit(
+                        spec=spec,
+                        deploy_result=deploy_res,
+                        conversation_id=conversation_id,
+                    )
+                    logger.info("Post-execution audit complete",
+                        status=audit_result.get("status"),
+                        score=audit_result.get("score"),
+                        issues=len(audit_result.get("issues", [])),
+                        fixes=len(audit_result.get("fix_actions", [])),
+                    )
+            except Exception as e:
+                logger.error("Post-execution audit failed", error=str(e))
+
+        response = {
             "status": "completed",
             "succeeded": succeeded,
             "failed": failed,
             "results": execution_results,
         }
+        if audit_result:
+            response["audit"] = audit_result
+        return response
 
     async def reject_actions(
         self,

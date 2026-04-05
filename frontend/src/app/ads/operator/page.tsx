@@ -399,6 +399,136 @@ function ExecutionResultCard({ payload }: { payload: any }) {
   );
 }
 
+// ── Audit Result Card ──────────────────────────────────────
+
+function AuditResultCard({ payload, onApprove, approving }: {
+  payload: any;
+  onApprove: (ids: string[]) => void;
+  approving: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  if (payload?.type !== "audit_result") return null;
+
+  const { status, score, issues = [], metrics = {}, fix_count = 0 } = payload;
+  const passed = status === "valid";
+  const critical = issues.filter((i: any) => i.severity === "critical");
+  const warnings = issues.filter((i: any) => i.severity === "warning");
+
+  return (
+    <div className={`rounded-xl border p-4 mt-3 ${
+      passed
+        ? "border-emerald-500/20 bg-emerald-500/5"
+        : "border-amber-500/20 bg-amber-500/5"
+    }`}>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          {passed ? (
+            <CheckCircle className="w-4 h-4 text-emerald-400" />
+          ) : (
+            <AlertTriangle className="w-4 h-4 text-amber-400" />
+          )}
+          <span className="text-xs font-semibold uppercase tracking-wider text-white/60">
+            Post-Deployment Audit
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className={`text-sm font-bold ${
+            score >= 90 ? "text-emerald-400" : score >= 70 ? "text-amber-400" : "text-red-400"
+          }`}>
+            {score}/100
+          </span>
+        </div>
+      </div>
+
+      {/* Summary stats */}
+      <div className="flex gap-4 text-[10px] text-white/40 mb-2">
+        {metrics.actual_ad_groups != null && (
+          <span>Ad Groups: {metrics.actual_ad_groups}/{metrics.intended_ad_groups}</span>
+        )}
+        {metrics.actual_keywords != null && (
+          <span>Keywords: {metrics.actual_keywords}/{metrics.intended_keywords}</span>
+        )}
+        {metrics.extensions_attached != null && (
+          <span>Extensions: {metrics.extensions_attached ? "Attached" : "Missing"}</span>
+        )}
+      </div>
+
+      {issues.length > 0 && (
+        <>
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="flex items-center gap-1 text-[10px] text-white/30 hover:text-white/50 transition-colors"
+          >
+            {expanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+            {critical.length} critical, {warnings.length} warnings
+          </button>
+
+          {expanded && (
+            <div className="mt-2 space-y-1.5">
+              {issues.map((issue: any, i: number) => (
+                <div key={i} className={`rounded-lg border p-2 text-[10px] ${
+                  issue.severity === "critical"
+                    ? "border-red-500/20 bg-red-500/5"
+                    : issue.severity === "warning"
+                      ? "border-amber-500/20 bg-amber-500/5"
+                      : "border-white/5 bg-white/[0.02]"
+                }`}>
+                  <div className="flex items-center gap-1.5 mb-0.5">
+                    <span className={`font-semibold uppercase ${
+                      issue.severity === "critical" ? "text-red-400" : issue.severity === "warning" ? "text-amber-400" : "text-white/40"
+                    }`}>
+                      {issue.severity}
+                    </span>
+                    <span className="text-white/20">|</span>
+                    <span className="text-white/50">{issue.category?.replace(/_/g, " ")}</span>
+                  </div>
+                  <p className="text-white/60">{issue.description}</p>
+                  {issue.intended && (
+                    <p className="text-white/25 mt-0.5">Expected: {issue.intended}</p>
+                  )}
+                  {issue.actual && (
+                    <p className="text-white/25">Got: {issue.actual}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {passed && issues.length === 0 && (
+        <p className="text-xs text-emerald-400/70">Campaign deployed correctly — all entities match intended spec.</p>
+      )}
+    </div>
+  );
+}
+
+// ── Audit Progress (stepper entry) ─────────────────────────
+
+function AuditProgressCard({ messages: auditMsgs }: { messages: Message[] }) {
+  if (auditMsgs.length === 0) return null;
+
+  // Show latest status
+  const latest = auditMsgs[auditMsgs.length - 1];
+  const sp = latest.structured_payload as any;
+
+  return (
+    <div className="flex items-start gap-2.5 text-xs mt-2">
+      {sp?.status === "running" ? (
+        <Loader2 className="w-4 h-4 animate-spin text-blue-400 flex-shrink-0 mt-0.5" />
+      ) : (
+        <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
+      )}
+      <div>
+        <span className={sp?.status === "running" ? "text-white/70 font-medium" : "text-white/50"}>
+          Post-Deployment Audit
+        </span>
+        <p className="text-white/30 text-[10px] leading-tight mt-0.5">{sp?.detail}</p>
+      </div>
+    </div>
+  );
+}
+
 // ── Pipeline Progress Card ──────────────────────────────────
 
 const PIPELINE_AGENTS = [
@@ -1267,9 +1397,10 @@ export default function OperatorPage() {
           ) : (
             <div className="max-w-3xl mx-auto space-y-4">
               {(() => {
-                // Group consecutive pipeline_progress messages together
+                // Group consecutive pipeline_progress and audit_progress messages
                 const rendered: React.ReactNode[] = [];
                 let pipelineBatch: Message[] = [];
+                let auditBatch: Message[] = [];
 
                 function flushPipeline() {
                   if (pipelineBatch.length > 0) {
@@ -1280,10 +1411,24 @@ export default function OperatorPage() {
                         </div>
                         <div className="max-w-[85%]">
                           <PipelineProgressCard messages={pipelineBatch} />
+                          {auditBatch.length > 0 && <AuditProgressCard messages={auditBatch} />}
                         </div>
                       </div>
                     );
                     pipelineBatch = [];
+                    auditBatch = [];
+                  } else if (auditBatch.length > 0) {
+                    rendered.push(
+                      <div key={`audit-progress-${auditBatch[0].id}`} className="flex gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-cyan-600 flex items-center justify-center flex-shrink-0 mt-1">
+                          <Shield className="w-4 h-4 text-white" />
+                        </div>
+                        <div className="max-w-[85%]">
+                          <AuditProgressCard messages={auditBatch} />
+                        </div>
+                      </div>
+                    );
+                    auditBatch = [];
                   }
                 }
 
@@ -1291,6 +1436,10 @@ export default function OperatorPage() {
                   const sp = msg.structured_payload as any;
                   if (sp?.type === "pipeline_progress") {
                     pipelineBatch.push(msg);
+                    continue;
+                  }
+                  if (sp?.type === "audit_progress") {
+                    auditBatch.push(msg);
                     continue;
                   }
                   flushPipeline();
@@ -1330,6 +1479,7 @@ export default function OperatorPage() {
                                 <CampaignDetailCard key={`detail-${a.id}`} payload={a} />
                               ))}
                             <ExecutionResultCard payload={msg.structured_payload} />
+                            <AuditResultCard payload={msg.structured_payload} onApprove={handleApprove} approving={approving} />
                             {msg.structured_payload?.questions?.length ? (
                               <div className="mt-3 space-y-1">
                                 {msg.structured_payload.questions.map((q, i) => (

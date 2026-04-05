@@ -19,6 +19,7 @@ from app.services.operator_unified.context_builder import UnifiedContextBuilder
 from app.services.operator_unified.agent_service import UnifiedAgentService
 from app.services.operator_unified.action_router import ActionRouter
 from app.services.operator.campaign_agent_pipeline import CampaignAgentPipeline
+from app.services.operator.post_execution_audit import PostExecutionAuditAgent
 
 logger = structlog.get_logger()
 
@@ -486,12 +487,60 @@ class UnifiedConversationService:
         conv.updated_at = datetime.now(timezone.utc)
         await self.db.flush()
 
-        return {
+        # ── POST-EXECUTION AUDIT for deploy_full_campaign ──
+        audit_result = None
+        for action in actions:
+            if action.action_type != "deploy_full_campaign":
+                continue
+            payload = dict(action.action_payload or {})
+            system = payload.pop("_system", "google_ads")
+            if system != "google_ads":
+                continue
+            exec_res = next(
+                (r for r in execution_results
+                 if r["action_id"] == action.id and r["status"] in ("success", "partial")),
+                None,
+            )
+            if not exec_res:
+                continue
+            try:
+                # Get ads client for audit verification
+                from app.models.integration_google_ads import IntegrationGoogleAds
+                from app.integrations.google_ads.client import GoogleAdsClient
+                ig_result = await self.db.execute(
+                    select(IntegrationGoogleAds).where(
+                        IntegrationGoogleAds.tenant_id == tenant_id,
+                        IntegrationGoogleAds.is_active == True,
+                    )
+                )
+                integration = ig_result.scalars().first()
+                if integration:
+                    ads_client = GoogleAdsClient(
+                        customer_id=integration.customer_id,
+                        refresh_token_encrypted=integration.refresh_token_encrypted,
+                    )
+                    audit_agent = PostExecutionAuditAgent(self.db, ads_client, tenant_id)
+                    spec = action.action_payload or {}
+                    deploy_res = exec_res.get("details", {})
+                    pipeline_meta = spec.get("_pipeline_metadata", {})
+                    if await audit_agent.should_audit(spec, deploy_res, pipeline_meta):
+                        audit_result = await audit_agent.run_audit(
+                            spec=spec,
+                            deploy_result=deploy_res,
+                            conversation_id=conversation_id,
+                        )
+            except Exception as e:
+                logger.error("Unified post-execution audit failed", error=str(e))
+
+        response: Dict[str, Any] = {
             "status": "completed",
             "succeeded": succeeded,
             "failed": failed,
             "results": execution_results,
         }
+        if audit_result:
+            response["audit"] = audit_result
+        return response
 
     async def reject_actions(
         self,
