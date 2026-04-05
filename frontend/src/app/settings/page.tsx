@@ -290,7 +290,7 @@ function SettingsContent() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            {profile.gbp_connected && (
+            {profile.gbp_connected ? (
               <div className="flex items-center gap-2 p-3 rounded-lg bg-green-50 border border-green-200 text-sm text-green-800 mb-2">
                 <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
                 <span>Synced from GBP{profile.gbp_location_name ? `: ${profile.gbp_location_name}` : ""}</span>
@@ -299,6 +299,44 @@ function SettingsContent() {
                     <Star className="w-3 h-3 mr-1" /> {profile.google_rating} ({profile.review_count || 0} reviews)
                   </Badge>
                 )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="ml-auto text-red-600 border-red-200 hover:bg-red-50"
+                  onClick={async () => {
+                    if (!confirm("Disconnect Google Business Profile? You can reconnect anytime.")) return;
+                    try {
+                      await api.delete("/api/gbp/oauth/disconnect");
+                      setProfile({ ...profile, gbp_connected: false, gbp_location_name: null });
+                    } catch (e) {
+                      alert("Failed to disconnect GBP");
+                    }
+                  }}
+                >
+                  <XCircle className="w-3.5 h-3.5 mr-1" /> Disconnect
+                </Button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 p-3 rounded-lg bg-slate-50 border border-slate-200 text-sm text-slate-600 mb-2">
+                <Globe className="w-4 h-4 flex-shrink-0" />
+                <span>Google Business Profile not connected</span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="ml-auto text-blue-600 border-blue-200 hover:bg-blue-50"
+                  onClick={async () => {
+                    try {
+                      const res = await api.get("/api/gbp/oauth/authorize?origin=settings");
+                      if (res.authorization_url) {
+                        window.location.href = res.authorization_url;
+                      }
+                    } catch (e) {
+                      alert("Failed to start GBP connection");
+                    }
+                  }}
+                >
+                  <Link2 className="w-3.5 h-3.5 mr-1" /> Connect GBP
+                </Button>
               </div>
             )}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -443,7 +481,7 @@ function SettingsContent() {
                     size="sm"
                     onClick={async () => {
                       try {
-                        await api.post("/api/gbp/reviews/sync");
+                        await api.post("/api/gbp/sync");
                         const p = await api.get("/api/settings/profile").catch(() => ({}));
                         setProfile(p || {});
                       } catch (e: any) { alert(e.message || "Sync failed"); }

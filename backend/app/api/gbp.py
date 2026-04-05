@@ -49,6 +49,35 @@ async def gbp_callback(
     result = await exchange_code_for_tokens(code, tenant_id, db)
     await db.commit()
 
+    # Auto-sync: if a location was previously selected, re-sync it now
+    try:
+        from sqlalchemy import select as sa_select
+        from app.models.gbp_connection import GBPConnection
+        from app.services.gbp_service import GBPService
+
+        conn_result = await db.execute(
+            sa_select(GBPConnection).where(GBPConnection.tenant_id == tenant_id)
+        )
+        conn = conn_result.scalar_one_or_none()
+        if conn and conn.account_id and conn.location_id:
+            svc = GBPService(db)
+            location_data = await svc.fetch_location_detail(tenant_id, conn.location_id)
+            if location_data:
+                loc = await svc.sync_location_to_db(tenant_id, location_data, conn.account_id)
+                full_name = f"{conn.account_id}/{conn.location_id}"
+                reviews_data = await svc.fetch_reviews(tenant_id, full_name)
+                await svc.sync_reviews_to_db(tenant_id, loc.id, reviews_data)
+                loc.google_rating = reviews_data.get("averageRating")
+                loc.review_count = reviews_data.get("totalReviewCount", 0)
+                await svc.populate_business_profile(tenant_id, location_data, reviews_data)
+                conn.last_sync_at = datetime.now()
+                await db.commit()
+                import structlog
+                structlog.get_logger().info("GBP auto-sync after reconnect", tenant_id=tenant_id)
+    except Exception as e:
+        import structlog
+        structlog.get_logger().warning("GBP auto-sync after reconnect failed", error=str(e), tenant_id=tenant_id)
+
     # Redirect to frontend — settings or onboarding depending on origin
     frontend_url = settings.APP_URL
     origin = parts[2] if len(parts) > 2 else "onboarding"
@@ -386,17 +415,86 @@ async def auto_generate_posts(
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# FULL SYNC (location + reviews + business profile)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@router.post("/sync")
+async def full_gbp_sync(
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Full GBP sync: re-fetch location details, reviews, and update business profile."""
+    from sqlalchemy import select
+    from app.models.gbp_connection import GBPConnection
+    from app.services.gbp_service import GBPService
+
+    conn_result = await db.execute(
+        select(GBPConnection).where(GBPConnection.tenant_id == user.tenant_id)
+    )
+    conn = conn_result.scalar_one_or_none()
+    if not conn or not conn.is_active:
+        raise HTTPException(status_code=400, detail="GBP not connected")
+    if not conn.account_id or not conn.location_id:
+        raise HTTPException(status_code=400, detail="No GBP location selected. Please select a location first.")
+
+    svc = GBPService(db)
+
+    # Fetch + sync location details
+    location_data = await svc.fetch_location_detail(user.tenant_id, conn.location_id)
+    if not location_data:
+        raise HTTPException(status_code=502, detail="Could not fetch location from GBP API")
+
+    loc = await svc.sync_location_to_db(user.tenant_id, location_data, conn.account_id)
+
+    # Fetch + sync reviews
+    full_name = f"{conn.account_id}/{conn.location_id}"
+    reviews_data = await svc.fetch_reviews(user.tenant_id, full_name)
+    review_count = await svc.sync_reviews_to_db(user.tenant_id, loc.id, reviews_data)
+    loc.google_rating = reviews_data.get("averageRating")
+    loc.review_count = reviews_data.get("totalReviewCount", 0)
+
+    # Update business profile
+    await svc.populate_business_profile(user.tenant_id, location_data, reviews_data)
+
+    # Update last sync timestamp
+    conn.last_sync_at = datetime.now()
+    conn.location_name = loc.business_name
+    await db.commit()
+
+    return {
+        "success": True,
+        "location": loc.business_name,
+        "reviews_synced": review_count,
+        "rating": loc.google_rating,
+        "review_count": loc.review_count,
+    }
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # REVIEWS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @router.post("/reviews/sync")
 async def sync_reviews(
-    location_id: str = Query(...),
+    location_id: Optional[str] = Query(None),
     user: CurrentUser = Depends(require_tenant),
     db: AsyncSession = Depends(get_db),
 ):
     """Sync reviews from GBP API into local DB."""
+    from sqlalchemy import select
+    from app.models.gbp_location import GBPLocation
     from app.services.gbp_review_service import GBPReviewService
+
+    # Auto-resolve location_id from tenant if not provided
+    if not location_id:
+        loc_result = await db.execute(
+            select(GBPLocation).where(GBPLocation.tenant_id == user.tenant_id).limit(1)
+        )
+        loc = loc_result.scalar_one_or_none()
+        if not loc:
+            raise HTTPException(status_code=404, detail="No GBP location found. Please connect and select a location first.")
+        location_id = loc.id
+
     svc = GBPReviewService(db)
     result = await svc.sync_reviews(user.tenant_id, location_id)
     await db.commit()
