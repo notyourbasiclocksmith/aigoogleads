@@ -1011,6 +1011,7 @@ class GoogleAdsClient:
             budget.name = f"Budget - {campaign_data['name']}"
             budget.amount_micros = campaign_data.get("budget_micros", 30_000_000)
             budget.delivery_method = client.enums.BudgetDeliveryMethodEnum.STANDARD
+            budget.explicitly_shared = False
 
             budget_response = campaign_budget_service.mutate_campaign_budgets(
                 customer_id=self.customer_id,
@@ -1024,6 +1025,8 @@ class GoogleAdsClient:
             campaign.name = campaign_data["name"]
             campaign.campaign_budget = budget_resource
             campaign.status = client.enums.CampaignStatusEnum.PAUSED
+            # Required in Google Ads API v23+
+            campaign.contains_eu_political_advertising = False
 
             # Channel type
             channel = campaign_data.get("channel_type", "SEARCH").upper()
