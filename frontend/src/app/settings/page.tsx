@@ -30,6 +30,7 @@ function SettingsContent() {
   const [manualCustomerId, setManualCustomerId] = useState("");
   const [showManualInput, setShowManualInput] = useState(false);
   const [metaStatus, setMetaStatus] = useState<any>({ connected: false });
+  const [disconnecting, setDisconnecting] = useState<string | null>(null);
 
   useEffect(() => {
     // Fetch Meta connection status
@@ -307,17 +308,21 @@ function SettingsContent() {
                   variant="outline"
                   size="sm"
                   className="ml-auto text-red-600 border-red-200 hover:bg-red-50"
+                  disabled={disconnecting === "gbp"}
                   onClick={async () => {
                     if (!confirm("Disconnect Google Business Profile? You can reconnect anytime.")) return;
+                    setDisconnecting("gbp");
                     try {
                       await api.delete("/api/gbp/oauth/disconnect");
                       setProfile({ ...profile, gbp_connected: false, gbp_location_name: null });
                     } catch (e) {
                       alert("Failed to disconnect GBP");
+                    } finally {
+                      setDisconnecting(null);
                     }
                   }}
                 >
-                  <XCircle className="w-3.5 h-3.5 mr-1" /> Disconnect
+                  {disconnecting === "gbp" ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <XCircle className="w-3.5 h-3.5 mr-1" />} Disconnect
                 </Button>
               </div>
             ) : (
@@ -497,16 +502,19 @@ function SettingsContent() {
                     variant="outline"
                     size="sm"
                     className="text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200"
+                    disabled={disconnecting === "gbp2"}
                     onClick={async () => {
                       if (!confirm("Disconnect Google Business Profile?")) return;
+                      setDisconnecting("gbp2");
                       try {
                         await api.delete("/api/gbp/oauth/disconnect");
                         const p = await api.get("/api/settings/profile").catch(() => ({}));
                         setProfile(p || {});
                       } catch (e: any) { alert(e.message || "Failed to disconnect"); }
+                      finally { setDisconnecting(null); }
                     }}
                   >
-                    <XCircle className="w-4 h-4 mr-2" /> Disconnect
+                    {disconnecting === "gbp2" ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <XCircle className="w-4 h-4 mr-2" />} Disconnect
                   </Button>
                 </div>
               </div>
@@ -783,8 +791,10 @@ function SettingsContent() {
                     variant="outline"
                     size="sm"
                     className="text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200"
+                    disabled={disconnecting === `ads-${acct.id}`}
                     onClick={async () => {
                       if (!confirm("Disconnect this Google Ads account? You can reconnect later.")) return;
+                      setDisconnecting(`ads-${acct.id}`);
                       try {
                         await api.delete(`/api/ads/accounts/${acct.id}`);
                         const a = await api.get("/api/ads/accounts").catch(() => []);
@@ -792,10 +802,12 @@ function SettingsContent() {
                         setSyncStatus(null);
                       } catch (e: any) {
                         alert(e.message || "Failed to disconnect account");
+                      } finally {
+                        setDisconnecting(null);
                       }
                     }}
                   >
-                    <XCircle className="w-4 h-4 mr-2" /> Disconnect
+                    {disconnecting === `ads-${acct.id}` ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <XCircle className="w-4 h-4 mr-2" />} Disconnect
                   </Button>
                   {acct.last_sync_at && (
                     <span className="text-xs text-muted-foreground">
@@ -878,15 +890,18 @@ function SettingsContent() {
                     variant="outline"
                     size="sm"
                     className="text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200"
+                    disabled={disconnecting === "meta"}
                     onClick={async () => {
                       if (!confirm("Disconnect Meta Ads?")) return;
+                      setDisconnecting("meta");
                       try {
                         await api.delete("/api/meta/oauth/disconnect");
                         setMetaStatus({ connected: false });
                       } catch (e: any) { alert(e.message || "Failed to disconnect"); }
+                      finally { setDisconnecting(null); }
                     }}
                   >
-                    <XCircle className="w-4 h-4 mr-2" /> Disconnect
+                    {disconnecting === "meta" ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <XCircle className="w-4 h-4 mr-2" />} Disconnect
                   </Button>
                 </div>
               </div>
