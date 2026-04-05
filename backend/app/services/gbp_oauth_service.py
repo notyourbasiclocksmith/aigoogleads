@@ -1,14 +1,15 @@
 """
 Google Business Profile OAuth Service.
 Handles OAuth2 flow for GBP: authorize URL, token exchange, refresh.
-Uses the Google My Business API (now Business Profile API).
+Uses raw httpx like Google Ads OAuth to avoid PKCE/session issues.
 """
+import httpx
 import structlog
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict
+from urllib.parse import urlencode
 
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,58 +20,67 @@ from app.models.gbp_connection import GBPConnection
 
 logger = structlog.get_logger()
 
-# GBP OAuth scope
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+
 GBP_SCOPES = [
     "https://www.googleapis.com/auth/business.manage",
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
 ]
 
+def _client_id() -> str:
+    return settings.GBP_CLIENT_ID or settings.GOOGLE_ADS_CLIENT_ID
 
-def _client_config() -> dict:
-    return {
-        "web": {
-            "client_id": settings.GBP_CLIENT_ID or settings.GOOGLE_ADS_CLIENT_ID,
-            "client_secret": settings.GBP_CLIENT_SECRET or settings.GOOGLE_ADS_CLIENT_SECRET,
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": [settings.GBP_REDIRECT_URI],
-        }
-    }
+def _client_secret() -> str:
+    return settings.GBP_CLIENT_SECRET or settings.GOOGLE_ADS_CLIENT_SECRET
 
 
 def get_authorization_url(tenant_id: str, origin: str = "onboarding") -> str:
     """Generate GBP OAuth authorization URL."""
-    flow = Flow.from_client_config(
-        _client_config(),
-        scopes=GBP_SCOPES,
-        redirect_uri=settings.GBP_REDIRECT_URI,
-    )
-    authorization_url, _state = flow.authorization_url(
-        access_type="offline",
-        include_granted_scopes="true",
-        prompt="consent",
-        state=f"gbp:{tenant_id}:{origin}",
-    )
-    return authorization_url
+    params = {
+        "client_id": _client_id(),
+        "redirect_uri": settings.GBP_REDIRECT_URI,
+        "response_type": "code",
+        "scope": " ".join(GBP_SCOPES),
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": f"gbp:{tenant_id}:{origin}",
+    }
+    return f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
 
 
 async def exchange_code_for_tokens(
     code: str, tenant_id: str, db: AsyncSession
 ) -> Dict:
     """Exchange authorization code for access & refresh tokens, store in DB."""
-    import warnings
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            GOOGLE_TOKEN_URL,
+            data={
+                "code": code,
+                "client_id": _client_id(),
+                "client_secret": _client_secret(),
+                "redirect_uri": settings.GBP_REDIRECT_URI,
+                "grant_type": "authorization_code",
+            },
+        )
 
-    flow = Flow.from_client_config(
-        _client_config(),
-        scopes=GBP_SCOPES,
-        redirect_uri=settings.GBP_REDIRECT_URI,
-    )
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message="Scope has changed")
-        flow.fetch_token(code=code)
+    if resp.status_code != 200:
+        logger.error(
+            "GBP token exchange failed",
+            status=resp.status_code,
+            response=resp.text[:500],
+            client_id_prefix=_client_id()[:20],
+        )
+        raise ValueError(f"Token exchange failed: {resp.text[:200]}")
 
-    creds = flow.credentials
+    data = resp.json()
+    access_token = data.get("access_token")
+    refresh_token = data.get("refresh_token")
+
+    if not access_token:
+        raise ValueError("No access token in response")
 
     result = await db.execute(
         select(GBPConnection).where(GBPConnection.tenant_id == tenant_id)
@@ -80,10 +90,12 @@ async def exchange_code_for_tokens(
         conn = GBPConnection(tenant_id=tenant_id)
         db.add(conn)
 
-    conn.access_token_encrypted = encrypt_token(creds.token)
-    if creds.refresh_token:
-        conn.refresh_token_encrypted = encrypt_token(creds.refresh_token)
-    conn.token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=3600)
+    conn.access_token_encrypted = encrypt_token(access_token)
+    if refresh_token:
+        conn.refresh_token_encrypted = encrypt_token(refresh_token)
+    conn.token_expires_at = datetime.now(timezone.utc) + timedelta(
+        seconds=data.get("expires_in", 3600)
+    )
     conn.is_active = True
     conn.sync_error = None
 
@@ -108,13 +120,12 @@ async def get_credentials(tenant_id: str, db: AsyncSession) -> Optional[Credenti
         else None
     )
 
-    cfg = _client_config()["web"]
     creds = Credentials(
         token=token,
         refresh_token=refresh_token,
-        token_uri=cfg["token_uri"],
-        client_id=cfg["client_id"],
-        client_secret=cfg["client_secret"],
+        token_uri=GOOGLE_TOKEN_URL,
+        client_id=_client_id(),
+        client_secret=_client_secret(),
     )
 
     # Refresh if expired
