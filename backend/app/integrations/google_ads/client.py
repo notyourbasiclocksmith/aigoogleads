@@ -208,20 +208,43 @@ class GoogleAdsClient:
         query = """
             SELECT conversion_action.id, conversion_action.name,
                    conversion_action.type, conversion_action.status,
-                   conversion_action.category
+                   conversion_action.category,
+                   conversion_action.counting_type,
+                   conversion_action.attribution_model_settings.attribution_model,
+                   conversion_action.attribution_model_settings.data_driven_model_status,
+                   conversion_action.include_in_conversions_metric,
+                   conversion_action.value_settings.default_value,
+                   conversion_action.click_through_lookback_window_days,
+                   conversion_action.view_through_lookback_window_days
             FROM conversion_action
         """
         response = ga_service.search(customer_id=self.customer_id, query=query)
-        return [
-            {
-                "action_id": str(row.conversion_action.id),
-                "name": row.conversion_action.name,
-                "type": row.conversion_action.type_.name,
-                "status": row.conversion_action.status.name,
-                "category": row.conversion_action.category.name,
+        results = []
+        for row in response:
+            ca = row.conversion_action
+            action = {
+                "action_id": str(ca.id),
+                "name": ca.name,
+                "type": ca.type_.name,
+                "status": ca.status.name,
+                "category": ca.category.name,
+                "counting_type": ca.counting_type.name,
+                "include_in_conversions": ca.include_in_conversions_metric,
+                "click_through_lookback_days": ca.click_through_lookback_window_days,
+                "view_through_lookback_days": ca.view_through_lookback_window_days,
             }
-            for row in response
-        ]
+            try:
+                action["attribution_model"] = ca.attribution_model_settings.attribution_model.name
+                action["data_driven_model_status"] = ca.attribution_model_settings.data_driven_model_status.name
+            except Exception:
+                action["attribution_model"] = None
+                action["data_driven_model_status"] = None
+            try:
+                action["default_value"] = ca.value_settings.default_value
+            except Exception:
+                action["default_value"] = None
+            results.append(action)
+        return results
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
     async def get_auction_insights(self, campaign_id: str) -> List[Dict[str, Any]]:

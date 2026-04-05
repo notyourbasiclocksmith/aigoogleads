@@ -27,6 +27,13 @@ class GoogleAdsContextService:
         search_terms = await self._get_search_term_report(date_range)
         ad_data = await self._get_all_ad_performance(date_range)
 
+        # Conversion tracking setup
+        try:
+            conversion_actions = await self.client.get_conversion_actions()
+        except Exception as e:
+            logger.warning("Failed to get conversion actions", error=str(e))
+            conversion_actions = []
+
         # Compute heuristics
         heuristics = self._compute_heuristics(perf, keyword_data, search_terms, ad_data)
 
@@ -38,6 +45,7 @@ class GoogleAdsContextService:
             "keyword_performance": keyword_data,
             "search_terms": search_terms[:100],  # Top 100 by cost
             "ad_performance": ad_data,
+            "conversion_actions": conversion_actions,
             "heuristics": heuristics,
         }
         logger.info("Context built", campaigns=len(campaigns), keywords=len(keyword_data), search_terms=len(search_terms))
