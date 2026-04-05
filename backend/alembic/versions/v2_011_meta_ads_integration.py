@@ -14,6 +14,14 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Table may already exist from create_all — check first
+    conn = op.get_bind()
+    result = conn.execute(sa.text(
+        "SELECT 1 FROM information_schema.tables WHERE table_name = 'integration_meta'"
+    ))
+    if result.fetchone():
+        return  # Table already exists, skip
+
     op.create_table(
         "integration_meta",
         sa.Column("id", UUID(as_uuid=False), primary_key=True, server_default=sa.text("gen_random_uuid()")),
