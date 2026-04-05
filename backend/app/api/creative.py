@@ -300,6 +300,7 @@ async def list_image_templates():
             {"id": "dalle", "name": "DALL-E 3", "description": "OpenAI's best image model. Great quality, $0.04/image."},
             {"id": "stability", "name": "Stability AI", "description": "Stable Diffusion Ultra. Photorealistic, fast."},
             {"id": "flux", "name": "Flux.1", "description": "Fal.ai Flux Pro. High detail, artistic flexibility."},
+            {"id": "google", "name": "Google Gemini", "description": "Google Nano Banana. Clean marketing visuals."},
         ],
         "styles": [
             {"id": "photorealistic", "name": "Photorealistic", "description": "Professional photography look — best for Google Ads"},

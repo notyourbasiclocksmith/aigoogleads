@@ -88,7 +88,7 @@ ACTION PAYLOAD FORMATS:
 - create_responsive_search_ad: {"ad_group_resource": "...", "headlines": [...], "descriptions": [...], "final_url": "..."}
 - create_call_ad: {"ad_group_resource": "...", "business_name": "...", "phone_number": "...", "headline1": "...", "headline2": "...", "description1": "...", "description2": "...", "final_url": "..."}
 - add_keywords: {"ad_group_resource": "...", "keywords": [{"text": "...", "match_type": "PHRASE"}]}
-- generate_ad_image: {"prompt": "descriptive image prompt", "engine": "dalle|stability|flux", "style": "photorealistic|cartoon|artistic", "size": "1024x1024|1792x1024|1024x1792", "upload_to_google": true, "campaign_id": "123", "asset_name": "My Ad Image"}
+- generate_ad_image: {"prompt": "descriptive image prompt", "engine": "dalle|stability|flux|google", "style": "photorealistic|cartoon|artistic", "size": "1024x1024|1792x1024|1024x1792", "upload_to_google": true, "campaign_id": "123", "asset_name": "My Ad Image"}
 - list_google_ads_assets: {"asset_types": ["IMAGE", "SITELINK", "CALLOUT", "STRUCTURED_SNIPPET", "PROMOTION"]}
 
 IMAGE GENERATION NOTES:
@@ -96,7 +96,7 @@ IMAGE GENERATION NOTES:
 - Common sizes: 1024x1024 (square, display ads), 1792x1024 (landscape, banners), 1024x1792 (portrait, stories)
 - Set upload_to_google=true and provide campaign_id to auto-attach the image to a campaign.
 - Use list_google_ads_assets first to check what images already exist before generating new ones.
-- Engines: dalle (best quality), stability (fastest), flux (most artistic control).
+- Engines: dalle (best quality), stability (fastest), flux (most artistic control), google (Google Gemini — clean marketing visuals).
 
 IMPORTANT: Only use entity IDs that appear in the provided account data. Never fabricate IDs."""
 
