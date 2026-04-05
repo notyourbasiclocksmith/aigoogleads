@@ -18,6 +18,7 @@ from app.services.operator_unified.intent_router import classify_intent
 from app.services.operator_unified.context_builder import UnifiedContextBuilder
 from app.services.operator_unified.agent_service import UnifiedAgentService
 from app.services.operator_unified.action_router import ActionRouter
+from app.services.operator.campaign_agent_pipeline import CampaignAgentPipeline
 
 logger = structlog.get_logger()
 
@@ -256,6 +257,31 @@ class UnifiedConversationService:
             systems_used=context.get("connected_systems", systems),
             conversation_history=conversation_history[:-1],
         )
+
+        # 4b. Pipeline intercept — if Claude recommends deploy_full_campaign, run multi-agent pipeline
+        has_campaign_deploy = any(
+            a.get("action_type") == "deploy_full_campaign"
+            for a in claude_response.get("recommended_actions", [])
+        )
+        if has_campaign_deploy and customer_id:
+            try:
+                pipeline = CampaignAgentPipeline(self.db, tenant_id, customer_id)
+                pipeline_spec = await pipeline.run(
+                    user_prompt=message,
+                    account_context=context.get("google_ads", {}),
+                    conversation_id=conversation_id,
+                )
+                for action in claude_response.get("recommended_actions", []):
+                    if action.get("action_type") == "deploy_full_campaign":
+                        action["payload"] = pipeline_spec
+                        action["action_payload"] = pipeline_spec
+                        action["label"] = f"Deploy Campaign: {pipeline_spec.get('campaign', {}).get('name', 'AI Campaign')}"
+                        meta = pipeline_spec.get("_pipeline_metadata", {})
+                        qa_score = meta.get("qa_score")
+                        if qa_score:
+                            action["reasoning"] = f"{action.get('reasoning', '')} [Pipeline QA Score: {qa_score}/100]".strip()
+            except Exception as e:
+                logger.error("Unified pipeline intercept failed", error=str(e))
 
         # 5. Save assistant message
         assistant_msg = OperatorMessage(

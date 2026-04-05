@@ -59,6 +59,10 @@ interface Message {
     failed?: number;
     _systems_used?: string[];
     _system_errors?: Record<string, string>;
+    // Pipeline progress fields
+    agent?: string;
+    status?: string;
+    detail?: string;
   };
   proposed_actions?: ProposedAction[];
   created_at: string;
@@ -391,6 +395,250 @@ function ExecutionResultCard({ payload }: { payload: any }) {
           {r.error && <p className="mt-1 text-red-400/60">{r.error}</p>}
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── Pipeline Progress Card ──────────────────────────────────
+
+const PIPELINE_AGENTS = [
+  "Strategist", "Keyword Research", "Targeting", "Extensions", "Ad Copy", "Quality Assurance",
+];
+
+function PipelineProgressCard({ messages: pipelineMsgs }: { messages: Message[] }) {
+  // Collect latest status per agent from pipeline progress messages
+  const agentStatus: Record<string, { status: string; detail: string }> = {};
+  for (const m of pipelineMsgs) {
+    const sp = m.structured_payload as any;
+    if (sp?.type === "pipeline_progress" && sp.agent) {
+      agentStatus[sp.agent] = { status: sp.status, detail: sp.detail };
+    }
+  }
+
+  if (Object.keys(agentStatus).length === 0) return null;
+
+  return (
+    <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-4 mt-3">
+      <div className="flex items-center gap-2 mb-3">
+        <Sparkles className="w-4 h-4 text-violet-400" />
+        <span className="text-xs font-semibold text-violet-300 uppercase tracking-wider">Campaign Builder Pipeline</span>
+      </div>
+      <div className="space-y-2">
+        {PIPELINE_AGENTS.map((agent) => {
+          const st = agentStatus[agent];
+          if (!st) return (
+            <div key={agent} className="flex items-center gap-2.5 text-xs text-white/20">
+              <div className="w-4 h-4 rounded-full border border-white/10 flex-shrink-0" />
+              <span>{agent}</span>
+            </div>
+          );
+          return (
+            <div key={agent} className="flex items-start gap-2.5 text-xs">
+              {st.status === "running" ? (
+                <Loader2 className="w-4 h-4 animate-spin text-blue-400 flex-shrink-0 mt-0.5" />
+              ) : st.status === "error" ? (
+                <XCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+              ) : (
+                <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
+              )}
+              <div>
+                <span className={st.status === "running" ? "text-white/70 font-medium" : st.status === "error" ? "text-red-400" : "text-white/50"}>
+                  {agent}
+                </span>
+                <p className="text-white/30 text-[10px] leading-tight mt-0.5">{st.detail}</p>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Campaign Detail View ───────────────────────────────────
+
+function CampaignDetailCard({ payload }: { payload: any }) {
+  const [showDetail, setShowDetail] = useState(false);
+
+  if (!payload || payload.action_type !== "deploy_full_campaign") return null;
+  const spec = payload.action_payload;
+  if (!spec?.campaign) return null;
+
+  const campaign = spec.campaign;
+  const adGroups = spec.ad_groups || [];
+  const sitelinks = spec.sitelinks || [];
+  const callouts = spec.callouts || [];
+  const snippets = spec.structured_snippets;
+  const meta = spec._pipeline_metadata;
+
+  return (
+    <div className="mt-2">
+      <button
+        onClick={() => setShowDetail(!showDetail)}
+        className="flex items-center gap-1.5 text-[10px] text-violet-400/70 hover:text-violet-400 transition-colors"
+      >
+        {showDetail ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+        {showDetail ? "Hide campaign details" : "View campaign details"}
+      </button>
+
+      {showDetail && (
+        <div className="mt-3 space-y-3">
+          {/* Campaign Overview */}
+          <div className="rounded-lg border border-white/5 bg-white/[0.02] p-3">
+            <div className="text-xs font-semibold text-white/60 mb-2 uppercase tracking-wider">Campaign</div>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+              <div><span className="text-white/30">Name:</span> <span className="text-white/80">{campaign.name}</span></div>
+              <div><span className="text-white/30">Type:</span> <span className="text-white/80">{campaign.channel_type || campaign.bidding_strategy}</span></div>
+              <div><span className="text-white/30">Budget:</span> <span className="text-emerald-400">${(campaign.budget_micros / 1_000_000).toFixed(0)}/day</span></div>
+              <div><span className="text-white/30">Bidding:</span> <span className="text-white/80">{campaign.bidding_strategy?.replace(/_/g, " ")}</span></div>
+              {meta?.qa_score != null && (
+                <div>
+                  <span className="text-white/30">QA Score:</span>{" "}
+                  <span className={meta.qa_score >= 80 ? "text-emerald-400" : meta.qa_score >= 60 ? "text-amber-400" : "text-red-400"}>
+                    {meta.qa_score}/100
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Ad Groups */}
+          {adGroups.map((ag: any, i: number) => (
+            <div key={i} className="rounded-lg border border-white/5 bg-white/[0.02] p-3">
+              <div className="text-xs font-semibold text-blue-400/80 mb-2">Ad Group: {ag.name}</div>
+
+              {/* Keywords */}
+              {ag.keywords?.length > 0 && (
+                <div className="mb-2">
+                  <div className="text-[10px] text-white/30 mb-1 uppercase tracking-wider">Keywords ({ag.keywords.length})</div>
+                  <div className="flex flex-wrap gap-1">
+                    {ag.keywords.slice(0, 20).map((kw: any, ki: number) => (
+                      <span key={ki} className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] bg-blue-500/10 text-blue-300/70 border border-blue-500/15">
+                        [{kw.match_type?.charAt(0)}] {kw.text}
+                      </span>
+                    ))}
+                    {ag.keywords.length > 20 && (
+                      <span className="text-[10px] text-white/20">+{ag.keywords.length - 20} more</span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Ads */}
+              {ag.ads?.map((ad: any, ai: number) => (
+                <div key={ai} className="mb-2">
+                  <div className="text-[10px] text-white/30 mb-1 uppercase tracking-wider">RSA {ai + 1}</div>
+                  {/* Headlines */}
+                  <div className="mb-1.5">
+                    <span className="text-[10px] text-white/20">Headlines ({ad.headlines?.length || 0}):</span>
+                    <div className="flex flex-wrap gap-1 mt-0.5">
+                      {(ad.headlines || []).map((h: string, hi: number) => (
+                        <span key={hi} className={`inline-flex px-1.5 py-0.5 rounded text-[10px] border ${
+                          h.length > 30 ? "border-red-500/30 bg-red-500/10 text-red-300" : "border-white/5 bg-white/[0.03] text-white/50"
+                        }`}>
+                          {h} <span className="text-white/15 ml-1">({h.length})</span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  {/* Descriptions */}
+                  <div>
+                    <span className="text-[10px] text-white/20">Descriptions ({ad.descriptions?.length || 0}):</span>
+                    <div className="space-y-0.5 mt-0.5">
+                      {(ad.descriptions || []).map((d: string, di: number) => (
+                        <div key={di} className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                          d.length > 90 ? "border-red-500/30 bg-red-500/10 text-red-300" : "border-white/5 bg-white/[0.03] text-white/50"
+                        }`}>
+                          {d} <span className="text-white/15">({d.length})</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  {ad.final_url && (
+                    <div className="text-[10px] text-white/20 mt-1">URL: {ad.final_url}</div>
+                  )}
+                </div>
+              ))}
+
+              {/* Negative keywords */}
+              {ag.negative_keywords?.length > 0 && (
+                <div>
+                  <div className="text-[10px] text-white/30 mb-1 uppercase tracking-wider">Negatives ({ag.negative_keywords.length})</div>
+                  <div className="flex flex-wrap gap-1">
+                    {ag.negative_keywords.slice(0, 15).map((n: string, ni: number) => (
+                      <span key={ni} className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] bg-red-500/10 text-red-300/60 border border-red-500/15">
+                        -{n}
+                      </span>
+                    ))}
+                    {ag.negative_keywords.length > 15 && (
+                      <span className="text-[10px] text-white/20">+{ag.negative_keywords.length - 15} more</span>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+
+          {/* Extensions */}
+          {(sitelinks.length > 0 || callouts.length > 0 || snippets) && (
+            <div className="rounded-lg border border-white/5 bg-white/[0.02] p-3">
+              <div className="text-xs font-semibold text-white/60 mb-2 uppercase tracking-wider">Extensions</div>
+
+              {sitelinks.length > 0 && (
+                <div className="mb-2">
+                  <div className="text-[10px] text-white/30 mb-1">Sitelinks ({sitelinks.length})</div>
+                  <div className="space-y-1">
+                    {sitelinks.map((sl: any, si: number) => (
+                      <div key={si} className="text-[10px] text-white/50">
+                        <span className="text-blue-300/70 font-medium">{sl.link_text}</span>
+                        {sl.description1 && <span className="text-white/20"> — {sl.description1}</span>}
+                        {sl.final_url && <span className="text-white/15 block">{sl.final_url}</span>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {callouts.length > 0 && (
+                <div className="mb-2">
+                  <div className="text-[10px] text-white/30 mb-1">Callouts ({callouts.length})</div>
+                  <div className="flex flex-wrap gap-1">
+                    {callouts.map((c: string, ci: number) => (
+                      <span key={ci} className="inline-flex px-1.5 py-0.5 rounded text-[10px] bg-amber-500/10 text-amber-300/70 border border-amber-500/15">
+                        {c}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {snippets && (
+                <div>
+                  <div className="text-[10px] text-white/30 mb-1">Snippets: {snippets.header}</div>
+                  <div className="flex flex-wrap gap-1">
+                    {(snippets.values || []).map((v: string, vi: number) => (
+                      <span key={vi} className="inline-flex px-1.5 py-0.5 rounded text-[10px] bg-violet-500/10 text-violet-300/70 border border-violet-500/15">
+                        {v}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Strategy reasoning */}
+          {meta?.strategy?.reasoning && (
+            <div className="rounded-lg border border-white/5 bg-white/[0.02] p-3">
+              <div className="text-xs font-semibold text-white/60 mb-1 uppercase tracking-wider">Strategy</div>
+              <p className="text-[10px] text-white/40 leading-relaxed">{meta.strategy.reasoning}</p>
+              {meta.strategy.profit_potential && (
+                <p className="text-[10px] text-emerald-400/60 mt-1">{meta.strategy.profit_potential}</p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1018,72 +1266,111 @@ export default function OperatorPage() {
             </div>
           ) : (
             <div className="max-w-3xl mx-auto space-y-4">
-              {messages.map((msg) => (
-                <div key={msg.id} className={`flex gap-3 ${msg.role === "user" ? "justify-end" : ""}`}>
-                  {msg.role === "assistant" && (
-                    <div className={`w-8 h-8 rounded-lg bg-gradient-to-br ${modeCfg.gradient} flex items-center justify-center flex-shrink-0 mt-1`}>
-                      <Bot className="w-4 h-4 text-white" />
-                    </div>
-                  )}
-                  <div className={`max-w-[85%] ${msg.role === "user" ? "order-first" : ""}`}>
-                    {msg.role === "user" ? (
-                      <div className="rounded-2xl rounded-tr-md bg-blue-600/20 border border-blue-500/20 px-4 py-3">
-                        <p className="text-sm text-white/90">{msg.content}</p>
+              {(() => {
+                // Group consecutive pipeline_progress messages together
+                const rendered: React.ReactNode[] = [];
+                let pipelineBatch: Message[] = [];
+
+                function flushPipeline() {
+                  if (pipelineBatch.length > 0) {
+                    rendered.push(
+                      <div key={`pipeline-${pipelineBatch[0].id}`} className="flex gap-3">
+                        <div className={`w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 to-fuchsia-600 flex items-center justify-center flex-shrink-0 mt-1`}>
+                          <Sparkles className="w-4 h-4 text-white" />
+                        </div>
+                        <div className="max-w-[85%]">
+                          <PipelineProgressCard messages={pipelineBatch} />
+                        </div>
                       </div>
-                    ) : (
-                      <div className="rounded-2xl rounded-tl-md bg-white/[0.03] border border-white/5 px-4 py-3">
-                        <SystemsUsedPills systems={msg.structured_payload?._systems_used} />
-                        {msg.content && (
-                          <p className="text-sm text-white/80 leading-relaxed whitespace-pre-wrap">{msg.content}</p>
-                        )}
-                        {msg.structured_payload?.message && msg.structured_payload.message !== msg.content && (
-                          <p className="text-sm text-white/60 mt-2 leading-relaxed">{msg.structured_payload.message}</p>
-                        )}
-                        <FindingsCard findings={msg.structured_payload?.findings || []} />
-                        <ActionsCard
-                          actions={msg.proposed_actions || msg.structured_payload?.recommended_actions || []}
-                          onApprove={handleApprove}
-                          onReject={handleReject}
-                          approving={approving}
-                        />
-                        <ExecutionResultCard payload={msg.structured_payload} />
-                        {msg.structured_payload?.questions?.length ? (
-                          <div className="mt-3 space-y-1">
-                            {msg.structured_payload.questions.map((q, i) => (
-                              <button
-                                key={i}
-                                onClick={() => handleSend(q)}
-                                className="block text-xs text-blue-400/80 hover:text-blue-400 transition-colors cursor-pointer"
-                              >
-                                &rarr; {q}
-                              </button>
-                            ))}
+                    );
+                    pipelineBatch = [];
+                  }
+                }
+
+                for (const msg of messages) {
+                  const sp = msg.structured_payload as any;
+                  if (sp?.type === "pipeline_progress") {
+                    pipelineBatch.push(msg);
+                    continue;
+                  }
+                  flushPipeline();
+
+                  rendered.push(
+                    <div key={msg.id} className={`flex gap-3 ${msg.role === "user" ? "justify-end" : ""}`}>
+                      {msg.role === "assistant" && (
+                        <div className={`w-8 h-8 rounded-lg bg-gradient-to-br ${modeCfg.gradient} flex items-center justify-center flex-shrink-0 mt-1`}>
+                          <Bot className="w-4 h-4 text-white" />
+                        </div>
+                      )}
+                      <div className={`max-w-[85%] ${msg.role === "user" ? "order-first" : ""}`}>
+                        {msg.role === "user" ? (
+                          <div className="rounded-2xl rounded-tr-md bg-blue-600/20 border border-blue-500/20 px-4 py-3">
+                            <p className="text-sm text-white/90">{msg.content}</p>
                           </div>
-                        ) : null}
-                        {/* System errors */}
-                        {msg.structured_payload?._system_errors && Object.keys(msg.structured_payload._system_errors).length > 0 && (
-                          <div className="mt-3 text-[10px] text-amber-400/60 bg-amber-500/5 rounded-lg p-2">
-                            {Object.entries(msg.structured_payload._system_errors).map(([sys, err]) => (
-                              <div key={sys} className="flex items-center gap-1">
-                                <AlertTriangle className="w-3 h-3" />
-                                <span>{SYSTEM_LABELS[sys]?.label || sys}: {err}</span>
+                        ) : (
+                          <div className="rounded-2xl rounded-tl-md bg-white/[0.03] border border-white/5 px-4 py-3">
+                            <SystemsUsedPills systems={msg.structured_payload?._systems_used} />
+                            {msg.content && (
+                              <p className="text-sm text-white/80 leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+                            )}
+                            {msg.structured_payload?.message && msg.structured_payload.message !== msg.content && (
+                              <p className="text-sm text-white/60 mt-2 leading-relaxed">{msg.structured_payload.message}</p>
+                            )}
+                            <FindingsCard findings={msg.structured_payload?.findings || []} />
+                            <ActionsCard
+                              actions={msg.proposed_actions || msg.structured_payload?.recommended_actions || []}
+                              onApprove={handleApprove}
+                              onReject={handleReject}
+                              approving={approving}
+                            />
+                            {/* Campaign detail view for deploy_full_campaign actions */}
+                            {(msg.proposed_actions || msg.structured_payload?.recommended_actions || [])
+                              .filter((a: any) => a.action_type === "deploy_full_campaign")
+                              .map((a: any) => (
+                                <CampaignDetailCard key={`detail-${a.id}`} payload={a} />
+                              ))}
+                            <ExecutionResultCard payload={msg.structured_payload} />
+                            {msg.structured_payload?.questions?.length ? (
+                              <div className="mt-3 space-y-1">
+                                {msg.structured_payload.questions.map((q, i) => (
+                                  <button
+                                    key={i}
+                                    onClick={() => handleSend(q)}
+                                    className="block text-xs text-blue-400/80 hover:text-blue-400 transition-colors cursor-pointer"
+                                  >
+                                    &rarr; {q}
+                                  </button>
+                                ))}
                               </div>
-                            ))}
+                            ) : null}
+                            {/* System errors */}
+                            {msg.structured_payload?._system_errors && Object.keys(msg.structured_payload._system_errors).length > 0 && (
+                              <div className="mt-3 text-[10px] text-amber-400/60 bg-amber-500/5 rounded-lg p-2">
+                                {Object.entries(msg.structured_payload._system_errors).map(([sys, err]) => (
+                                  <div key={sys} className="flex items-center gap-1">
+                                    <AlertTriangle className="w-3 h-3" />
+                                    <span>{SYSTEM_LABELS[sys]?.label || sys}: {err}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         )}
+                        <span className="text-[10px] text-white/20 mt-1 block px-1">
+                          {new Date(msg.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                        </span>
                       </div>
-                    )}
-                    <span className="text-[10px] text-white/20 mt-1 block px-1">
-                      {new Date(msg.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                    </span>
-                  </div>
-                  {msg.role === "user" && (
-                    <div className="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center flex-shrink-0 mt-1">
-                      <User className="w-4 h-4 text-white/60" />
+                      {msg.role === "user" && (
+                        <div className="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center flex-shrink-0 mt-1">
+                          <User className="w-4 h-4 text-white/60" />
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              ))}
+                  );
+                }
+                flushPipeline();
+                return rendered;
+              })()}
 
               {sending && (
                 <div className="flex gap-3">

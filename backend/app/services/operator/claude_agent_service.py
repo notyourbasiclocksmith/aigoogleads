@@ -82,7 +82,8 @@ ACTION PAYLOAD FORMATS:
 - create_image_asset: {"image_url": "https://...", "asset_name": "Hero Image"}
 - link_image_to_campaign: {"campaign_id": "123", "asset_resource": "customers/123/assets/456"}
 - create_promotion: {"campaign_id": "123", "promotion_target": "Key Service", "percent_off": 15, "final_url": "https://..."}
-- deploy_full_campaign: {"campaign": {"name": "...", "budget_micros": 30000000, "bidding_strategy": "MAXIMIZE_CONVERSIONS"}, "ad_groups": [{"name": "...", "keywords": [{"text": "...", "match_type": "PHRASE"}], "ads": [{"headlines": [...], "descriptions": [...], "final_url": "..."}], "negative_keywords": [...]}], "sitelinks": [...], "callouts": [...], "structured_snippets": {"header": "...", "values": [...]}}
+- deploy_full_campaign: {"campaign": {"name": "descriptive campaign name"}, "services": ["Service 1", "Service 2"], "locations": ["City 1"], "intent": "brief description of what the user wants"}
+  NOTE: For deploy_full_campaign, only provide the campaign name, target services, locations, and user intent. A specialized multi-agent pipeline will handle keyword research, ad copy, targeting, extensions, and QA automatically. Do NOT try to generate full ad groups, keywords, headlines, or descriptions — the pipeline produces expert-quality output for all of those.
 - create_campaign: {"name": "...", "budget_micros": 30000000}
 - create_ad_group: {"campaign_resource": "...", "name": "...", "cpc_bid_micros": 5000000}
 - create_responsive_search_ad: {"ad_group_resource": "...", "headlines": [...], "descriptions": [...], "final_url": "..."}

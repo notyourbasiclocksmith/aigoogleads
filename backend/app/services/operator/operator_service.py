@@ -16,6 +16,7 @@ from app.integrations.google_ads.client import GoogleAdsClient
 from app.services.operator.context_service import GoogleAdsContextService
 from app.services.operator.mutation_service import GoogleAdsMutationService
 from app.services.operator.claude_agent_service import ClaudeAdsAgentService
+from app.services.operator.campaign_agent_pipeline import CampaignAgentPipeline
 
 logger = structlog.get_logger()
 
@@ -62,6 +63,50 @@ class GoogleAdsOperatorService:
             }
         except Exception:
             return {}
+
+    # ── CAMPAIGN PIPELINE DETECTION ─────────────────────────────
+
+    def _should_use_pipeline(self, claude_response: Dict[str, Any]) -> bool:
+        """Check if Claude recommended a deploy_full_campaign that should trigger the multi-agent pipeline."""
+        for action in claude_response.get("recommended_actions", []):
+            if action.get("action_type") == "deploy_full_campaign":
+                return True
+        return False
+
+    def _extract_campaign_intent(self, claude_response: Dict[str, Any], user_message: str) -> Dict[str, Any]:
+        """Extract the campaign creation intent from Claude's thin response."""
+        for action in claude_response.get("recommended_actions", []):
+            if action.get("action_type") == "deploy_full_campaign":
+                return {
+                    "payload": action.get("action_payload", {}),
+                    "label": action.get("label", ""),
+                    "reasoning": action.get("reasoning", ""),
+                    "user_message": user_message,
+                }
+        return {"user_message": user_message}
+
+    async def _run_campaign_pipeline(
+        self,
+        conversation_id: str,
+        tenant_id: str,
+        customer_id: str,
+        user_message: str,
+        account_context: Dict[str, Any],
+        claude_intent: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Run the multi-agent pipeline and return the enriched deploy_full_campaign payload."""
+        pipeline = CampaignAgentPipeline(self.db, tenant_id, customer_id)
+        try:
+            spec = await pipeline.run(
+                user_prompt=user_message,
+                account_context=account_context,
+                conversation_id=conversation_id,
+            )
+            return spec
+        except Exception as e:
+            logger.error("Campaign pipeline failed", error=str(e))
+            # Fall back to Claude's original thin spec
+            return claude_intent.get("payload", {})
 
     # ── CONVERSATION MANAGEMENT ──────────────────────────────────
 
@@ -239,6 +284,33 @@ class GoogleAdsOperatorService:
             account_context=account_context,
             conversation_history=conversation_history[:-1],  # Exclude the message we just added
         )
+
+        # ── PIPELINE INTERCEPT: If Claude recommends deploy_full_campaign,
+        # run the multi-agent pipeline to produce an expert-quality spec ──
+        if self._should_use_pipeline(claude_response):
+            logger.info("Pipeline intercept triggered", conversation_id=conversation_id)
+            intent = self._extract_campaign_intent(claude_response, message)
+            pipeline_spec = await self._run_campaign_pipeline(
+                conversation_id=conversation_id,
+                tenant_id=tenant_id,
+                customer_id=customer_id,
+                user_message=message,
+                account_context=account_context,
+                claude_intent=intent,
+            )
+            # Replace the thin Claude payload with the pipeline-generated spec
+            for action in claude_response.get("recommended_actions", []):
+                if action.get("action_type") == "deploy_full_campaign":
+                    action["action_payload"] = pipeline_spec
+                    action["label"] = f"Deploy Campaign: {pipeline_spec.get('campaign', {}).get('name', 'AI Campaign')}"
+                    # Enrich reasoning with pipeline metadata
+                    meta = pipeline_spec.get("_pipeline_metadata", {})
+                    qa_score = meta.get("qa_score")
+                    if qa_score:
+                        action["reasoning"] = (
+                            f"{action.get('reasoning', '')} "
+                            f"[Pipeline QA Score: {qa_score}/100]"
+                        ).strip()
 
         # Save assistant message
         assistant_msg = OperatorMessage(
