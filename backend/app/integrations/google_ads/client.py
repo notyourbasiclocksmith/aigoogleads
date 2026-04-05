@@ -1025,8 +1025,10 @@ class GoogleAdsClient:
             campaign.name = campaign_data["name"]
             campaign.campaign_budget = budget_resource
             campaign.status = client.enums.CampaignStatusEnum.PAUSED
-            # Required in Google Ads API v23+
-            campaign.contains_eu_political_advertising = False
+            # Required in Google Ads API v23+ (enum, not boolean: 3 = DOES_NOT_CONTAIN)
+            campaign.contains_eu_political_advertising = (
+                client.enums.EuPoliticalAdvertisingStatusEnum.DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING
+            )
 
             # Channel type
             channel = campaign_data.get("channel_type", "SEARCH").upper()
