@@ -1,13 +1,13 @@
-"""V2-004: Add Claude Operator chat tables
+"""V2-005: Add Claude Operator chat tables
 
-Revision ID: v2_004
-Revises: v2_003
+Revision ID: v2_005
+Revises: v2_004
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "v2_004"
-down_revision = "v2_003"
+revision = "v2_005"
+down_revision = "v2_004"
 branch_labels = None
 depends_on = None
 
