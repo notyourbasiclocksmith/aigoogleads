@@ -369,9 +369,12 @@ class SmartImageRequest(BaseModel):
     campaign_id: Optional[str] = None
     ad_type: str = "responsive_display"  # responsive_display, performance_max, search_companion
     prompt: Optional[str] = None
-    engine: str = "dalle"
+    engine: str = "flux"
     style: str = "photorealistic"
     auto_upload_to_google: bool = False
+    stability_model: str = "stable-image-ultra"
+    flux_model: str = "flux-pro"
+    google_model: str = "gemini-2.5-flash-image"
 
 
 @router.post("/image/generate-for-ad")
@@ -460,6 +463,9 @@ async def generate_image_for_ad(
             style=req.style,
             size=size,
             metadata=metadata,
+            stability_model=req.stability_model,
+            flux_model=req.flux_model,
+            google_model=req.google_model,
         )
         if result.get("success"):
             # Save to asset library

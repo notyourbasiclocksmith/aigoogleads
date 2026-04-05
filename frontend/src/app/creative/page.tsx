@@ -24,7 +24,7 @@ export default function CreativePage() {
 
   // ── Image Generator State ──
   const [imgPrompt, setImgPrompt] = useState("");
-  const [imgEngine, setImgEngine] = useState("dalle");
+  const [imgEngine, setImgEngine] = useState("flux");
   const [imgStyle, setImgStyle] = useState("photorealistic");
   const [imgSize, setImgSize] = useState("1024x1024");
   const [imgAdType, setImgAdType] = useState("responsive_display");
@@ -36,6 +36,9 @@ export default function CreativePage() {
   const [googleAssets, setGoogleAssets] = useState<any[]>([]);
   const [loadingAssets, setLoadingAssets] = useState(false);
   const [showAssets, setShowAssets] = useState(false);
+  const [fluxModel, setFluxModel] = useState("flux-pro");
+  const [stabilityModel, setStabilityModel] = useState("stable-image-ultra");
+  const [googleModel, setGoogleModel] = useState("gemini-2.5-flash-image");
 
   // ── Deploy State ──
   const [accounts, setAccounts] = useState<any[]>([]);
@@ -125,6 +128,9 @@ export default function CreativePage() {
         ad_type: imgAdType,
         campaign_id: imgCampaignId || undefined,
         auto_upload_to_google: imgAutoUpload,
+        stability_model: imgEngine === "stability" ? stabilityModel : undefined,
+        flux_model: imgEngine === "flux" ? fluxModel : undefined,
+        google_model: imgEngine === "google" ? googleModel : undefined,
       });
       setImgResults(data.images || []);
       if (data.prompt_used && !imgPrompt) {
@@ -412,15 +418,106 @@ export default function CreativePage() {
                 </div>
 
                 {/* Engine */}
-                <div className="space-y-1.5">
+                <div className="space-y-2">
                   <label className={labelClass}>AI Engine</label>
-                  <select value={imgEngine} onChange={(e) => setImgEngine(e.target.value)} className={selectClass}>
-                    <option value="dalle">DALL-E 3 — Best quality</option>
-                    <option value="stability">Stability AI — Photorealistic</option>
-                    <option value="flux">Flux.1 — Artistic control</option>
-                    <option value="google">Google Gemini — Clean visuals</option>
-                  </select>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      { id: "flux", label: "Flux.1", badge: "Recommended", color: "amber" },
+                      { id: "dalle", label: "DALL-E 3", color: "indigo" },
+                      { id: "stability", label: "Stability AI", color: "violet" },
+                      { id: "google", label: "Nano Banana", badge: "New", color: "blue" },
+                    ].map((eng) => (
+                      <button
+                        key={eng.id}
+                        onClick={() => setImgEngine(eng.id)}
+                        className={`relative px-3 py-2.5 rounded-xl text-[12px] font-medium border transition-all text-left ${
+                          imgEngine === eng.id
+                            ? "border-purple-400 bg-purple-50 text-purple-700 ring-2 ring-purple-500/20"
+                            : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+                        }`}
+                      >
+                        {eng.label}
+                        {eng.badge && (
+                          <span className={`ml-1.5 inline-flex px-1.5 py-0.5 rounded text-[9px] font-semibold ${
+                            eng.badge === "Recommended" ? "bg-amber-100 text-amber-700" : "bg-blue-100 text-blue-700"
+                          }`}>{eng.badge}</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
                 </div>
+
+                {/* Flux Sub-model */}
+                {imgEngine === "flux" && (
+                  <div className="space-y-1.5">
+                    <label className={labelClass}>Flux Model</label>
+                    <div className="flex gap-2">
+                      {[
+                        { id: "flux-pro", label: "Pro (Best)" },
+                        { id: "flux-dev", label: "Dev (Faster)" },
+                      ].map((m) => (
+                        <button
+                          key={m.id}
+                          onClick={() => setFluxModel(m.id)}
+                          className={`flex-1 px-3 py-2 rounded-xl text-[12px] font-medium border transition-all ${
+                            fluxModel === m.id
+                              ? "border-amber-400 bg-amber-50 text-amber-700"
+                              : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+                          }`}
+                        >{m.label}</button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Stability Sub-model */}
+                {imgEngine === "stability" && (
+                  <div className="space-y-1.5">
+                    <label className={labelClass}>Stability Model</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        { id: "stable-image-ultra", label: "Ultra" },
+                        { id: "sd3.5-large", label: "Large" },
+                        { id: "sd3.5-large-turbo", label: "Turbo" },
+                        { id: "sd3.5-medium", label: "Medium" },
+                      ].map((m) => (
+                        <button
+                          key={m.id}
+                          onClick={() => setStabilityModel(m.id)}
+                          className={`px-3 py-2 rounded-xl text-[12px] font-medium border transition-all ${
+                            stabilityModel === m.id
+                              ? "border-violet-400 bg-violet-50 text-violet-700"
+                              : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+                          }`}
+                        >{m.label}</button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Google Nano Banana Sub-model */}
+                {imgEngine === "google" && (
+                  <div className="space-y-1.5">
+                    <label className={labelClass}>Gemini Model</label>
+                    <div className="flex gap-2">
+                      {[
+                        { id: "gemini-2.5-flash-image", label: "Flash" },
+                        { id: "gemini-3.1-flash-image-preview", label: "Flash 2" },
+                        { id: "gemini-3-pro-image-preview", label: "Pro" },
+                      ].map((m) => (
+                        <button
+                          key={m.id}
+                          onClick={() => setGoogleModel(m.id)}
+                          className={`flex-1 px-3 py-2 rounded-xl text-[12px] font-medium border transition-all ${
+                            googleModel === m.id
+                              ? "border-blue-400 bg-blue-50 text-blue-700"
+                              : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+                          }`}
+                        >{m.label}</button>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {/* Style */}
                 <div className="space-y-1.5">

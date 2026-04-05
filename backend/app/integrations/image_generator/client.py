@@ -38,19 +38,21 @@ class ImageGeneratorClient:
         metadata: Optional[Dict[str, Any]] = None,
         stability_model: str = "stable-image-ultra",
         flux_model: str = "flux-pro",
+        google_model: str = "gemini-2.5-flash-image",
     ) -> Dict[str, Any]:
         """
-        Generate a single image via the SEOpix Flask API.
+        Generate a single image via the SEOpix Next.js API.
 
         Args:
             prompt: Image description prompt
-            engine: 'dalle', 'stability', or 'flux'
+            engine: 'dalle', 'stability', 'flux', or 'google'
             style: 'photorealistic', 'cartoon', 'artistic', or 'none'
             size: '1024x1024', '1792x1024', or '1024x1792'
             metadata: SEO metadata dict with businessName, businessType, city, state,
                       description, keywords, latitude, longitude
             stability_model: 'stable-image-ultra', 'sd3.5-large', 'sd3.5-large-turbo', 'sd3.5-medium'
             flux_model: 'flux-pro' or 'flux-dev'
+            google_model: 'gemini-2.5-flash-image', 'gemini-3.1-flash-image-preview', 'gemini-3-pro-image-preview'
 
         Returns:
             dict with success, filename, imageUrl
@@ -66,6 +68,7 @@ class ImageGeneratorClient:
             "metadata": metadata or {},
             "stabilityModel": stability_model,
             "fluxModel": flux_model,
+            "googleModel": google_model,
         }
 
         try:

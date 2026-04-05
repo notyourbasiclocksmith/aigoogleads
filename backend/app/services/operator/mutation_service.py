@@ -410,6 +410,9 @@ class GoogleAdsMutationService:
 
         result = await self.img_client.generate_single(
             prompt=prompt, engine=engine, style=style, size=size, metadata=metadata,
+            stability_model=payload.get("stability_model", "stable-image-ultra"),
+            flux_model=payload.get("flux_model", "flux-pro"),
+            google_model=payload.get("google_model", "gemini-2.5-flash-image"),
         )
 
         if not result.get("success"):
