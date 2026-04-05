@@ -519,7 +519,13 @@ async def trigger_sync(
 
     if req and req.login_customer_id:
         account.login_customer_id = req.login_customer_id.replace("-", "").strip()
-        await db.commit()
+
+    # Reset sync status so polling doesn't see stale "failed" from previous run
+    account.sync_status = "syncing"
+    account.sync_message = "Starting sync..."
+    account.sync_progress = 0
+    account.sync_error = None
+    await db.commit()
 
     from app.jobs.tasks import sync_ads_account_task
     sync_ads_account_task.delay(user.tenant_id, account.id)
