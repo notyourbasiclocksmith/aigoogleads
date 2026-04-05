@@ -59,21 +59,32 @@ async def gbp_callback(
             sa_select(GBPConnection).where(GBPConnection.tenant_id == tenant_id)
         )
         conn = conn_result.scalar_one_or_none()
-        if conn and conn.account_id and conn.location_id:
+        if conn:
             svc = GBPService(db)
-            location_data = await svc.fetch_location_detail(tenant_id, conn.location_id)
-            if location_data:
-                loc = await svc.sync_location_to_db(tenant_id, location_data, conn.account_id)
-                full_name = f"{conn.account_id}/{conn.location_id}"
-                reviews_data = await svc.fetch_reviews(tenant_id, full_name)
-                await svc.sync_reviews_to_db(tenant_id, loc.id, reviews_data)
-                loc.google_rating = reviews_data.get("averageRating")
-                loc.review_count = reviews_data.get("totalReviewCount", 0)
-                await svc.populate_business_profile(tenant_id, location_data, reviews_data)
-                conn.last_sync_at = datetime.now()
-                await db.commit()
-                import structlog
-                structlog.get_logger().info("GBP auto-sync after reconnect", tenant_id=tenant_id)
+            # Auto-discover account + location if not yet selected
+            if not conn.account_id or not conn.location_id:
+                accounts = await svc.list_accounts(tenant_id)
+                if accounts:
+                    account_name = accounts[0].get("name", "")
+                    locations = await svc.list_locations(tenant_id, account_name)
+                    if locations:
+                        conn.account_id = account_name
+                        conn.location_id = locations[0].get("name", "")
+            if conn.account_id and conn.location_id:
+                location_data = await svc.fetch_location_detail(tenant_id, conn.location_id)
+                if location_data:
+                    loc = await svc.sync_location_to_db(tenant_id, location_data, conn.account_id)
+                    full_name = f"{conn.account_id}/{conn.location_id}"
+                    reviews_data = await svc.fetch_reviews(tenant_id, full_name)
+                    await svc.sync_reviews_to_db(tenant_id, loc.id, reviews_data)
+                    loc.google_rating = reviews_data.get("averageRating")
+                    loc.review_count = reviews_data.get("totalReviewCount", 0)
+                    await svc.populate_business_profile(tenant_id, location_data, reviews_data)
+                    conn.location_name = loc.business_name
+                    conn.last_sync_at = datetime.now()
+                    await db.commit()
+                    import structlog
+                    structlog.get_logger().info("GBP auto-sync after reconnect", tenant_id=tenant_id)
     except Exception as e:
         import structlog
         structlog.get_logger().warning("GBP auto-sync after reconnect failed", error=str(e), tenant_id=tenant_id)
@@ -434,10 +445,20 @@ async def full_gbp_sync(
     conn = conn_result.scalar_one_or_none()
     if not conn or not conn.is_active:
         raise HTTPException(status_code=400, detail="GBP not connected")
-    if not conn.account_id or not conn.location_id:
-        raise HTTPException(status_code=400, detail="No GBP location selected. Please select a location first.")
 
     svc = GBPService(db)
+
+    # Auto-discover account + location if not yet selected
+    if not conn.account_id or not conn.location_id:
+        accounts = await svc.list_accounts(user.tenant_id)
+        if not accounts:
+            raise HTTPException(status_code=400, detail="No GBP accounts found for this Google account")
+        account_name = accounts[0].get("name", "")
+        locations = await svc.list_locations(user.tenant_id, account_name)
+        if not locations:
+            raise HTTPException(status_code=400, detail="No locations found in your GBP account")
+        conn.account_id = account_name
+        conn.location_id = locations[0].get("name", "")
 
     # Fetch + sync location details
     location_data = await svc.fetch_location_detail(user.tenant_id, conn.location_id)
