@@ -46,6 +46,23 @@ class GoogleAdsOperatorService:
             refresh_token_encrypted=integration.refresh_token_encrypted,
         )
 
+    async def _get_business_context(self, tenant_id: str) -> Dict[str, Any]:
+        """Get business name/type for image generation metadata."""
+        from app.models.business_profile import BusinessProfile
+        from app.models.tenant import Tenant
+        try:
+            tenant = await self.db.get(Tenant, tenant_id)
+            bp_result = await self.db.execute(
+                select(BusinessProfile).where(BusinessProfile.tenant_id == tenant_id)
+            )
+            profile = bp_result.scalar_one_or_none()
+            return {
+                "business_name": tenant.name if tenant else "",
+                "business_type": profile.industry_classification if profile else "service",
+            }
+        except Exception:
+            return {}
+
     # ── CONVERSATION MANAGEMENT ──────────────────────────────────
 
     async def create_conversation(self, tenant_id: str, customer_id: str, user_id: str) -> Dict[str, Any]:
@@ -313,9 +330,10 @@ class GoogleAdsOperatorService:
         if not actions:
             return {"status": "no_actions", "message": "No pending actions found to approve"}
 
-        # Get ads client
+        # Get ads client + business context for image generation
         ads_client = await self._get_ads_client(tenant_id, customer_id)
-        mutation_svc = GoogleAdsMutationService(ads_client)
+        biz_ctx = await self._get_business_context(tenant_id)
+        mutation_svc = GoogleAdsMutationService(ads_client, business_context=biz_ctx)
 
         execution_results = []
         now = datetime.now(timezone.utc)

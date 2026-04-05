@@ -12,6 +12,7 @@ from typing import Dict, Any, List
 from datetime import datetime, timezone
 import structlog
 from app.integrations.google_ads.client import GoogleAdsClient
+from app.integrations.image_generator.client import ImageGeneratorClient
 
 logger = structlog.get_logger()
 
@@ -19,8 +20,10 @@ logger = structlog.get_logger()
 class GoogleAdsMutationService:
     """Safely executes Google Ads API write operations."""
 
-    def __init__(self, ads_client: GoogleAdsClient):
+    def __init__(self, ads_client: GoogleAdsClient, business_context: Dict[str, Any] = None):
         self.client = ads_client
+        self.business_context = business_context or {}
+        self.img_client = ImageGeneratorClient()
 
     async def execute_action(self, action_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Route an action to the correct handler. Returns execution result."""
@@ -52,6 +55,8 @@ class GoogleAdsMutationService:
             "create_responsive_search_ad": self._create_rsa,
             "create_call_ad": self._create_call_ad,
             "add_keywords": self._add_keywords,
+            "generate_ad_image": self._generate_ad_image,
+            "list_google_ads_assets": self._list_google_ads_assets,
         }
 
         handler = handlers.get(action_type)
@@ -382,3 +387,69 @@ class GoogleAdsMutationService:
     async def _deploy_full_campaign(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Deploy a complete campaign: campaign + ad groups + keywords + ads + extensions."""
         return await self.client.deploy_full_campaign(payload)
+
+    async def _generate_ad_image(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate an AI image for ads and optionally upload to Google Ads."""
+        if not self.img_client.is_configured:
+            return {"status": "failed", "error": "Image generator not configured"}
+
+        prompt = payload.get("prompt", "")
+        engine = payload.get("engine", "dalle")
+        style = payload.get("style", "photorealistic")
+        size = payload.get("size", "1024x1024")
+
+        # Build metadata from business context
+        biz_name = self.business_context.get("business_name", "")
+        biz_type = self.business_context.get("business_type", "service")
+        metadata = {
+            "businessName": biz_name,
+            "businessType": biz_type,
+            "description": f"Ad image for {biz_name}",
+            "keywords": f"{biz_type}, professional, Google Ads",
+        }
+
+        result = await self.img_client.generate_single(
+            prompt=prompt, engine=engine, style=style, size=size, metadata=metadata,
+        )
+
+        if not result.get("success"):
+            return {"status": "failed", "error": result.get("error", "Image generation failed")}
+
+        response = {
+            "status": "success",
+            "image_url": result.get("image_url"),
+            "filename": result.get("filename"),
+            "size": size,
+            "engine": engine,
+        }
+
+        # Auto-upload to Google Ads if requested
+        if payload.get("upload_to_google", False) and result.get("image_url"):
+            try:
+                asset_name = payload.get("asset_name", f"{biz_name} - {size}")
+                upload = await self.client.create_image_asset(result["image_url"], asset_name)
+                if upload.get("status") == "success":
+                    response["google_asset_resource"] = upload.get("asset_resource")
+
+                    # Link to campaign if specified
+                    campaign_id = payload.get("campaign_id")
+                    if campaign_id and upload.get("asset_resource"):
+                        link = await self.client.link_image_to_campaign(
+                            campaign_id, upload["asset_resource"]
+                        )
+                        response["linked_to_campaign"] = link.get("status") == "success"
+                else:
+                    response["google_upload_error"] = upload.get("error", "Upload failed")
+            except Exception as e:
+                response["google_upload_error"] = str(e)[:200]
+
+        return response
+
+    async def _list_google_ads_assets(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """List existing assets in the Google Ads account."""
+        asset_types = payload.get("asset_types")  # e.g. ["IMAGE", "SITELINK"]
+        try:
+            assets = await self.client.list_assets(asset_types)
+            return {"status": "success", "assets": assets, "total": len(assets)}
+        except Exception as e:
+            return {"status": "failed", "error": str(e)[:200]}

@@ -47,7 +47,7 @@ Always respond with valid JSON matching this schema:
   ],
   "recommended_actions": [
     {
-      "action_type": "pause_keyword|enable_keyword|update_keyword_bid|add_negative_keyword|update_campaign_budget|pause_campaign|enable_campaign|pause_ad|enable_ad|pause_ad_group|enable_ad_group|set_device_bid_modifier|add_location_targeting|set_ad_schedule|apply_recommendation|create_sitelinks|create_callouts|create_structured_snippets|create_image_asset|link_image_to_campaign|create_promotion|deploy_full_campaign|create_campaign|create_ad_group|create_responsive_search_ad|create_call_ad|add_keywords",
+      "action_type": "pause_keyword|enable_keyword|update_keyword_bid|add_negative_keyword|update_campaign_budget|pause_campaign|enable_campaign|pause_ad|enable_ad|pause_ad_group|enable_ad_group|set_device_bid_modifier|add_location_targeting|set_ad_schedule|apply_recommendation|create_sitelinks|create_callouts|create_structured_snippets|create_image_asset|link_image_to_campaign|create_promotion|deploy_full_campaign|create_campaign|create_ad_group|create_responsive_search_ad|create_call_ad|add_keywords|generate_ad_image|list_google_ads_assets",
       "label": "Human-readable action label",
       "reasoning": "Why this action should be taken",
       "risk_level": "low|medium|high",
@@ -88,6 +88,15 @@ ACTION PAYLOAD FORMATS:
 - create_responsive_search_ad: {"ad_group_resource": "...", "headlines": [...], "descriptions": [...], "final_url": "..."}
 - create_call_ad: {"ad_group_resource": "...", "business_name": "...", "phone_number": "...", "headline1": "...", "headline2": "...", "description1": "...", "description2": "...", "final_url": "..."}
 - add_keywords: {"ad_group_resource": "...", "keywords": [{"text": "...", "match_type": "PHRASE"}]}
+- generate_ad_image: {"prompt": "descriptive image prompt", "engine": "dalle|stability|flux", "style": "photorealistic|cartoon|artistic", "size": "1024x1024|1792x1024|1024x1792", "upload_to_google": true, "campaign_id": "123", "asset_name": "My Ad Image"}
+- list_google_ads_assets: {"asset_types": ["IMAGE", "SITELINK", "CALLOUT", "STRUCTURED_SNIPPET", "PROMOTION"]}
+
+IMAGE GENERATION NOTES:
+- Use generate_ad_image when the user asks to create images for ads. Write a detailed, professional prompt.
+- Common sizes: 1024x1024 (square, display ads), 1792x1024 (landscape, banners), 1024x1792 (portrait, stories)
+- Set upload_to_google=true and provide campaign_id to auto-attach the image to a campaign.
+- Use list_google_ads_assets first to check what images already exist before generating new ones.
+- Engines: dalle (best quality), stability (fastest), flux (most artistic control).
 
 IMPORTANT: Only use entity IDs that appear in the provided account data. Never fabricate IDs."""
 

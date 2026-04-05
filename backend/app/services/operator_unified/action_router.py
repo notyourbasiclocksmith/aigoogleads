@@ -89,7 +89,24 @@ class ActionRouter:
             customer_id=customer_id,
             refresh_token_encrypted=integration.refresh_token_encrypted,
         )
-        mutation_svc = GoogleAdsMutationService(ads_client)
+        # Get business context for image generation actions
+        biz_ctx = {}
+        if action_type in ("generate_ad_image", "list_google_ads_assets"):
+            from app.models.business_profile import BusinessProfile
+            from app.models.tenant import Tenant
+            try:
+                tenant = await self.db.get(Tenant, str(self.tenant_id))
+                bp_result = await self.db.execute(
+                    select(BusinessProfile).where(BusinessProfile.tenant_id == self.tenant_id)
+                )
+                profile = bp_result.scalar_one_or_none()
+                biz_ctx = {
+                    "business_name": tenant.name if tenant else "",
+                    "business_type": profile.industry_classification if profile else "service",
+                }
+            except Exception:
+                pass
+        mutation_svc = GoogleAdsMutationService(ads_client, business_context=biz_ctx)
         result = await mutation_svc.execute_action(action_type, payload)
 
         status = result.get("status", "failed")
