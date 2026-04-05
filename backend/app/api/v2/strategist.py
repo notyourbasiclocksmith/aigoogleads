@@ -386,6 +386,73 @@ async def generate_landing_page(
     tenant = await db.get(Tenant, str(user.tenant_id))
     biz_name = tenant.name if tenant else ""
 
+    # Auto-enrich: pull keywords and headlines from active Google Ads campaigns
+    auto_keywords = list(req.campaign_keywords) if req.campaign_keywords else []
+    auto_headlines = list(req.campaign_headlines) if req.campaign_headlines else []
+    trust_signals = []
+    description = profile.description if profile and hasattr(profile, 'description') else ""
+
+    if not auto_keywords or not auto_headlines:
+        try:
+            from app.models.integration_google_ads import IntegrationGoogleAds
+            ads_result = await db.execute(
+                select(IntegrationGoogleAds).where(
+                    IntegrationGoogleAds.tenant_id == user.tenant_id,
+                    IntegrationGoogleAds.is_active == True,
+                )
+            )
+            integration = ads_result.scalar_one_or_none()
+            if integration and integration.customer_id and integration.customer_id != "pending":
+                from app.integrations.google_ads.client import GoogleAdsClient
+                ads_client = GoogleAdsClient(
+                    customer_id=integration.customer_id,
+                    refresh_token_encrypted=integration.refresh_token_encrypted,
+                    login_customer_id=integration.login_customer_id,
+                )
+                # Pull top converting keywords
+                if not auto_keywords:
+                    try:
+                        kw_perf = await ads_client.get_keyword_performance("LAST_30_DAYS")
+                        # Get keywords sorted by conversions then cost
+                        sorted_kws = sorted(kw_perf, key=lambda k: (k.get("conversions", 0), k.get("cost", 0)), reverse=True)
+                        auto_keywords = [k["text"] for k in sorted_kws[:15] if k.get("text")]
+                    except Exception:
+                        pass
+                # Pull ad headlines for message-match
+                if not auto_headlines:
+                    try:
+                        ad_perf = await ads_client.get_ad_performance("LAST_30_DAYS")
+                        for ad in ad_perf[:5]:
+                            auto_headlines.extend(ad.get("headlines", []))
+                        auto_headlines = list(dict.fromkeys(auto_headlines))[:15]  # dedupe
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    # Pull trust signals from GBP if available
+    try:
+        from app.models.v2.gbp_connection import GBPConnection
+        gbp_result = await db.execute(
+            select(GBPConnection).where(GBPConnection.tenant_id == user.tenant_id)
+        )
+        gbp = gbp_result.scalar_one_or_none()
+        if gbp:
+            if gbp.avg_rating:
+                trust_signals.append(f"{gbp.avg_rating}★ Google Rating ({gbp.total_reviews or 0}+ reviews)")
+            if gbp.business_name:
+                trust_signals.append(f"Verified Google Business: {gbp.business_name}")
+    except Exception:
+        pass
+
+    # Add profile trust signals
+    if profile and hasattr(profile, 'trust_signals_json') and profile.trust_signals_json:
+        ts = profile.trust_signals_json
+        if isinstance(ts, list):
+            trust_signals.extend(ts[:6])
+        elif isinstance(ts, dict):
+            trust_signals.extend([f"{k}: {v}" for k, v in ts.items() if v][:6])
+
     gen = LandingPageGenerator(db, str(user.tenant_id))
     result = await gen.generate(
         service=req.service,
@@ -396,8 +463,10 @@ async def generate_landing_page(
         website=profile.website_url if profile else "",
         usps=[u if isinstance(u, str) else u.get("text", "") for u in (profile.usp_json or [])] if profile else [],
         offers=[o if isinstance(o, str) else o.get("text", "") for o in (profile.offers_json or [])] if profile else [],
-        campaign_keywords=req.campaign_keywords,
-        campaign_headlines=req.campaign_headlines,
+        campaign_keywords=auto_keywords,
+        campaign_headlines=auto_headlines,
+        trust_signals=trust_signals,
+        description=description,
     )
     return result
 

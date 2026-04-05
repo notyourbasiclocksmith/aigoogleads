@@ -388,9 +388,21 @@ Use the real business name, phone, and details throughout."""
 
     async def _agent_strategist(self, ctx: Dict) -> Dict:
         """Agent 1: Determine offer angle, tone, CTA strategy, page structure."""
-        system = """You are an elite landing page strategist who has optimized 10,000+ pages
-for local service businesses. You determine the best offer angle, messaging tone,
-CTA strategy, and page structure for maximum conversions. Respond ONLY with valid JSON."""
+        system = """You are an elite Google Ads landing page strategist who has optimized 10,000+ pages
+for local service businesses. You specialize in creating pages that score 10/10 on Google Ads
+Quality Score by maximizing:
+
+1. MESSAGE MATCH — Landing page headlines MUST echo the ad headlines and keywords that brought
+   the visitor. If they searched "car locksmith near me", the H1 must contain those words.
+2. RELEVANCE — Every section must reinforce the specific service searched for, not generic content.
+3. ABOVE THE FOLD — Phone number, CTA button, headline, trust signals visible without scrolling.
+4. MOBILE FIRST — 70%+ of clicks are mobile. Design for thumb-friendly CTAs, tap-to-call.
+5. SPEED — Minimal content bloat. No unnecessary sections. Fast-loading structure.
+6. TRUST — Real reviews, real credentials, real phone number. Google penalizes fake trust signals.
+7. SINGLE GOAL — One conversion goal per page (call or form). No distractions, no navigation menus.
+
+You determine the best offer angle, messaging tone, CTA strategy, and page structure.
+Respond ONLY with valid JSON."""
 
         trust_block = "\n".join(f"  - {t}" for t in ctx.get('trust_signals', [])[:8]) or "  (none)"
         hours = ctx.get('constraints', {}).get('hours', 'N/A')
@@ -447,9 +459,30 @@ Return JSON:
 
     async def _agent_variant_generator(self, ctx: Dict, strategy: Dict) -> Optional[List[Dict]]:
         """Agent 2+3+4+5: Generate 3 complete landing page variants with copy, trust, and CRO."""
-        system = """You are a team of landing page experts: conversion copywriter, trust enhancer,
-CRO specialist, and mobile UX designer. You create complete, high-converting landing page
-content ready for production. Every element is optimized for conversions.
+        system = """You are a team of Google Ads landing page experts: conversion copywriter,
+trust enhancer, CRO specialist, and mobile UX designer.
+
+You create landing pages specifically for GOOGLE ADS paid traffic — not organic SEO pages.
+Every element is optimized for Quality Score and conversion rate.
+
+GOOGLE ADS LANDING PAGE RULES:
+1. HEADLINE = KEYWORD MATCH: The H1 must contain the exact keywords from the campaign.
+   If keywords are ["car locksmith near me", "auto key replacement"], the headline must
+   use those exact phrases. This is THE #1 factor for Quality Score.
+2. NO NAVIGATION MENU: Google Ads landing pages should NOT have site navigation.
+   The only links should be the CTA (call/form) and legal/privacy footer links.
+3. PHONE NUMBER EVERYWHERE: Click-to-call button in hero, sticky header, and footer.
+   Format: clickable tel: link. Must be the REAL business phone, never a placeholder.
+4. SINGLE CONVERSION GOAL: Either phone call OR form submit. Not both competing.
+   For emergency/local services, phone call is almost always better.
+5. ABOVE THE FOLD MUST CONTAIN: headline with keyword, phone CTA, 1 trust signal, location.
+6. SOCIAL PROOF WITH SPECIFICS: "4.9★ from 127 reviews" not "Great reviews".
+   Use REAL trust signals provided — never fabricate credentials or ratings.
+7. MOBILE-FIRST: Short paragraphs (2-3 sentences max), large tap targets, no horizontal scroll.
+8. URGENCY WITHOUT BEING SPAMMY: "Available now" not "HURRY!!!". Professional urgency.
+9. SERVICE AREA MENTION: Include the specific city/area in H1, subheadline, and throughout.
+10. SCHEMA MARKUP HINTS: Include structured data suggestions for LocalBusiness.
+
 Respond ONLY with valid JSON."""
 
         trust_block = "\n".join(f"  - {t}" for t in ctx.get('trust_signals', [])[:8]) or "  (none)"
@@ -544,15 +577,23 @@ Return JSON:
   ]
 }}
 
-CRITICAL RULES:
+CRITICAL GOOGLE ADS RULES:
+- HEADLINE MUST MATCH KEYWORDS: The hero headline must contain the exact keywords from
+  CAMPAIGN KEYWORDS above. If keyword is "car locksmith near me", headline must say
+  "Car Locksmith Near Me" — this directly impacts Quality Score.
 - Include "{ctx['business_name']}" in hero headlines and why_us headings
+- Include "{ctx['location']}" in the hero headline or subheadline
 - Use REAL trust signals from above in trust_bar items — NOT generic "Licensed & Insured" unless that IS the real signal
-- Phone number {ctx['phone']} must appear 3+ times per page
-- Every headline must include the service name and location
-- CTA must be visible without scrolling
+- Phone number {ctx['phone']} must appear as click-to-call CTA in hero, sticky bar, and footer (3+ times)
+- NO navigation menu — this is a landing page, not a website. Only CTA buttons and footer links.
+- CTA must be visible WITHOUT scrolling (above the fold)
 - Reviews must feel authentic (varied names, specific details, mention the service)
 - FAQ answers must be helpful and include keywords naturally
-- why_us reasons should reference actual years of experience, rating, credentials from trust signals"""
+- why_us reasons should reference actual years of experience, rating, credentials from trust signals
+- AD HEADLINE MATCH: If campaign headlines are provided above, echo their language in the page.
+  Visitor sees ad headline → clicks → sees matching headline on page = high relevance = high Quality Score
+- KEEP IT CONCISE: Google Ads visitors are high-intent. Don't bury the CTA under walls of text.
+  Each section should be scannable in 3 seconds."""
 
         result = await self._call_ai(system, prompt, temperature=0.7)
         if result and "variants" in result:
