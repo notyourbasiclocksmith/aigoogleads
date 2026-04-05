@@ -41,7 +41,9 @@ class CampaignAgentPipeline:
         self.tenant_id = tenant_id
         self.customer_id = customer_id
         self.client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-        self.model = settings.ANTHROPIC_MODEL
+        # Pipeline agents use Opus for maximum quality — keyword strategy,
+        # ad copy, and QA are where model intelligence directly impacts ROI
+        self.model = "claude-opus-4-6"
         self.conversation_id: Optional[str] = None
 
     # ── ORCHESTRATOR ─────────────────────────────────────────────
