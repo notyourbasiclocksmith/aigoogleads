@@ -25,6 +25,7 @@ class OperatorConversation(Base):
     customer_id = Column(String(20), nullable=False)
     created_by = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     title = Column(String(200), nullable=True)
+    mode = Column(String(30), nullable=True, default="auto")  # auto | google_ads | meta_ads | gbp | image
     created_at = Column(DateTime(timezone=True), default=_now, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now, nullable=False)
 

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func, case
 
 from app.models.operator import (
     OperatorConversation, OperatorMessage, ProposedAction, ActionExecutionLog,
@@ -40,6 +40,7 @@ class UnifiedConversationService:
             customer_id=f"unified_{tenant_id}",
             created_by=user_id,
             title=title or "New conversation",
+            mode=mode,
         )
         self.db.add(conv)
         await self.db.flush()
@@ -51,23 +52,66 @@ class UnifiedConversationService:
         }
 
     async def list_conversations(self, tenant_id: str) -> List[Dict[str, Any]]:
-        result = await self.db.execute(
-            select(OperatorConversation)
+        # Get conversations with action stats in a single query
+        stmt = (
+            select(
+                OperatorConversation,
+                func.count(ProposedAction.id).label("total_actions"),
+                func.sum(case((ProposedAction.status == "executed", 1), else_=0)).label("executed_actions"),
+                func.sum(case((ProposedAction.status == "failed", 1), else_=0)).label("failed_actions"),
+            )
+            .outerjoin(ProposedAction, ProposedAction.conversation_id == OperatorConversation.id)
             .where(OperatorConversation.tenant_id == tenant_id)
+            .group_by(OperatorConversation.id)
             .order_by(OperatorConversation.updated_at.desc())
             .limit(50)
         )
-        convos = result.scalars().all()
+        result = await self.db.execute(stmt)
+        rows = result.all()
         return [
             {
                 "conversation_id": c.id,
                 "title": c.title,
-                "mode": "auto",
+                "mode": c.mode or "auto",
                 "created_at": c.created_at.isoformat(),
                 "updated_at": c.updated_at.isoformat(),
+                "actions_executed": int(executed or 0),
+                "actions_failed": int(failed or 0),
+                "actions_total": int(total or 0),
             }
-            for c in convos
+            for c, total, executed, failed in rows
         ]
+
+    async def rename_conversation(self, conversation_id: str, tenant_id: str, title: str) -> Dict[str, Any]:
+        result = await self.db.execute(
+            select(OperatorConversation).where(
+                and_(
+                    OperatorConversation.id == conversation_id,
+                    OperatorConversation.tenant_id == tenant_id,
+                )
+            )
+        )
+        conv = result.scalar_one_or_none()
+        if not conv:
+            raise ValueError("Conversation not found")
+        conv.title = title
+        await self.db.flush()
+        return {"conversation_id": conv.id, "title": conv.title}
+
+    async def delete_conversation(self, conversation_id: str, tenant_id: str) -> None:
+        result = await self.db.execute(
+            select(OperatorConversation).where(
+                and_(
+                    OperatorConversation.id == conversation_id,
+                    OperatorConversation.tenant_id == tenant_id,
+                )
+            )
+        )
+        conv = result.scalar_one_or_none()
+        if not conv:
+            raise ValueError("Conversation not found")
+        await self.db.delete(conv)
+        await self.db.flush()
 
     async def get_conversation(self, conversation_id: str, tenant_id: str) -> Dict[str, Any]:
         result = await self.db.execute(
@@ -112,7 +156,7 @@ class UnifiedConversationService:
         return {
             "conversation_id": conv.id,
             "title": conv.title,
-            "mode": "auto",
+            "mode": conv.mode or "auto",
             "messages": [
                 {
                     "id": m.id,

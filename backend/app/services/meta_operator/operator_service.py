@@ -50,6 +50,7 @@ class MetaAdsOperatorService:
             customer_id=f"meta_{tenant_id}",
             created_by=user_id,
             title="New Meta Ads conversation",
+            mode="meta_ads",
         )
         self.db.add(conv)
         await self.db.flush()

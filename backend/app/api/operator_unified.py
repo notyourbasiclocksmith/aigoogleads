@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import CurrentUser, require_tenant
+from pydantic import BaseModel, Field
+from typing import Optional
 from app.schemas.operator_unified import (
     UnifiedChatRequest,
     UnifiedNewConversationRequest,
@@ -142,5 +144,42 @@ async def reject_actions(
             action_ids=req.action_ids,
         )
         return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+# ── Session Management ──────────────────────────────────────────
+
+class RenameConversationRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+
+
+@router.patch("/chat/{conversation_id}")
+async def rename_conversation(
+    conversation_id: str,
+    req: RenameConversationRequest,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Rename a conversation."""
+    svc = UnifiedConversationService(db)
+    try:
+        result = await svc.rename_conversation(conversation_id, user.tenant_id, req.title)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.delete("/chat/{conversation_id}")
+async def delete_conversation(
+    conversation_id: str,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a conversation and all its messages/actions."""
+    svc = UnifiedConversationService(db)
+    try:
+        await svc.delete_conversation(conversation_id, user.tenant_id)
+        return {"ok": True}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

@@ -73,6 +73,7 @@ class GoogleAdsOperatorService:
             customer_id=customer_id,
             created_by=user_id,
             title="New conversation",
+            mode="google_ads",
         )
         self.db.add(conv)
         await self.db.flush()

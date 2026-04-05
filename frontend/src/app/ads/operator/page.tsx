@@ -11,7 +11,7 @@ import {
   Loader2, Zap, Search, TrendingDown, PlusCircle, Ban,
   DollarSign, BarChart3, Wrench, ChevronDown, ChevronUp,
   Sparkles, Shield, Clock, Globe, Image, Star, MessageSquare,
-  StopCircle,
+  StopCircle, PanelLeftOpen, PanelLeftClose, Pencil, Trash2, Plus, Check, X,
 } from "lucide-react";
 
 // ── Types ───────────────────────────────────────────────────
@@ -62,6 +62,17 @@ interface Message {
   };
   proposed_actions?: ProposedAction[];
   created_at: string;
+}
+
+interface ConversationSession {
+  conversation_id: string;
+  title: string;
+  mode: OperatorMode;
+  created_at: string;
+  updated_at: string;
+  actions_executed: number;
+  actions_failed: number;
+  actions_total: number;
 }
 
 // ── Channel Config ──────────────────────────────────────────
@@ -399,6 +410,13 @@ export default function OperatorPage() {
   const [liveLog, setLiveLog] = useState<string[]>([]);
   const logTimerRef = useRef<NodeJS.Timeout | null>(null);
 
+  // ── Session History State ──
+  const [sessions, setSessions] = useState<ConversationSession[]>([]);
+  const [showSessions, setShowSessions] = useState(false);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState("");
+
   const [customerId, setCustomerId] = useState("");
 
   useEffect(() => {
@@ -413,6 +431,71 @@ export default function OperatorPage() {
       }
     }).catch(() => {});
   }, []);
+
+  // ── Session History Functions ──
+  async function loadSessions() {
+    setLoadingSessions(true);
+    try {
+      const data = await api.get("/api/operator/unified/chat");
+      setSessions(Array.isArray(data) ? data : []);
+    } catch { /* ignore */ }
+    setLoadingSessions(false);
+  }
+
+  function toggleSessions() {
+    const next = !showSessions;
+    setShowSessions(next);
+    if (next) loadSessions();
+  }
+
+  async function loadSession(session: ConversationSession) {
+    try {
+      const data = await api.get(`/api/operator/unified/chat/${session.conversation_id}`);
+      setConversationId(session.conversation_id);
+      setMode(session.mode || "auto");
+      // Rebuild messages from server data
+      const msgs: Message[] = (data.messages || []).map((m: any) => ({
+        id: m.id,
+        role: m.role,
+        content: m.content || m.structured_payload?.summary || "",
+        structured_payload: m.structured_payload,
+        proposed_actions: m.proposed_actions,
+        created_at: m.created_at,
+      }));
+      setMessages(msgs);
+      setError("");
+    } catch (err: any) {
+      setError(err.message || "Failed to load session");
+    }
+  }
+
+  async function renameSession(sessionId: string, title: string) {
+    try {
+      await api.patch(`/api/operator/unified/chat/${sessionId}`, { title });
+      setSessions(prev => prev.map(s =>
+        s.conversation_id === sessionId ? { ...s, title } : s
+      ));
+      setEditingSessionId(null);
+    } catch { /* ignore */ }
+  }
+
+  async function deleteSession(sessionId: string) {
+    try {
+      await api.delete(`/api/operator/unified/chat/${sessionId}`);
+      setSessions(prev => prev.filter(s => s.conversation_id !== sessionId));
+      if (conversationId === sessionId) {
+        setConversationId(null);
+        setMessages([]);
+      }
+    } catch { /* ignore */ }
+  }
+
+  function startNewSession() {
+    setConversationId(null);
+    setMessages([]);
+    setError("");
+    setInput("");
+  }
 
   // Unified API for auto mode and explicit channel modes
   const apiBase = mode === "auto" || mode === "gbp" || mode === "image"
@@ -561,6 +644,7 @@ export default function OperatorPage() {
 
       if (!conversationId && result.conversation_id) {
         setConversationId(result.conversation_id);
+        if (showSessions) loadSessions();
       }
 
       const assistantMsg: Message = {
@@ -666,13 +750,198 @@ export default function OperatorPage() {
   const isEmpty = messages.length === 0;
   const ModeIcon = modeCfg.icon;
 
+  // Group sessions by date
+  function groupSessionsByDate(list: ConversationSession[]) {
+    const groups: { label: string; items: ConversationSession[] }[] = [];
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+
+    const todayStr = today.toDateString();
+    const yesterdayStr = yesterday.toDateString();
+
+    const todayItems: ConversationSession[] = [];
+    const yesterdayItems: ConversationSession[] = [];
+    const olderItems: ConversationSession[] = [];
+
+    for (const s of list) {
+      const d = new Date(s.updated_at).toDateString();
+      if (d === todayStr) todayItems.push(s);
+      else if (d === yesterdayStr) yesterdayItems.push(s);
+      else olderItems.push(s);
+    }
+
+    if (todayItems.length) groups.push({ label: "Today", items: todayItems });
+    if (yesterdayItems.length) groups.push({ label: "Yesterday", items: yesterdayItems });
+    if (olderItems.length) groups.push({ label: "Older", items: olderItems });
+    return groups;
+  }
+
   return (
     <AppLayout>
-      <div className="flex flex-col h-[calc(100vh-4rem)]">
+      <div className="flex h-[calc(100vh-4rem)]">
+        {/* Session History Sidebar */}
+        {showSessions && (
+          <div className="w-72 flex-shrink-0 border-r border-white/5 bg-white/[0.01] flex flex-col h-full">
+            {/* Sidebar Header */}
+            <div className="flex items-center justify-between px-3 py-3 border-b border-white/5">
+              <span className="text-xs font-semibold text-white/60 uppercase tracking-wider">Sessions</span>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={startNewSession}
+                  className="p-1.5 rounded-lg hover:bg-white/10 text-white/40 hover:text-white/80 transition-colors"
+                  title="New session"
+                >
+                  <Plus className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => setShowSessions(false)}
+                  className="p-1.5 rounded-lg hover:bg-white/10 text-white/40 hover:text-white/80 transition-colors"
+                >
+                  <PanelLeftClose className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Session List */}
+            <div className="flex-1 overflow-y-auto">
+              {loadingSessions ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="w-4 h-4 animate-spin text-white/30" />
+                </div>
+              ) : sessions.length === 0 ? (
+                <div className="text-center py-8 text-xs text-white/20">
+                  No sessions yet
+                </div>
+              ) : (
+                groupSessionsByDate(sessions).map(group => (
+                  <div key={group.label}>
+                    <div className="px-3 pt-3 pb-1 text-[10px] font-semibold text-white/25 uppercase tracking-wider">
+                      {group.label}
+                    </div>
+                    {group.items.map(s => {
+                      const isActive = conversationId === s.conversation_id;
+                      const isEditing = editingSessionId === s.conversation_id;
+                      const modeBadge = MODE_CONFIG[s.mode] || MODE_CONFIG.auto;
+
+                      return (
+                        <div
+                          key={s.conversation_id}
+                          className={`group relative mx-2 mb-0.5 rounded-lg transition-all ${
+                            isActive
+                              ? "bg-white/10 border border-white/10"
+                              : "hover:bg-white/[0.04] border border-transparent"
+                          }`}
+                        >
+                          {isEditing ? (
+                            <div className="flex items-center gap-1 p-2">
+                              <input
+                                autoFocus
+                                value={editingTitle}
+                                onChange={e => setEditingTitle(e.target.value)}
+                                onKeyDown={e => {
+                                  if (e.key === "Enter") renameSession(s.conversation_id, editingTitle);
+                                  if (e.key === "Escape") setEditingSessionId(null);
+                                }}
+                                className="flex-1 bg-white/10 rounded px-2 py-1 text-xs text-white outline-none border border-white/20"
+                              />
+                              <button
+                                onClick={() => renameSession(s.conversation_id, editingTitle)}
+                                className="p-1 text-emerald-400 hover:text-emerald-300"
+                              >
+                                <Check className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => setEditingSessionId(null)}
+                                className="p-1 text-white/30 hover:text-white/60"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => loadSession(s)}
+                              className="w-full text-left p-2"
+                            >
+                              <div className="flex items-center gap-1.5 mb-1">
+                                <span className={`inline-flex items-center px-1 py-0.5 rounded text-[8px] font-bold ${
+                                  modeBadge.color.replace("text-", "text-").replace("-400", "-300")
+                                } bg-white/5`}>
+                                  {modeBadge.label}
+                                </span>
+                                {(s.actions_executed > 0 || s.actions_failed > 0) && (
+                                  <span className="text-[10px] text-white/25 ml-auto">
+                                    {s.actions_executed > 0 && (
+                                      <span className="text-emerald-400/60">+{s.actions_executed}</span>
+                                    )}
+                                    {s.actions_failed > 0 && (
+                                      <span className="text-red-400/60 ml-1">-{s.actions_failed}</span>
+                                    )}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-xs text-white/70 truncate leading-tight">
+                                {s.title}
+                              </div>
+                              <div className="text-[10px] text-white/20 mt-0.5">
+                                {new Date(s.updated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                              </div>
+                            </button>
+                          )}
+
+                          {/* Hover actions */}
+                          {!isEditing && (
+                            <div className="absolute top-1.5 right-1.5 hidden group-hover:flex items-center gap-0.5">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEditingSessionId(s.conversation_id);
+                                  setEditingTitle(s.title);
+                                }}
+                                className="p-1 rounded hover:bg-white/10 text-white/20 hover:text-white/60 transition-colors"
+                                title="Rename"
+                              >
+                                <Pencil className="w-3 h-3" />
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (confirm("Delete this session?")) deleteSession(s.conversation_id);
+                                }}
+                                className="p-1 rounded hover:bg-red-500/20 text-white/20 hover:text-red-400 transition-colors"
+                                title="Delete"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Main Chat Area */}
+        <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
         <div className="flex-shrink-0 px-6 py-4 border-b border-white/5">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
+              <button
+                onClick={toggleSessions}
+                className="w-10 h-10 rounded-xl bg-white/5 hover:bg-white/10 flex items-center justify-center transition-colors"
+                title={showSessions ? "Hide sessions" : "Show sessions"}
+              >
+                {showSessions ? (
+                  <PanelLeftClose className="w-5 h-5 text-white/50" />
+                ) : (
+                  <PanelLeftOpen className="w-5 h-5 text-white/50" />
+                )}
+              </button>
               <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${modeCfg.gradient} flex items-center justify-center`}>
                 <ModeIcon className="w-5 h-5 text-white" />
               </div>
@@ -909,6 +1178,7 @@ export default function OperatorPage() {
             </div>
           </div>
         </div>
+        </div>{/* Close Main Chat Area */}
       </div>
     </AppLayout>
   );
