@@ -47,7 +47,7 @@ Always respond with valid JSON matching this schema:
   ],
   "recommended_actions": [
     {
-      "action_type": "pause_keyword|enable_keyword|update_keyword_bid|add_negative_keyword|update_campaign_budget|pause_campaign|enable_campaign|pause_ad|enable_ad|pause_ad_group|enable_ad_group|set_device_bid_modifier|add_location_targeting|set_ad_schedule|apply_recommendation|create_campaign|create_ad_group|create_responsive_search_ad|create_call_ad|add_keywords",
+      "action_type": "pause_keyword|enable_keyword|update_keyword_bid|add_negative_keyword|update_campaign_budget|pause_campaign|enable_campaign|pause_ad|enable_ad|pause_ad_group|enable_ad_group|set_device_bid_modifier|add_location_targeting|set_ad_schedule|apply_recommendation|create_sitelinks|create_callouts|create_structured_snippets|create_image_asset|link_image_to_campaign|create_promotion|deploy_full_campaign|create_campaign|create_ad_group|create_responsive_search_ad|create_call_ad|add_keywords",
       "label": "Human-readable action label",
       "reasoning": "Why this action should be taken",
       "risk_level": "low|medium|high",
@@ -76,6 +76,13 @@ ACTION PAYLOAD FORMATS:
 - add_location_targeting: {"campaign_id": "123", "location_id": "1014221"}
 - set_ad_schedule: {"campaign_id": "123", "day_of_week": "MONDAY", "start_hour": 8, "end_hour": 20, "bid_modifier": 1.0}
 - apply_recommendation: {"resource_name": "customers/123/recommendations/456"}
+- create_sitelinks: {"campaign_id": "123", "sitelinks": [{"link_text": "About Us", "final_url": "https://...", "description1": "Learn more", "description2": "About our services"}]}
+- create_callouts: {"campaign_id": "123", "callouts": ["Free Estimates", "24/7 Service", "Licensed & Insured"]}
+- create_structured_snippets: {"campaign_id": "123", "header": "Services", "values": ["Car Locksmith", "Key Programming", "ECU Repair"]}
+- create_image_asset: {"image_url": "https://...", "asset_name": "Hero Image"}
+- link_image_to_campaign: {"campaign_id": "123", "asset_resource": "customers/123/assets/456"}
+- create_promotion: {"campaign_id": "123", "promotion_target": "Key Service", "percent_off": 15, "final_url": "https://..."}
+- deploy_full_campaign: {"campaign": {"name": "...", "budget_micros": 30000000, "bidding_strategy": "MAXIMIZE_CONVERSIONS"}, "ad_groups": [{"name": "...", "keywords": [{"text": "...", "match_type": "PHRASE"}], "ads": [{"headlines": [...], "descriptions": [...], "final_url": "..."}], "negative_keywords": [...]}], "sitelinks": [...], "callouts": [...], "structured_snippets": {"header": "...", "values": [...]}}
 - create_campaign: {"name": "...", "budget_micros": 30000000}
 - create_ad_group: {"campaign_resource": "...", "name": "...", "cpc_bid_micros": 5000000}
 - create_responsive_search_ad: {"ad_group_resource": "...", "headlines": [...], "descriptions": [...], "final_url": "..."}

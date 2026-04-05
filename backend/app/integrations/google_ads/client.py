@@ -1387,6 +1387,320 @@ class GoogleAdsClient:
             logger.error("Failed to create asset group signal", error=str(e))
             return {"status": "error", "error": str(e)}
 
+    # ── ASSET / EXTENSION METHODS ───────────────────────────────────
+
+    async def create_sitelink_assets(self, campaign_id: str, sitelinks: List[Dict]) -> Dict[str, Any]:
+        """Create sitelink assets and link them to a campaign.
+        Each sitelink: {"link_text": str, "final_url": str, "description1": str, "description2": str}
+        """
+        await self._ensure_token()
+        try:
+            client = self._get_client()
+            asset_service = client.get_service("AssetService")
+            ca_service = client.get_service("CampaignAssetService")
+            results = []
+
+            for sl in sitelinks:
+                # Create the sitelink asset
+                asset_op = client.get_type("AssetOperation")
+                asset = asset_op.create
+                asset.sitelink_asset.link_text = sl.get("link_text", "")[:25]
+                asset.sitelink_asset.description1 = sl.get("description1", "")[:35]
+                asset.sitelink_asset.description2 = sl.get("description2", "")[:35]
+                asset.final_urls.append(sl.get("final_url", ""))
+
+                resp = asset_service.mutate_assets(
+                    customer_id=self.customer_id, operations=[asset_op]
+                )
+                asset_resource = resp.results[0].resource_name
+
+                # Link to campaign
+                link_op = client.get_type("CampaignAssetOperation")
+                link = link_op.create
+                link.campaign = f"customers/{self.customer_id}/campaigns/{campaign_id}"
+                link.asset = asset_resource
+                link.field_type = client.enums.AssetFieldTypeEnum.SITELINK
+
+                ca_service.mutate_campaign_assets(
+                    customer_id=self.customer_id, operations=[link_op]
+                )
+                results.append({"link_text": sl.get("link_text"), "status": "created"})
+
+            return {"status": "success", "sitelinks_created": len(results), "details": results}
+        except Exception as e:
+            logger.error("Failed to create sitelinks", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def create_callout_assets(self, campaign_id: str, callouts: List[str]) -> Dict[str, Any]:
+        """Create callout assets and link them to a campaign.
+        Each callout is a string (max 25 chars), e.g. ["Free Estimates", "24/7 Service"]
+        """
+        await self._ensure_token()
+        try:
+            client = self._get_client()
+            asset_service = client.get_service("AssetService")
+            ca_service = client.get_service("CampaignAssetService")
+            created = 0
+
+            for text in callouts:
+                asset_op = client.get_type("AssetOperation")
+                asset_op.create.callout_asset.callout_text = text[:25]
+
+                resp = asset_service.mutate_assets(
+                    customer_id=self.customer_id, operations=[asset_op]
+                )
+                asset_resource = resp.results[0].resource_name
+
+                link_op = client.get_type("CampaignAssetOperation")
+                link = link_op.create
+                link.campaign = f"customers/{self.customer_id}/campaigns/{campaign_id}"
+                link.asset = asset_resource
+                link.field_type = client.enums.AssetFieldTypeEnum.CALLOUT
+
+                ca_service.mutate_campaign_assets(
+                    customer_id=self.customer_id, operations=[link_op]
+                )
+                created += 1
+
+            return {"status": "success", "callouts_created": created}
+        except Exception as e:
+            logger.error("Failed to create callouts", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def create_structured_snippet_assets(
+        self, campaign_id: str, header: str, values: List[str]
+    ) -> Dict[str, Any]:
+        """Create structured snippet assets and link to campaign.
+        header: e.g. "Services", "Types", "Brands"
+        values: list of snippet values (max 25 chars each)
+        """
+        await self._ensure_token()
+        try:
+            client = self._get_client()
+            asset_service = client.get_service("AssetService")
+            ca_service = client.get_service("CampaignAssetService")
+
+            asset_op = client.get_type("AssetOperation")
+            snippet = asset_op.create.structured_snippet_asset
+            snippet.header = header
+            for v in values:
+                snippet.values.append(v[:25])
+
+            resp = asset_service.mutate_assets(
+                customer_id=self.customer_id, operations=[asset_op]
+            )
+            asset_resource = resp.results[0].resource_name
+
+            link_op = client.get_type("CampaignAssetOperation")
+            link = link_op.create
+            link.campaign = f"customers/{self.customer_id}/campaigns/{campaign_id}"
+            link.asset = asset_resource
+            link.field_type = client.enums.AssetFieldTypeEnum.STRUCTURED_SNIPPET
+
+            ca_service.mutate_campaign_assets(
+                customer_id=self.customer_id, operations=[link_op]
+            )
+            return {"status": "success", "header": header, "values_count": len(values)}
+        except Exception as e:
+            logger.error("Failed to create structured snippets", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def create_image_asset(self, image_url: str, asset_name: str) -> Dict[str, Any]:
+        """Upload an image from URL and create an image asset.
+        Returns the asset resource name for use in ads/extensions.
+        """
+        import httpx
+        import base64
+        await self._ensure_token()
+        try:
+            # Download image
+            async with httpx.AsyncClient() as http_client:
+                img_resp = await http_client.get(image_url, timeout=30)
+                if img_resp.status_code != 200:
+                    return {"status": "error", "error": f"Failed to download image: {img_resp.status_code}"}
+                image_data = img_resp.content
+
+            client = self._get_client()
+            asset_service = client.get_service("AssetService")
+
+            asset_op = client.get_type("AssetOperation")
+            asset = asset_op.create
+            asset.name = asset_name[:128]
+            asset.type_ = client.enums.AssetTypeEnum.IMAGE
+            asset.image_asset.data = image_data
+
+            resp = asset_service.mutate_assets(
+                customer_id=self.customer_id, operations=[asset_op]
+            )
+            return {
+                "status": "success",
+                "asset_resource": resp.results[0].resource_name,
+                "name": asset_name,
+            }
+        except Exception as e:
+            logger.error("Failed to create image asset", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def link_image_to_campaign(
+        self, campaign_id: str, asset_resource: str
+    ) -> Dict[str, Any]:
+        """Link an existing image asset to a campaign."""
+        await self._ensure_token()
+        try:
+            client = self._get_client()
+            ca_service = client.get_service("CampaignAssetService")
+
+            link_op = client.get_type("CampaignAssetOperation")
+            link = link_op.create
+            link.campaign = f"customers/{self.customer_id}/campaigns/{campaign_id}"
+            link.asset = asset_resource
+            link.field_type = client.enums.AssetFieldTypeEnum.MARKETING_IMAGE
+
+            ca_service.mutate_campaign_assets(
+                customer_id=self.customer_id, operations=[link_op]
+            )
+            return {"status": "success", "campaign_id": campaign_id}
+        except Exception as e:
+            logger.error("Failed to link image to campaign", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def create_promotion_asset(
+        self, campaign_id: str, promotion: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Create a promotion extension and link to campaign.
+        promotion: {"occasion": "NONE", "discount_modifier": "UP_TO",
+                     "percent_off": 20, "promotion_target": "Free Key Inspection",
+                     "final_url": "https://..."}
+        """
+        await self._ensure_token()
+        try:
+            client = self._get_client()
+            asset_service = client.get_service("AssetService")
+            ca_service = client.get_service("CampaignAssetService")
+
+            asset_op = client.get_type("AssetOperation")
+            promo = asset_op.create.promotion_asset
+            promo.promotion_target = promotion.get("promotion_target", "")[:20]
+            promo.language_code = "en"
+
+            if promotion.get("percent_off"):
+                promo.percent_off = promotion["percent_off"]
+            elif promotion.get("money_amount_off"):
+                promo.money_amount_off.amount_micros = int(promotion["money_amount_off"] * 1_000_000)
+                promo.money_amount_off.currency_code = "USD"
+
+            asset_op.create.final_urls.append(promotion.get("final_url", ""))
+
+            resp = asset_service.mutate_assets(
+                customer_id=self.customer_id, operations=[asset_op]
+            )
+            asset_resource = resp.results[0].resource_name
+
+            link_op = client.get_type("CampaignAssetOperation")
+            link = link_op.create
+            link.campaign = f"customers/{self.customer_id}/campaigns/{campaign_id}"
+            link.asset = asset_resource
+            link.field_type = client.enums.AssetFieldTypeEnum.PROMOTION
+
+            ca_service.mutate_campaign_assets(
+                customer_id=self.customer_id, operations=[link_op]
+            )
+            return {"status": "success", "promotion_target": promotion.get("promotion_target")}
+        except Exception as e:
+            logger.error("Failed to create promotion asset", error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def deploy_full_campaign(self, spec: Dict[str, Any]) -> Dict[str, Any]:
+        """Deploy a complete campaign from scratch: campaign + budget + ad groups + keywords + ads + extensions.
+        spec: {
+            "campaign": {"name": str, "budget_micros": int, "bidding_strategy": str, ...},
+            "ad_groups": [
+                {
+                    "name": str,
+                    "keywords": [{"text": str, "match_type": str}],
+                    "ads": [{"headlines": [...], "descriptions": [...], "final_url": str}],
+                    "negative_keywords": ["term1", ...]
+                }
+            ],
+            "sitelinks": [{"link_text": str, "final_url": str, ...}],
+            "callouts": ["text1", "text2"],
+            "structured_snippets": {"header": str, "values": [str]},
+        }
+        """
+        results = {"campaign": None, "ad_groups": [], "errors": []}
+        try:
+            # 1. Create campaign
+            campaign_result = await self.create_campaign(spec.get("campaign", {}))
+            if campaign_result.get("status") == "error":
+                return {"status": "error", "error": f"Campaign creation failed: {campaign_result.get('error')}"}
+            results["campaign"] = campaign_result
+            campaign_resource = campaign_result["campaign_resource"]
+            campaign_id = campaign_result["campaign_id"]
+
+            # 2. Create ad groups with keywords and ads
+            for ag_spec in spec.get("ad_groups", []):
+                ag_result = {"name": ag_spec.get("name"), "keywords": 0, "ads": 0}
+                try:
+                    ag_resp = await self.create_ad_group(campaign_resource, ag_spec)
+                    if ag_resp.get("status") == "error":
+                        results["errors"].append(f"Ad group '{ag_spec.get('name')}' failed: {ag_resp.get('error')}")
+                        continue
+                    ag_resource = ag_resp["ad_group_resource"]
+
+                    # Keywords
+                    kw_list = ag_spec.get("keywords", [])
+                    if kw_list:
+                        kw_resp = await self.create_keywords(ag_resource, kw_list)
+                        ag_result["keywords"] = kw_resp.get("created", 0)
+
+                    # Ads (RSA by default)
+                    for ad_spec in ag_spec.get("ads", []):
+                        ad_resp = await self.create_responsive_search_ad(ag_resource, ad_spec)
+                        if ad_resp.get("status") != "error":
+                            ag_result["ads"] += 1
+
+                    # Negative keywords at campaign level
+                    neg_kws = ag_spec.get("negative_keywords", [])
+                    if neg_kws:
+                        await self.add_negative_keywords(campaign_id, neg_kws)
+
+                except Exception as e:
+                    results["errors"].append(f"Ad group '{ag_spec.get('name')}': {str(e)[:200]}")
+                results["ad_groups"].append(ag_result)
+
+            # 3. Extensions
+            sitelinks = spec.get("sitelinks", [])
+            if sitelinks:
+                try:
+                    await self.create_sitelink_assets(campaign_id, sitelinks)
+                    results["sitelinks"] = len(sitelinks)
+                except Exception as e:
+                    results["errors"].append(f"Sitelinks: {str(e)[:200]}")
+
+            callouts = spec.get("callouts", [])
+            if callouts:
+                try:
+                    await self.create_callout_assets(campaign_id, callouts)
+                    results["callouts"] = len(callouts)
+                except Exception as e:
+                    results["errors"].append(f"Callouts: {str(e)[:200]}")
+
+            snippets = spec.get("structured_snippets")
+            if snippets:
+                try:
+                    await self.create_structured_snippet_assets(
+                        campaign_id, snippets["header"], snippets["values"]
+                    )
+                    results["structured_snippets"] = True
+                except Exception as e:
+                    results["errors"].append(f"Snippets: {str(e)[:200]}")
+
+            results["status"] = "success" if not results["errors"] else "partial"
+            return results
+        except Exception as e:
+            logger.error("Full campaign deploy failed", error=str(e))
+            return {"status": "error", "error": str(e), "partial_results": results}
+
     async def update_campaign_status(self, campaign_resource: str, status: str) -> Dict[str, Any]:
         await self._ensure_token()
         try:

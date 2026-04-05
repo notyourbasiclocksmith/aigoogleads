@@ -40,6 +40,13 @@ class GoogleAdsMutationService:
             "add_location_targeting": self._add_location_targeting,
             "set_ad_schedule": self._set_ad_schedule,
             "apply_recommendation": self._apply_recommendation,
+            "create_sitelinks": self._create_sitelinks,
+            "create_callouts": self._create_callouts,
+            "create_structured_snippets": self._create_structured_snippets,
+            "create_image_asset": self._create_image_asset,
+            "link_image_to_campaign": self._link_image_to_campaign,
+            "create_promotion": self._create_promotion,
+            "deploy_full_campaign": self._deploy_full_campaign,
             "create_campaign": self._create_campaign,
             "create_ad_group": self._create_ad_group,
             "create_responsive_search_ad": self._create_rsa,
@@ -335,3 +342,43 @@ class GoogleAdsMutationService:
         ad_group_resource = payload.get("ad_group_resource")
         result = await self.client.create_call_ad(ad_group_resource, payload)
         return result
+
+    async def _create_sitelinks(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Create sitelink extensions for a campaign."""
+        return await self.client.create_sitelink_assets(
+            payload.get("campaign_id"), payload.get("sitelinks", [])
+        )
+
+    async def _create_callouts(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Create callout extensions for a campaign."""
+        return await self.client.create_callout_assets(
+            payload.get("campaign_id"), payload.get("callouts", [])
+        )
+
+    async def _create_structured_snippets(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Create structured snippet extensions for a campaign."""
+        return await self.client.create_structured_snippet_assets(
+            payload.get("campaign_id"), payload.get("header"), payload.get("values", [])
+        )
+
+    async def _create_image_asset(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Upload an image and create an image asset."""
+        return await self.client.create_image_asset(
+            payload.get("image_url"), payload.get("asset_name", "Image Asset")
+        )
+
+    async def _link_image_to_campaign(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Link an image asset to a campaign."""
+        return await self.client.link_image_to_campaign(
+            payload.get("campaign_id"), payload.get("asset_resource")
+        )
+
+    async def _create_promotion(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a promotion extension for a campaign."""
+        return await self.client.create_promotion_asset(
+            payload.get("campaign_id"), payload
+        )
+
+    async def _deploy_full_campaign(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Deploy a complete campaign: campaign + ad groups + keywords + ads + extensions."""
+        return await self.client.deploy_full_campaign(payload)
