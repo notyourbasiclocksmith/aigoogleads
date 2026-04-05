@@ -419,6 +419,33 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str, full_sync
             except Exception as mcc_err:
                 logger.warning("Could not auto-detect manager account", error=str(mcc_err))
 
+            # Quick permission check — if login_customer_id causes USER_PERMISSION_DENIED,
+            # retry without it (direct access) or with the other accessible customer IDs
+            try:
+                await client.get_account_info()
+            except Exception as perm_err:
+                err_str = str(perm_err)
+                if "USER_PERMISSION_DENIED" in err_str or "does not have permission" in err_str.lower():
+                    if client.login_customer_id:
+                        logger.warning("Permission denied with login_customer_id, retrying without it",
+                                       login_cid=client.login_customer_id)
+                        # Try without login_customer_id (direct access)
+                        integration.login_customer_id = None
+                        await db.commit()
+                        client = GoogleAdsClient(
+                            customer_id=integration.customer_id,
+                            refresh_token_encrypted=integration.refresh_token_encrypted,
+                            login_customer_id=None,
+                        )
+                        try:
+                            await client.get_account_info()
+                            logger.info("Direct access works without login_customer_id")
+                        except Exception:
+                            # Re-raise original error
+                            raise perm_err
+                    else:
+                        raise
+
             # Determine sync mode and date range
             sync_mode = "full" if full_sync else "light"
             date_range = "LAST_30_DAYS" if full_sync else "LAST_7_DAYS"
