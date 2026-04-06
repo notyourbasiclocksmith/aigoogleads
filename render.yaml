@@ -19,7 +19,7 @@ services:
         value: production
     healthCheckPath: /api/health
 
-  # ── Celery Worker ────────────────────────────────────────────────────
+  # ── Celery Worker (autonomous optimizer, pipeline, feedback loop) ────
   - type: worker
     name: aigoogleads-celery-worker
     runtime: docker
@@ -35,11 +35,21 @@ services:
           name: aigoogleads-redis
           type: redis
           property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: aigoogleads-redis
+          type: redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          name: aigoogleads-redis
+          type: redis
+          property: connectionString
       - key: APP_ENV
         value: production
-    startCommand: "celery -A app.jobs.celery_app worker --loglevel=info --concurrency=2"
+    startCommand: "bash start-worker.sh"
 
-  # ── Celery Beat (scheduler) ─────────────────────────────────────────
+  # ── Celery Beat (scheduled tasks: 4h optimizer, feedback eval, sync) ─
   - type: worker
     name: aigoogleads-celery-beat
     runtime: docker
@@ -55,9 +65,19 @@ services:
           name: aigoogleads-redis
           type: redis
           property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: aigoogleads-redis
+          type: redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          name: aigoogleads-redis
+          type: redis
+          property: connectionString
       - key: APP_ENV
         value: production
-    startCommand: "celery -A app.jobs.celery_app beat --loglevel=info"
+    startCommand: "bash start-beat.sh"
 
   # ── Frontend ─────────────────────────────────────────────────────────
   - type: web

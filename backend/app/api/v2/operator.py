@@ -696,6 +696,180 @@ async def diag_clear_stuck_scans(
     return {"cleared": cleared}
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Budget Auto-Scaler
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class BudgetScaleRequest(BaseModel):
+    account_id: str
+    campaign_id: str
+    target_cpa: Optional[float] = None  # Dollars
+
+
+@router.post("/budget-scaler/evaluate")
+async def evaluate_budget(
+    req: BudgetScaleRequest,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Evaluate a campaign for ROAS-based budget scaling."""
+    integration = await db.get(IntegrationGoogleAds, req.account_id)
+    if not integration or str(integration.tenant_id) != str(user.tenant_id):
+        raise HTTPException(404, "Account not found")
+
+    from app.core.security import decrypt_token
+    from app.integrations.google_ads.client import GoogleAdsClient
+    from app.services.operator.budget_auto_scaler import BudgetAutoScaler
+    from app.models.tenant import Tenant
+
+    ads_client = GoogleAdsClient(
+        customer_id=integration.customer_id,
+        refresh_token=decrypt_token(integration.encrypted_refresh_token),
+    )
+
+    # Load guardrails from tenant
+    tenant = await db.get(Tenant, str(user.tenant_id))
+    guardrails = {}
+    if tenant and hasattr(tenant, "guardrails_json"):
+        guardrails = tenant.guardrails_json or {}
+
+    scaler = BudgetAutoScaler(db, str(user.tenant_id), ads_client)
+    target_cpa_micros = int(req.target_cpa * 1_000_000) if req.target_cpa else 0
+
+    result = await scaler.evaluate_and_scale(
+        campaign_id=req.campaign_id,
+        target_cpa_micros=target_cpa_micros,
+        guardrails=guardrails,
+    )
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  A/B Ad Variation Generator
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class ABGenerateRequest(BaseModel):
+    account_id: str
+    campaign_id: str
+
+
+@router.post("/ab-generator/generate")
+async def generate_ab_variations(
+    req: ABGenerateRequest,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate A/B ad copy variations for a campaign."""
+    integration = await db.get(IntegrationGoogleAds, req.account_id)
+    if not integration or str(integration.tenant_id) != str(user.tenant_id):
+        raise HTTPException(404, "Account not found")
+
+    from app.core.security import decrypt_token
+    from app.integrations.google_ads.client import GoogleAdsClient
+    from app.services.operator.ab_ad_generator import ABAdGenerator
+
+    ads_client = GoogleAdsClient(
+        customer_id=integration.customer_id,
+        refresh_token=decrypt_token(integration.encrypted_refresh_token),
+    )
+
+    generator = ABAdGenerator(db, str(user.tenant_id), ads_client)
+    result = await generator.generate_variations(
+        campaign_id=req.campaign_id,
+    )
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Pipeline Execution Logs (for developer/analyst review)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/logs")
+async def get_pipeline_logs(
+    service_type: Optional[str] = Query(None, description="Filter: campaign_pipeline, budget_scaler, ab_generator, post_audit, feedback_eval"),
+    campaign_id: Optional[str] = Query(None),
+    limit: int = Query(50, le=200),
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """List pipeline execution logs for the tenant."""
+    from app.models.pipeline_execution_log import PipelineExecutionLog
+
+    query = (
+        select(PipelineExecutionLog)
+        .where(PipelineExecutionLog.tenant_id == str(user.tenant_id))
+        .order_by(desc(PipelineExecutionLog.started_at))
+        .limit(limit)
+    )
+
+    if service_type:
+        query = query.where(PipelineExecutionLog.service_type == service_type)
+    if campaign_id:
+        query = query.where(PipelineExecutionLog.campaign_id == campaign_id)
+
+    result = await db.execute(query)
+    logs = result.scalars().all()
+
+    return [
+        {
+            "id": log.id,
+            "service_type": log.service_type,
+            "status": log.status,
+            "campaign_id": log.campaign_id,
+            "conversation_id": log.conversation_id,
+            "started_at": log.started_at.isoformat() if log.started_at else None,
+            "completed_at": log.completed_at.isoformat() if log.completed_at else None,
+            "duration_seconds": log.duration_seconds,
+            "model_used": log.model_used,
+            "input_summary": log.input_summary,
+            "output_summary": log.output_summary,
+            "ahrefs_data": log.ahrefs_data,
+            "agent_results": log.agent_results,
+            "error_message": log.error_message,
+        }
+        for log in logs
+    ]
+
+
+@router.get("/logs/{log_id}")
+async def get_pipeline_log_detail(
+    log_id: str,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get full pipeline execution log detail (including full output)."""
+    from app.models.pipeline_execution_log import PipelineExecutionLog
+
+    log = await db.get(PipelineExecutionLog, log_id)
+    if not log or str(log.tenant_id) != str(user.tenant_id):
+        raise HTTPException(404, "Log not found")
+
+    return {
+        "id": log.id,
+        "service_type": log.service_type,
+        "status": log.status,
+        "campaign_id": log.campaign_id,
+        "conversation_id": log.conversation_id,
+        "customer_id": log.customer_id,
+        "started_at": log.started_at.isoformat() if log.started_at else None,
+        "completed_at": log.completed_at.isoformat() if log.completed_at else None,
+        "duration_seconds": log.duration_seconds,
+        "model_used": log.model_used,
+        "total_tokens": log.total_tokens,
+        "total_cost_cents": log.total_cost_cents,
+        "input_summary": log.input_summary,
+        "output_summary": log.output_summary,
+        "output_full": log.output_full,
+        "ahrefs_data": log.ahrefs_data,
+        "agent_results": log.agent_results,
+        "error_message": log.error_message,
+        "created_at": log.created_at.isoformat() if log.created_at else None,
+    }
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _parse_date_range(date_range: str):

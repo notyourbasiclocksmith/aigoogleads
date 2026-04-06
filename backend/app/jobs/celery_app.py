@@ -91,6 +91,11 @@ celery_app.conf.beat_schedule = {
         "task": "app.jobs.operator_tasks.run_autonomous_optimizer_task",
         "schedule": crontab(minute=15, hour="*/4"),  # 0:15, 4:15, 8:15, 12:15, 16:15, 20:15
     },
+    # Budget Auto-Scaler — runs daily at 10 AM UTC (after enough data for the day)
+    "budget-auto-scaler-daily": {
+        "task": "app.jobs.operator_tasks.run_budget_auto_scaler_task",
+        "schedule": crontab(hour=10, minute=30),
+    },
     # LSA auto-sync — every 15 minutes (lightweight, leads + conversations only)
     "lsa-auto-sync-15m": {
         "task": "app.jobs.tasks.sync_all_lsa_leads",

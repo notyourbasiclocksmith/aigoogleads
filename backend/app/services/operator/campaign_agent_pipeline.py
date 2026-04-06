@@ -16,6 +16,7 @@ Pipeline:
 """
 
 import json
+import time
 import uuid
 import asyncio
 from datetime import datetime, timezone
@@ -29,6 +30,8 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.models.operator import OperatorMessage
 from app.models.business_profile import BusinessProfile
+from app.models.pipeline_execution_log import PipelineExecutionLog
+from app.services.operator.ahrefs_keyword_service import AhrefsKeywordService
 
 logger = structlog.get_logger()
 
@@ -45,6 +48,10 @@ class CampaignAgentPipeline:
         # ad copy, and QA are where model intelligence directly impacts ROI
         self.model = "claude-opus-4-6"
         self.conversation_id: Optional[str] = None
+        self.ahrefs = AhrefsKeywordService()
+        # Per-agent timing for execution log
+        self._agent_timings: List[Dict] = []
+        self._pipeline_start: float = 0
 
     # ── ORCHESTRATOR ─────────────────────────────────────────────
 
@@ -56,30 +63,80 @@ class CampaignAgentPipeline:
     ) -> Dict[str, Any]:
         """Execute the full 6-agent pipeline. Returns deploy_full_campaign spec."""
         self.conversation_id = conversation_id
+        self._pipeline_start = time.time()
+        self._agent_timings = []
         logger.info("Campaign pipeline started", conversation_id=conversation_id)
+
+        # Initialize execution log
+        exec_log = PipelineExecutionLog(
+            id=str(uuid.uuid4()),
+            tenant_id=self.tenant_id,
+            customer_id=self.customer_id,
+            conversation_id=conversation_id,
+            service_type="campaign_pipeline",
+            status="running",
+            input_summary={"user_prompt": user_prompt[:500], "account_context_keys": list(account_context.keys())},
+            model_used=self.model,
+        )
+        self.db.add(exec_log)
+        try:
+            await self.db.flush()
+        except Exception:
+            pass
 
         # Gather all context the agents will need
         context = await self._gather_context(account_context)
 
         # ── Agent 1: Strategist (everything depends on this) ──
         await self._emit_progress("Strategist", "running", "Analyzing your business, competitors, and existing campaigns to design the optimal campaign architecture...")
+        t0 = time.time()
         strategy = await self._agent_strategist(context, user_prompt)
+        self._agent_timings.append({"agent": "Strategist", "duration_ms": int((time.time() - t0) * 1000), "status": "done" if strategy else "error"})
         if not strategy:
             await self._emit_progress("Strategist", "error", "Failed to generate strategy")
+            await self._finalize_log(exec_log, "failed", error="Strategist agent failed")
             return self._fallback_spec(user_prompt, context)
         await self._emit_progress("Strategist", "done",
             f"{strategy.get('campaign_type', 'SEARCH')} campaign \u2022 ${strategy.get('budget_daily', 50)}/day \u2022 {len(strategy.get('services', []))} ad groups")
 
+        # ── Ahrefs Enrichment (real keyword data) ──────────────
+        ahrefs_data = {}
+        if self.ahrefs.available:
+            await self._emit_progress("Keyword Research", "running", "Pulling real search volume & CPC data from Ahrefs...")
+            t0 = time.time()
+            competitor_domains = [
+                c.get("domain", "") for c in context.get("competitors", {}).get("top_competitors", [])[:3]
+            ]
+            ahrefs_data = await self.ahrefs.enrich_keyword_research(
+                services=strategy.get("services", []),
+                locations=strategy.get("locations", []),
+                business_website=context["business"].get("website", ""),
+                competitor_domains=competitor_domains,
+                country="us",
+            )
+            self._agent_timings.append({"agent": "Ahrefs Enrichment", "duration_ms": int((time.time() - t0) * 1000), "status": "done", "keywords_found": ahrefs_data.get("summary", {}).get("total_keywords_found", 0)})
+            context["ahrefs"] = ahrefs_data
+            exec_log.ahrefs_data = ahrefs_data.get("summary", {})
+            ahrefs_count = ahrefs_data.get("summary", {}).get("total_keywords_found", 0)
+            if ahrefs_count > 0:
+                await self._emit_progress("Keyword Research", "running", f"Found {ahrefs_count} real keywords from Ahrefs (avg CPC: ${ahrefs_data.get('summary', {}).get('avg_cpc', 0):.2f}). Now building strategy...")
+        else:
+            await self._emit_progress("Keyword Research", "running", f"Building tiered keyword strategy across {len(strategy.get('services', []))} services...")
+
         # ── Agents 2-4: Parallel (independent of each other) ──
-        await self._emit_progress("Keyword Research", "running", f"Building tiered keyword strategy across {len(strategy.get('services', []))} services...")
         await self._emit_progress("Targeting", "running", "Configuring geo-targeting, device bids, and ad schedule...")
         await self._emit_progress("Extensions", "running", "Generating sitelinks, callouts, and structured snippets...")
 
+        t0 = time.time()
         keywords, targeting, extensions = await asyncio.gather(
             self._agent_keyword_research(context, strategy),
             self._agent_targeting(context, strategy),
             self._agent_extensions(context, strategy),
         )
+        parallel_ms = int((time.time() - t0) * 1000)
+        self._agent_timings.append({"agent": "Keyword Research", "duration_ms": parallel_ms, "status": "done" if keywords else "error"})
+        self._agent_timings.append({"agent": "Targeting", "duration_ms": parallel_ms, "status": "done" if targeting else "error"})
+        self._agent_timings.append({"agent": "Extensions", "duration_ms": parallel_ms, "status": "done" if extensions else "error"})
 
         kw_count = len(keywords.get("keywords", [])) if keywords else 0
         neg_count = len(keywords.get("negatives", [])) if keywords else 0
@@ -93,7 +150,9 @@ class CampaignAgentPipeline:
 
         # ── Agent 5: Ad Copy (needs keywords for ad group alignment) ──
         await self._emit_progress("Ad Copy", "running", f"Writing 15 headlines + 4 descriptions per ad group with pinning strategy...")
+        t0 = time.time()
         ad_copy = await self._agent_ad_copy(context, strategy, keywords or {})
+        self._agent_timings.append({"agent": "Ad Copy", "duration_ms": int((time.time() - t0) * 1000), "status": "done" if ad_copy else "error"})
         ag_count = len(ad_copy.get("ad_groups", [])) if ad_copy else 0
         await self._emit_progress("Ad Copy", "done", f"{ag_count} ad groups with full RSA copy")
 
@@ -108,7 +167,9 @@ class CampaignAgentPipeline:
 
         # ── Agent 6: QA Review ──
         await self._emit_progress("Quality Assurance", "running", "Auditing compliance, keyword-ad relevance, character limits, and campaign structure...")
+        t0 = time.time()
         qa_result = await self._agent_qa(spec, context, user_prompt)
+        self._agent_timings.append({"agent": "Quality Assurance", "duration_ms": int((time.time() - t0) * 1000), "status": "done" if qa_result else "error"})
         if qa_result:
             score = qa_result.get("score", 0)
             spec = self._apply_qa_fixes(spec, qa_result)
@@ -117,11 +178,45 @@ class CampaignAgentPipeline:
         else:
             await self._emit_progress("Quality Assurance", "done", "Review complete")
 
+        # ── Finalize execution log ──
+        output_summary = {
+            "campaign_name": spec.get("campaign", {}).get("name"),
+            "ad_groups": len(spec.get("ad_groups", [])),
+            "total_keywords": sum(len(ag.get("keywords", [])) for ag in spec.get("ad_groups", [])),
+            "total_negatives": sum(len(ag.get("negative_keywords", [])) for ag in spec.get("ad_groups", [])),
+            "qa_score": qa_result.get("score") if qa_result else None,
+            "budget_daily": spec.get("campaign", {}).get("budget_micros", 0) / 1_000_000,
+            "sitelinks": len(spec.get("sitelinks", [])),
+            "callouts": len(spec.get("callouts", [])),
+        }
+        await self._finalize_log(exec_log, "completed", output_summary=output_summary, output_full=spec)
+
         logger.info("Campaign pipeline complete",
             campaign_name=spec.get("campaign", {}).get("name"),
             ad_groups=len(spec.get("ad_groups", [])),
         )
         return spec
+
+    async def _finalize_log(
+        self, log: PipelineExecutionLog, status: str,
+        output_summary: Optional[Dict] = None, output_full: Optional[Dict] = None,
+        error: Optional[str] = None,
+    ):
+        """Finalize the pipeline execution log."""
+        log.status = status
+        log.completed_at = datetime.now(timezone.utc)
+        log.duration_seconds = round(time.time() - self._pipeline_start, 2)
+        log.agent_results = self._agent_timings
+        if output_summary:
+            log.output_summary = output_summary
+        if output_full:
+            log.output_full = output_full
+        if error:
+            log.error_message = error
+        try:
+            await self.db.flush()
+        except Exception:
+            pass
 
     # ── CONTEXT GATHERING ────────────────────────────────────────
 
@@ -162,7 +257,7 @@ class CampaignAgentPipeline:
         competitor_summary = {}
         try:
             from app.services.competitor_intel_service import CompetitorIntelService
-            comp_svc = CompetitorIntelService(self.db, self.tenant_id, self.customer_id)
+            comp_svc = CompetitorIntelService(self.db, self.tenant_id)
             competitor_summary = await comp_svc.get_market_summary()
         except Exception as e:
             logger.warning("Could not load competitor intel", error=str(e))
@@ -304,12 +399,76 @@ Return this JSON structure:
     async def _agent_keyword_research(self, context: Dict, strategy: Dict) -> Optional[Dict]:
         biz = context["business"]
         competitors = context.get("competitors", {})
+        ahrefs = context.get("ahrefs", {})
         services = strategy.get("services", [])
         locations = strategy.get("locations", biz.get("locations", []))
 
-        system = """You are a Google Ads keyword research expert with deep knowledge of search intent.
+        # Build Ahrefs data section for the prompt
+        ahrefs_section = ""
+        if ahrefs and ahrefs.get("seed_keywords"):
+            # Format real keyword data for Claude
+            top_seeds = sorted(
+                ahrefs.get("seed_keywords", []),
+                key=lambda k: k.get("volume", 0), reverse=True,
+            )[:30]
+            seed_lines = [
+                f"  {kw['keyword']} — vol:{kw.get('volume', 0)} CPC:${kw.get('cpc', 0):.2f} diff:{kw.get('difficulty', 0)}"
+                for kw in top_seeds
+            ]
+
+            top_expanded = sorted(
+                ahrefs.get("expanded_keywords", []),
+                key=lambda k: k.get("volume", 0), reverse=True,
+            )[:40]
+            expanded_lines = [
+                f"  {kw['keyword']} — vol:{kw.get('volume', 0)} CPC:${kw.get('cpc', 0):.2f} [from: {kw.get('parent_service', kw.get('source', ''))}]"
+                for kw in top_expanded
+            ]
+
+            top_suggestions = sorted(
+                ahrefs.get("search_suggestions", []),
+                key=lambda k: k.get("volume", 0), reverse=True,
+            )[:20]
+            suggestion_lines = [
+                f"  {kw['keyword']} — vol:{kw.get('volume', 0)} CPC:${kw.get('cpc', 0):.2f}"
+                for kw in top_suggestions
+            ]
+
+            comp_kws = sorted(
+                ahrefs.get("competitor_keywords", []),
+                key=lambda k: k.get("volume", 0), reverse=True,
+            )[:25]
+            comp_lines = [
+                f"  {kw['keyword']} — vol:{kw.get('volume', 0)} CPC:${kw.get('cpc', 0):.2f} [{kw.get('competitor_domain', '')}]"
+                for kw in comp_kws
+            ]
+
+            ahrefs_section = f"""
+REAL KEYWORD DATA FROM AHREFS (use this as ground truth for volume and CPC):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SEED KEYWORDS (real search volume & CPC):
+{chr(10).join(seed_lines)}
+
+EXPANDED KEYWORD IDEAS:
+{chr(10).join(expanded_lines)}
+
+AUTOCOMPLETE SUGGESTIONS (what people actually type):
+{chr(10).join(suggestion_lines)}
+
+COMPETITOR PAID KEYWORDS (what competitors are bidding on):
+{chr(10).join(comp_lines)}
+
+IMPORTANT: Prioritize keywords with volume >= 30 and reasonable CPC.
+Keywords from Ahrefs with 0 volume should be deprioritized.
+Use CPC data to gauge competitiveness — high CPC = high commercial intent.
+"""
+
+        system = f"""You are a Google Ads keyword research expert with deep knowledge of search intent.
 
 Your job: build a COMPREHENSIVE keyword list for a Google Ads campaign. You think about keywords the way a real searcher types — not marketing jargon, but actual queries people use when they need this service.
+
+{"You have REAL keyword data from Ahrefs below. USE IT. Prioritize keywords with proven search volume over guesses. But also add problem-based and long-tail keywords that Ahrefs might not capture." if ahrefs_section else ""}
 
 CRITICAL RULES:
 1. SEGMENT BY SERVICE: Each service becomes its own ad group. Keywords MUST be unique per service. NO keyword can appear in two services — this causes internal competition and tanks Quality Score.
@@ -327,6 +486,8 @@ CRITICAL RULES:
 
 5. MINIMUM: 20 keywords per service, 20 negatives total. More is better for coverage.
 
+{"6. INCLUDE AHREFS VOLUME: For keywords from Ahrefs data, include the real volume in an 'ahrefs_volume' field." if ahrefs_section else ""}
+
 Respond with ONLY valid JSON."""
 
         user_msg = f"""CAMPAIGN STRATEGY:
@@ -342,11 +503,11 @@ COMPETITOR THEMES (what they bid on):
   {json.dumps(competitors.get('dominant_themes', []))}
 GAPS (what they DON'T target):
   {json.dumps(competitors.get('opportunity_gaps', []))}
-
+{ahrefs_section}
 Return this JSON:
 {{
   "keywords": [
-    {{"text": "keyword phrase", "match_type": "EXACT"|"PHRASE", "tier": "emergency"|"high"|"medium"|"local"|"service", "service": "exact service name"}},
+    {{"text": "keyword phrase", "match_type": "EXACT"|"PHRASE", "tier": "emergency"|"high"|"medium"|"local"|"service", "service": "exact service name", "ahrefs_volume": 0, "ahrefs_cpc": 0}},
     ...
   ],
   "negatives": [
@@ -356,12 +517,13 @@ Return this JSON:
   "total_keywords": N,
   "total_negatives": N,
   "tiers": {{"emergency": N, "high": N, "medium": N, "local": N, "service": N}},
-  "keyword_rationale": "Brief strategy explanation"
+  "keyword_rationale": "Brief strategy explanation",
+  "ahrefs_used": {"true" if ahrefs_section else "false"}
 }}
 
 IMPORTANT: Every keyword MUST have a "service" field matching exactly one of: {json.dumps(services)}"""
 
-        return await self._call_claude_json(system, user_msg, max_tokens=4096, temperature=0.6)
+        return await self._call_claude_json(system, user_msg, max_tokens=8192, temperature=0.6)
 
     # ── AGENT 3: TARGETING ───────────────────────────────────────
 
@@ -566,7 +728,7 @@ For EACH ad group, generate a complete RSA. Return this JSON:
 CRITICAL: Generate ads for ALL {len(services)} services: {json.dumps(services)}
 Each ad group MUST have exactly 15 headlines and 4 descriptions."""
 
-        return await self._call_claude_json(system, user_msg, max_tokens=4096, temperature=0.7)
+        return await self._call_claude_json(system, user_msg, max_tokens=8192, temperature=0.7)
 
     # ── AGENT 6: QA ──────────────────────────────────────────────
 

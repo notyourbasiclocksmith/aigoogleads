@@ -127,6 +127,24 @@ def evaluate_cycle_feedback_task(self, cycle_id: str):
         raise
 
 
+@celery_app.task(name="app.jobs.operator_tasks.run_budget_auto_scaler_task", bind=True, max_retries=1)
+def run_budget_auto_scaler_task(self):
+    """
+    Daily task: evaluate all active campaigns for ROAS-based budget scaling.
+    Only acts on campaigns with sufficient data (20+ clicks, 2+ conversions).
+    """
+    logger.info("Starting budget auto-scaler sweep")
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(_run_budget_scaler_all())
+        loop.close()
+        logger.info("Budget auto-scaler sweep completed", result=result)
+    except Exception as ex:
+        logger.error("Budget auto-scaler sweep failed", error=str(ex))
+        raise
+
+
 @celery_app.task(name="app.jobs.operator_tasks.rollback_cycle_task", bind=True, max_retries=1)
 def rollback_cycle_task(self, cycle_id: str):
     """Rollback all mutations from an optimization cycle."""
@@ -195,6 +213,73 @@ async def _rollback_cycle(cycle_id: str):
             return await rollback_cycle(cycle_id, db)
     finally:
         await eng.dispose()
+
+
+async def _run_budget_scaler_all():
+    """Run budget auto-scaler for all active accounts in semi_auto or full_auto mode."""
+    from app.models.tenant import Tenant
+    from app.models import IntegrationGoogleAds
+    from app.core.security import decrypt_token
+    from app.integrations.google_ads.client import GoogleAdsClient
+    from app.services.operator.budget_auto_scaler import BudgetAutoScaler
+    from sqlalchemy import select
+
+    eng, factory = _make_task_session()
+    results = []
+    try:
+        async with factory() as db:
+            # Find tenants in semi_auto or full_auto mode
+            tenant_result = await db.execute(
+                select(Tenant).where(Tenant.autonomy_mode.in_(["semi_auto", "full_auto"]))
+            )
+            tenants = tenant_result.scalars().all()
+
+            for tenant in tenants:
+                # Get Google Ads integrations
+                int_result = await db.execute(
+                    select(IntegrationGoogleAds).where(
+                        IntegrationGoogleAds.tenant_id == str(tenant.id)
+                    )
+                )
+                integrations = int_result.scalars().all()
+
+                for integration in integrations:
+                    if integration.customer_id == "pending":
+                        continue
+                    try:
+                        ads_client = GoogleAdsClient(
+                            customer_id=integration.customer_id,
+                            refresh_token=decrypt_token(integration.encrypted_refresh_token),
+                        )
+                        scaler = BudgetAutoScaler(db, str(tenant.id), ads_client)
+
+                        # Get all active campaigns
+                        campaigns = await ads_client.get_campaigns()
+                        for campaign in campaigns:
+                            if campaign.get("status") != "ENABLED":
+                                continue
+                            result = await scaler.evaluate_and_scale(
+                                campaign_id=campaign.get("campaign_id"),
+                                guardrails=tenant.guardrails_json if hasattr(tenant, "guardrails_json") else {},
+                            )
+                            results.append({
+                                "tenant_id": str(tenant.id),
+                                "campaign_id": campaign.get("campaign_id"),
+                                "action": result.get("action"),
+                                "roas": result.get("roas"),
+                            })
+                    except Exception as e:
+                        logger.warning(
+                            "Budget scaler failed for integration",
+                            tenant_id=str(tenant.id),
+                            error=str(e)[:200],
+                        )
+
+            await db.commit()
+    finally:
+        await eng.dispose()
+
+    return {"campaigns_evaluated": len(results), "results": results}
 
 
 async def _apply_changes(change_set_id: str):

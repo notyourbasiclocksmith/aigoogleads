@@ -41,6 +41,7 @@ from app.models.gbp_connection import GBPConnection
 from app.models.gbp_location import GBPLocation
 from app.models.gbp_post import GBPPost, GBPPostTemplate, GBPReview
 from app.models.operator import OperatorConversation, OperatorMessage, ProposedAction, ActionExecutionLog
+from app.models.pipeline_execution_log import PipelineExecutionLog
 
 __all__ = [
     "Tenant", "User", "TenantUser", "IntegrationGoogleAds",
@@ -58,6 +59,7 @@ __all__ = [
     "ExpansionRecommendation", "AIGenerationLog",
     "GBPConnection", "GBPLocation", "GBPPost", "GBPPostTemplate", "GBPReview",
     "OperatorConversation", "OperatorMessage", "ProposedAction", "ActionExecutionLog",
+    "PipelineExecutionLog",
 ]
 
 # V2 Models — imported so Alembic/ORM can discover them
