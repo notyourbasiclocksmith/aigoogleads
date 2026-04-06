@@ -251,9 +251,56 @@ class UnifiedConversationService:
                     content = m.structured_payload["summary"]
                 conversation_history.append({"role": m.role, "content": content})
 
-        # 4. Call unified Claude agent
+        # 3b. Enhance prompt — clean up typos, structure the intent, generate image prompts
+        enhanced_data = {}
+        effective_message = message
+        try:
+            from app.services.operator.prompt_enhancer import enhance_prompt
+            biz_ctx = {}
+            from app.models.business_profile import BusinessProfile
+            bp_result = await self.db.execute(
+                select(BusinessProfile).where(BusinessProfile.tenant_id == tenant_id)
+            )
+            bp = bp_result.scalar_one_or_none()
+            if bp:
+                biz_ctx = {
+                    "name": getattr(bp, "description", "") or "",
+                    "industry": bp.industry_classification or "",
+                    "services": bp.services_json or [],
+                    "city": bp.city or "",
+                    "state": bp.state or "",
+                }
+            enhanced_data = await enhance_prompt(
+                raw_prompt=message,
+                business_context=biz_ctx,
+                existing_campaigns=context.get("google_ads", {}).get("campaigns", []),
+            )
+            if enhanced_data.get("enhanced_prompt") and not enhanced_data.get("skipped"):
+                effective_message = enhanced_data["enhanced_prompt"]
+                logger.info("Prompt enhanced (unified)", original_len=len(message), enhanced_len=len(effective_message))
+                enhance_msg = OperatorMessage(
+                    id=str(uuid.uuid4()),
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=effective_message,
+                    structured_payload={
+                        "type": "prompt_enhanced",
+                        "original": message,
+                        "enhanced": effective_message,
+                        "campaign_brief": enhanced_data.get("campaign_brief"),
+                        "ad_group_briefs": enhanced_data.get("ad_group_briefs"),
+                        "image_prompts": enhanced_data.get("image_prompts"),
+                        "suggested_negatives": enhanced_data.get("suggested_negatives"),
+                    },
+                )
+                self.db.add(enhance_msg)
+                await self.db.flush()
+        except Exception as e:
+            logger.warning("Prompt enhancement failed (unified), using original", error=str(e))
+
+        # 4. Call unified Claude agent with enhanced prompt
         claude_response = await self.agent.analyze(
-            user_message=message,
+            user_message=effective_message,
             context=context,
             systems_used=context.get("connected_systems", systems),
             conversation_history=conversation_history[:-1],
@@ -268,7 +315,7 @@ class UnifiedConversationService:
             try:
                 pipeline = CampaignAgentPipeline(self.db, tenant_id, customer_id)
                 pipeline_spec = await pipeline.run(
-                    user_prompt=message,
+                    user_prompt=effective_message,
                     account_context=context.get("google_ads", {}),
                     conversation_id=conversation_id,
                 )
@@ -281,6 +328,9 @@ class UnifiedConversationService:
                         qa_score = meta.get("qa_score")
                         if qa_score:
                             action["reasoning"] = f"{action.get('reasoning', '')} [Pipeline QA Score: {qa_score}/100]".strip()
+                        # Attach image prompts for post-deploy generation
+                        if enhanced_data.get("image_prompts"):
+                            pipeline_spec["_image_prompts"] = enhanced_data["image_prompts"]
             except Exception as e:
                 logger.error("Unified pipeline intercept failed", error=str(e))
 

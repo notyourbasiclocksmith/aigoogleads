@@ -279,9 +279,57 @@ class GoogleAdsOperatorService:
                     content = m.structured_payload["summary"]
                 conversation_history.append({"role": m.role, "content": content})
 
-        # Call Claude
+        # ── PROMPT ENHANCEMENT: Clean up messy user input before Claude ──
+        enhanced_data = {}
+        effective_message = message
+        try:
+            from app.services.operator.prompt_enhancer import enhance_prompt
+            biz_ctx = {}
+            from app.models.business_profile import BusinessProfile
+            bp_result = await self.db.execute(
+                select(BusinessProfile).where(BusinessProfile.tenant_id == tenant_id)
+            )
+            bp = bp_result.scalar_one_or_none()
+            if bp:
+                biz_ctx = {
+                    "name": getattr(bp, "description", "") or "",
+                    "industry": bp.industry_classification or "",
+                    "services": bp.services_json or [],
+                    "city": bp.city or "",
+                    "state": bp.state or "",
+                }
+            enhanced_data = await enhance_prompt(
+                raw_prompt=message,
+                business_context=biz_ctx,
+                existing_campaigns=account_context.get("campaigns", []),
+            )
+            if enhanced_data.get("enhanced_prompt") and not enhanced_data.get("skipped"):
+                effective_message = enhanced_data["enhanced_prompt"]
+                logger.info("Prompt enhanced", original_len=len(message), enhanced_len=len(effective_message))
+                # Save enhancement as a progress message
+                enhance_msg = OperatorMessage(
+                    id=str(uuid.uuid4()),
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=effective_message,
+                    structured_payload={
+                        "type": "prompt_enhanced",
+                        "original": message,
+                        "enhanced": effective_message,
+                        "campaign_brief": enhanced_data.get("campaign_brief"),
+                        "ad_group_briefs": enhanced_data.get("ad_group_briefs"),
+                        "image_prompts": enhanced_data.get("image_prompts"),
+                        "suggested_negatives": enhanced_data.get("suggested_negatives"),
+                    },
+                )
+                self.db.add(enhance_msg)
+                await self.db.flush()
+        except Exception as e:
+            logger.warning("Prompt enhancement failed, using original", error=str(e))
+
+        # Call Claude with enhanced prompt
         claude_response = await self.claude.analyze(
-            user_message=message,
+            user_message=effective_message,
             account_context=account_context,
             conversation_history=conversation_history[:-1],  # Exclude the message we just added
         )
@@ -290,12 +338,12 @@ class GoogleAdsOperatorService:
         # run the multi-agent pipeline to produce an expert-quality spec ──
         if self._should_use_pipeline(claude_response):
             logger.info("Pipeline intercept triggered", conversation_id=conversation_id)
-            intent = self._extract_campaign_intent(claude_response, message)
+            intent = self._extract_campaign_intent(claude_response, effective_message)
             pipeline_spec = await self._run_campaign_pipeline(
                 conversation_id=conversation_id,
                 tenant_id=tenant_id,
                 customer_id=customer_id,
-                user_message=message,
+                user_message=effective_message,
                 account_context=account_context,
                 claude_intent=intent,
             )
@@ -312,6 +360,10 @@ class GoogleAdsOperatorService:
                             f"{action.get('reasoning', '')} "
                             f"[Pipeline QA Score: {qa_score}/100]"
                         ).strip()
+
+                    # Attach image prompts from enhancer for post-deploy generation
+                    if enhanced_data.get("image_prompts"):
+                        pipeline_spec["_image_prompts"] = enhanced_data["image_prompts"]
 
         # Save assistant message
         assistant_msg = OperatorMessage(
@@ -525,6 +577,58 @@ class GoogleAdsOperatorService:
                     )
             except Exception as e:
                 logger.error("Post-execution audit failed", error=str(e))
+
+            # ── AUTO-GENERATE IMAGES after successful campaign deploy ──
+            image_prompts = spec.get("_image_prompts", [])
+            campaign_id = deploy_res.get("campaign", {}).get("campaign_id")
+            if image_prompts and campaign_id and exec_res.get("status") in ("success", "partial"):
+                img_results = []
+                for ip in image_prompts:
+                    try:
+                        img_result = await mutation_svc.execute_action(
+                            "generate_ad_image",
+                            {
+                                "prompt": ip.get("prompt", ""),
+                                "engine": ip.get("engine", "flux"),
+                                "style": ip.get("style", "photorealistic"),
+                                "size": "1200x628",  # Google Ads landscape
+                                "upload_to_google": True,
+                                "campaign_id": campaign_id,
+                                "asset_name": f"{ip.get('service', 'Ad')} - Campaign Image",
+                            },
+                        )
+                        img_results.append({
+                            "service": ip.get("service"),
+                            "status": img_result.get("status"),
+                            "image_url": img_result.get("image_url"),
+                        })
+                    except Exception as img_err:
+                        logger.warning("Image generation failed for service",
+                            service=ip.get("service"), error=str(img_err)[:200])
+                        img_results.append({
+                            "service": ip.get("service"),
+                            "status": "failed",
+                            "error": str(img_err)[:100],
+                        })
+
+                if img_results:
+                    img_msg = OperatorMessage(
+                        id=str(uuid.uuid4()),
+                        conversation_id=conversation_id,
+                        role="assistant",
+                        content=f"Generated {sum(1 for r in img_results if r.get('status') == 'success')} images for your campaign.",
+                        structured_payload={
+                            "type": "image_generation_result",
+                            "images": img_results,
+                            "campaign_id": campaign_id,
+                        },
+                    )
+                    self.db.add(img_msg)
+                    await self.db.flush()
+                    logger.info("Auto-generated campaign images",
+                        total=len(img_results),
+                        success=sum(1 for r in img_results if r.get("status") == "success"),
+                    )
 
         response = {
             "status": "completed",
