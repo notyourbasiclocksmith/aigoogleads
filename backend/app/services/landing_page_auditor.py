@@ -13,22 +13,23 @@ Returns a score out of 100 with detailed breakdown and recommendations.
 import json
 from typing import Dict, List, Optional, Any
 
-from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
 from app.core.config import settings
+from app.services.operator.llm_fallback_service import LLMFallbackService
 
 logger = structlog.get_logger()
 
 
 class LandingPageAuditor:
-    """AI-powered landing page audit and scoring engine."""
+    """AI-powered landing page audit and scoring engine (Claude Opus + GPT-4o fallback)."""
 
     def __init__(self, db: AsyncSession, tenant_id: str):
         self.db = db
         self.tenant_id = tenant_id
-        self.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY) if settings.OPENAI_API_KEY else None
+        self.llm = LLMFallbackService()
+        self.model = "claude-opus-4-6"
 
     async def audit_url(
         self,
@@ -39,7 +40,7 @@ class LandingPageAuditor:
         location: str = "",
     ) -> Dict[str, Any]:
         """Audit an external landing page URL."""
-        if not self.client:
+        if not settings.ANTHROPIC_API_KEY and not settings.OPENAI_API_KEY:
             return {"error": "AI not configured", "score": 0}
 
         campaign_keywords = campaign_keywords or []
@@ -64,7 +65,7 @@ class LandingPageAuditor:
         location: str = "",
     ) -> Dict[str, Any]:
         """Audit an AI-generated landing page's content."""
-        if not self.client:
+        if not settings.ANTHROPIC_API_KEY and not settings.OPENAI_API_KEY:
             return {"error": "AI not configured", "score": 0}
 
         campaign_keywords = campaign_keywords or []
@@ -176,20 +177,19 @@ Return JSON:
 }}"""
 
         try:
-            resp = await self.client.chat.completions.create(
-                model=settings.OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt},
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.4,
+            llm_result = await self.llm.call_json(
+                system=system,
+                user_msg=prompt,
                 max_tokens=2500,
+                temperature=0.4,
+                preferred_model=self.model,
             )
-            content_str = resp.choices[0].message.content
-            if content_str:
-                result = json.loads(content_str)
+            if llm_result and llm_result.get("data"):
+                result = llm_result["data"]
                 result["_ai_generated"] = True
+                result["_model_used"] = llm_result.get("model_used", "unknown")
+                if llm_result.get("fallback"):
+                    logger.info("Landing page auditor used fallback model", model=llm_result.get("model_used"))
                 return result
         except Exception as e:
             logger.error("Landing page audit AI failed", error=str(e))

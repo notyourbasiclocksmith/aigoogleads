@@ -14,23 +14,28 @@ import uuid
 import time
 from typing import Dict, List, Optional, Any
 
-from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
 from app.core.config import settings
 from app.models.landing_page import LandingPage, LandingPageVariant
+from app.services.operator.llm_fallback_service import LLMFallbackService
 
 logger = structlog.get_logger()
 
 
 class LandingPageGenerator:
-    """AI-powered landing page generation with multi-agent pipeline."""
+    """AI-powered landing page generation with Claude Opus + GPT-4o fallback."""
 
     def __init__(self, db: AsyncSession, tenant_id: str):
         self.db = db
         self.tenant_id = tenant_id
-        self.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY) if settings.OPENAI_API_KEY else None
+        self.llm = LLMFallbackService()
+        # Landing pages are quality-critical — Opus produces significantly
+        # better copy, keyword-headline matching, and variant differentiation.
+        # Cost: ~$0.30 per page × 2-3 calls = $0.60-0.90 per campaign.
+        # A bad landing page costs $10+/day in wasted ad spend.
+        self.model = "claude-opus-4-6"
 
     async def generate(
         self,
@@ -52,7 +57,7 @@ class LandingPageGenerator:
         Full pipeline: strategy → copy → trust → CRO audit → 3 variants → save.
         Returns the LandingPage record with variants.
         """
-        if not self.client:
+        if not settings.ANTHROPIC_API_KEY and not settings.OPENAI_API_KEY:
             return {"error": "AI not configured (no API key)"}
 
         usps = usps or []
@@ -154,7 +159,7 @@ class LandingPageGenerator:
     ) -> Dict[str, Any]:
         """Apply a prompt-based edit to a landing page variant's content.
         Handles everything from small tweaks to full redesigns."""
-        if not self.client:
+        if not settings.ANTHROPIC_API_KEY and not settings.OPENAI_API_KEY:
             return {"error": "AI not configured"}
 
         business_context = business_context or {}
@@ -233,7 +238,7 @@ If the instruction is a broad redesign request, make dramatic improvements acros
 all sections — better headlines, stronger copy, more compelling CTAs, and professional polish.
 Use the real business name, phone, and details throughout."""
 
-        result = await self._call_ai(system, prompt, temperature=0.4, max_tokens=16000)
+        result = await self._call_ai(system, prompt, temperature=0.4, max_tokens=8192)
         if not result:
             return {"error": "AI failed to apply edit"}
         return {"content": result, "edit_applied": edit_prompt}
@@ -368,23 +373,19 @@ Use the real business name, phone, and details throughout."""
         return variants
 
     async def _call_ai(self, system: str, user_prompt: str, temperature: float = 0.6, max_tokens: int = 4000) -> Optional[Dict]:
-        try:
-            resp = await self.client.chat.completions.create(
-                model=settings.OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_prompt},
-                ],
-                response_format={"type": "json_object"},
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            content = resp.choices[0].message.content
-            if content:
-                return json.loads(content)
-        except Exception as e:
-            logger.error("Landing page AI call failed", error=str(e))
-        return None
+        """Call Claude Opus with GPT-4o fallback for landing page generation."""
+        result = await self.llm.call_json(
+            system=system,
+            user_msg=user_prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            preferred_model=self.model,
+        )
+        if result is None:
+            return None
+        if result.get("fallback"):
+            logger.info("Landing page generator used fallback model", model=result.get("model_used"))
+        return result.get("data")
 
     async def _agent_strategist(self, ctx: Dict) -> Dict:
         """Agent 1: Determine offer angle, tone, CTA strategy, page structure."""
@@ -595,7 +596,7 @@ CRITICAL GOOGLE ADS RULES:
 - KEEP IT CONCISE: Google Ads visitors are high-intent. Don't bury the CTA under walls of text.
   Each section should be scannable in 3 seconds."""
 
-        result = await self._call_ai(system, prompt, temperature=0.7)
+        result = await self._call_ai(system, prompt, temperature=0.7, max_tokens=8192)
         if result and "variants" in result:
             return result["variants"]
         return None
