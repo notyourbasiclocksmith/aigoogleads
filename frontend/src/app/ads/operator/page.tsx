@@ -53,6 +53,7 @@ interface Message {
     findings?: Finding[];
     recommended_actions?: ProposedAction[];
     questions?: string[];
+    next_steps?: string[];
     message?: string;
     results?: any[];
     succeeded?: number;
@@ -1498,6 +1499,24 @@ export default function OperatorPage() {
                               ))}
                             <ExecutionResultCard payload={msg.structured_payload} />
                             <AuditResultCard payload={msg.structured_payload} onApprove={handleApprove} approving={approving} />
+                            {/* Next Steps */}
+                            {msg.structured_payload?.next_steps?.length ? (
+                              <div className="mt-3 bg-violet-500/10 border border-violet-500/20 rounded-xl p-3">
+                                <div className="flex items-center gap-1.5 mb-2">
+                                  <Sparkles className="w-3.5 h-3.5 text-violet-400" />
+                                  <span className="text-[11px] font-semibold text-violet-300">Next Steps</span>
+                                </div>
+                                <div className="space-y-1.5">
+                                  {msg.structured_payload.next_steps.map((step, i) => (
+                                    <div key={i} className="flex items-start gap-2 text-xs text-violet-200/80">
+                                      <span className="text-violet-400 font-bold mt-0.5">{i + 1}.</span>
+                                      <span>{step}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
+                            {/* Follow-up Questions */}
                             {msg.structured_payload?.questions?.length ? (
                               <div className="mt-3 space-y-1">
                                 {msg.structured_payload.questions.map((q, i) => (

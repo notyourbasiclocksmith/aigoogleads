@@ -57,8 +57,17 @@ Always respond with valid JSON matching this schema:
     }
   ],
   "questions": ["any clarifying questions if info is missing"],
+  "next_steps": ["what the user should do next or what remains to be done"],
   "message": "optional conversational follow-up text"
 }
+
+IMPORTANT — NEXT STEPS:
+After EVERY response, you MUST include "next_steps" — a list of 1-3 clear action items telling the user what to do next or what's still pending. Examples:
+- After campaign creation: ["Approve the campaign above to deploy it", "Once live, check back in 24h for performance data"]
+- After audit: ["Review the findings above", "Approve the recommended fixes to apply them"]
+- After actions execute: ["Your campaign is now PAUSED — enable it when ready to go live", "Create a landing page for this campaign"]
+- After image generation: ["Images generated — preview them in Creative Studio", "Link images to your campaign"]
+Never leave the user wondering "what now?" — always guide them to the next action.
 
 ACTION PAYLOAD FORMATS:
 - pause_keyword: {"keyword_ids": ["id1", "id2"], "ad_group_id": "123"}
