@@ -32,8 +32,215 @@ from app.models.operator import OperatorMessage
 from app.models.business_profile import BusinessProfile
 from app.models.pipeline_execution_log import PipelineExecutionLog
 from app.services.operator.ahrefs_keyword_service import AhrefsKeywordService
+from app.services.operator.llm_fallback_service import LLMFallbackService
 
 logger = structlog.get_logger()
+
+
+# ── PROGRAMMATIC QA CHECKS (run BEFORE LLM QA) ───────────────────
+def _programmatic_qa(spec: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Hard validation of campaign spec — character limits, counts, duplicates.
+    Returns list of issues found. These are FACTS, not opinions.
+    """
+    issues = []
+
+    # ── Character limits ──
+    for ag_idx, ag in enumerate(spec.get("ad_groups", [])):
+        for ad_idx, ad in enumerate(ag.get("ads", [])):
+            for h_idx, h in enumerate(ad.get("headlines", [])):
+                text = h if isinstance(h, str) else h.get("text", "") if isinstance(h, dict) else str(h)
+                if len(text) > 30:
+                    issues.append({
+                        "severity": "critical",
+                        "field": f"ad_groups[{ag_idx}].ads[{ad_idx}].headlines[{h_idx}]",
+                        "message": f"Headline '{text[:40]}...' is {len(text)} chars (max 30)",
+                        "fix": text[:30],
+                        "check": "char_limit",
+                    })
+            for d_idx, d in enumerate(ad.get("descriptions", [])):
+                text = d if isinstance(d, str) else d.get("text", "") if isinstance(d, dict) else str(d)
+                if len(text) > 90:
+                    issues.append({
+                        "severity": "critical",
+                        "field": f"ad_groups[{ag_idx}].ads[{ad_idx}].descriptions[{d_idx}]",
+                        "message": f"Description '{text[:50]}...' is {len(text)} chars (max 90)",
+                        "fix": text[:90],
+                        "check": "char_limit",
+                    })
+
+            # ── Minimum counts ──
+            h_count = len(ad.get("headlines", []))
+            d_count = len(ad.get("descriptions", []))
+            if h_count < 3:
+                issues.append({
+                    "severity": "critical",
+                    "field": f"ad_groups[{ag_idx}].ads[{ad_idx}].headlines",
+                    "message": f"Only {h_count} headlines (Google requires minimum 3)",
+                    "check": "min_count",
+                })
+            if d_count < 2:
+                issues.append({
+                    "severity": "critical",
+                    "field": f"ad_groups[{ag_idx}].ads[{ad_idx}].descriptions",
+                    "message": f"Only {d_count} descriptions (Google requires minimum 2)",
+                    "check": "min_count",
+                })
+
+            # ── Duplicate headlines within same ad ──
+            headline_texts = []
+            for h in ad.get("headlines", []):
+                text = (h if isinstance(h, str) else h.get("text", "")).lower().strip()
+                if text in headline_texts:
+                    issues.append({
+                        "severity": "warning",
+                        "field": f"ad_groups[{ag_idx}].ads[{ad_idx}].headlines",
+                        "message": f"Duplicate headline: '{text}'",
+                        "check": "duplicate",
+                    })
+                headline_texts.append(text)
+
+            # ── Missing final_urls ──
+            urls = ad.get("final_urls", ad.get("final_url", ""))
+            if isinstance(urls, list):
+                if not urls or not urls[0]:
+                    issues.append({
+                        "severity": "critical",
+                        "field": f"ad_groups[{ag_idx}].ads[{ad_idx}].final_urls",
+                        "message": "Missing final_url — ad will fail to deploy",
+                        "check": "missing_url",
+                    })
+            elif not urls:
+                issues.append({
+                    "severity": "critical",
+                    "field": f"ad_groups[{ag_idx}].ads[{ad_idx}].final_url",
+                    "message": "Missing final_url — ad will fail to deploy",
+                    "check": "missing_url",
+                })
+
+    # ── Keyword cross-contamination (same keyword in multiple ad groups) ──
+    kw_to_ag = {}
+    for ag_idx, ag in enumerate(spec.get("ad_groups", [])):
+        for kw in ag.get("keywords", []):
+            text = kw.get("text", "") if isinstance(kw, dict) else str(kw)
+            text_lower = text.lower().strip()
+            if text_lower in kw_to_ag:
+                issues.append({
+                    "severity": "warning",
+                    "field": f"ad_groups[{ag_idx}].keywords",
+                    "message": f"Keyword '{text}' also in ad group {kw_to_ag[text_lower]}",
+                    "check": "cross_contamination",
+                })
+            else:
+                kw_to_ag[text_lower] = ag.get("name", f"#{ag_idx}")
+
+    # ── Negative keywords blocking own keywords ──
+    all_keywords = set()
+    for ag in spec.get("ad_groups", []):
+        for kw in ag.get("keywords", []):
+            text = kw.get("text", "").lower() if isinstance(kw, dict) else str(kw).lower()
+            all_keywords.add(text)
+        for neg in ag.get("negative_keywords", []):
+            neg_text = neg.get("text", "").lower() if isinstance(neg, dict) else str(neg).lower()
+            for pos_kw in all_keywords:
+                if neg_text in pos_kw:
+                    issues.append({
+                        "severity": "critical",
+                        "field": "negative_keywords",
+                        "message": f"Negative '{neg_text}' blocks positive keyword '{pos_kw}'",
+                        "check": "neg_blocking",
+                    })
+                    break  # One per negative is enough
+
+    # ── Sitelink limits ──
+    for sl_idx, sl in enumerate(spec.get("sitelinks", [])):
+        if len(sl.get("link_text", "")) > 25:
+            issues.append({
+                "severity": "critical",
+                "field": f"sitelinks[{sl_idx}].link_text",
+                "message": f"Sitelink text '{sl['link_text']}' is {len(sl['link_text'])} chars (max 25)",
+                "fix": sl["link_text"][:25],
+                "check": "char_limit",
+            })
+        for desc_key in ("description1", "description2"):
+            if sl.get(desc_key) and len(sl[desc_key]) > 35:
+                issues.append({
+                    "severity": "critical",
+                    "field": f"sitelinks[{sl_idx}].{desc_key}",
+                    "message": f"Sitelink desc '{sl[desc_key][:30]}...' is {len(sl[desc_key])} chars (max 35)",
+                    "fix": sl[desc_key][:35],
+                    "check": "char_limit",
+                })
+
+    # ── Callout limits ──
+    for c_idx, c in enumerate(spec.get("callouts", [])):
+        text = c if isinstance(c, str) else str(c)
+        if len(text) > 25:
+            issues.append({
+                "severity": "critical",
+                "field": f"callouts[{c_idx}]",
+                "message": f"Callout '{text}' is {len(text)} chars (max 25)",
+                "fix": text[:25],
+                "check": "char_limit",
+            })
+
+    # ── Budget sanity ──
+    budget_micros = spec.get("campaign", {}).get("budget_micros", 0)
+    budget_daily = budget_micros / 1_000_000
+    if budget_daily <= 0:
+        issues.append({"severity": "critical", "field": "campaign.budget_micros", "message": "Budget is $0", "check": "budget"})
+    elif budget_daily > 5000:
+        issues.append({"severity": "warning", "field": "campaign.budget_micros", "message": f"Budget ${budget_daily}/day seems very high for local business", "check": "budget"})
+
+    return issues
+
+
+def _compute_keyword_headline_match(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Mathematical scoring of keyword-to-headline relevance per ad group.
+    Returns match scores and suggestions.
+    """
+    results = {}
+    for ag in spec.get("ad_groups", []):
+        ag_name = ag.get("name", "Unknown")
+        keywords = [kw.get("text", "").lower() if isinstance(kw, dict) else str(kw).lower()
+                    for kw in ag.get("keywords", [])]
+        headlines = []
+        for ad in ag.get("ads", []):
+            for h in ad.get("headlines", []):
+                text = h.lower() if isinstance(h, str) else h.get("text", "").lower() if isinstance(h, dict) else ""
+                headlines.append(text)
+
+        if not keywords or not headlines:
+            results[ag_name] = {"score": 0, "matched": 0, "total_keywords": len(keywords)}
+            continue
+
+        # Count how many keyword root terms appear in at least one headline
+        matched = 0
+        unmatched_keywords = []
+        for kw in keywords:
+            # Extract root terms (skip stop words)
+            stop_words = {"in", "the", "a", "an", "for", "and", "or", "near", "me", "my", "at", "on", "to"}
+            kw_terms = [t for t in kw.split() if t not in stop_words and len(t) > 2]
+            found = False
+            for term in kw_terms:
+                if any(term in h for h in headlines):
+                    found = True
+                    break
+            if found:
+                matched += 1
+            else:
+                unmatched_keywords.append(kw)
+
+        score = round((matched / len(keywords)) * 100) if keywords else 0
+        results[ag_name] = {
+            "score": score,
+            "matched": matched,
+            "total_keywords": len(keywords),
+            "unmatched_keywords": unmatched_keywords[:5],  # Top 5 for review
+        }
+
+    return results
 
 
 class CampaignAgentPipeline:
@@ -44,6 +251,7 @@ class CampaignAgentPipeline:
         self.tenant_id = tenant_id
         self.customer_id = customer_id
         self.client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+        self.llm = LLMFallbackService()
         # Pipeline agents use Opus for maximum quality — keyword strategy,
         # ad copy, and QA are where model intelligence directly impacts ROI
         self.model = "claude-opus-4-6"
@@ -173,8 +381,13 @@ class CampaignAgentPipeline:
         if qa_result:
             score = qa_result.get("score", 0)
             spec = self._apply_qa_fixes(spec, qa_result)
+            prog_count = len(qa_result.get("programmatic_issues", []))
+            strat_count = len(qa_result.get("strategic_issues", []))
+            kw_match = qa_result.get("avg_keyword_match", 0)
             await self._emit_progress("Quality Assurance", "done",
-                f"Score: {score}/100 \u2022 {len(qa_result.get('issues', []))} issues found \u2022 Auto-fixed")
+                f"Score: {score}/100 ({qa_result.get('grade', '?')}) \u2022 "
+                f"{prog_count} programmatic + {strat_count} strategic issues \u2022 "
+                f"Keyword-headline match: {kw_match}% \u2022 Auto-fixed")
         else:
             await self._emit_progress("Quality Assurance", "done", "Review complete")
 
@@ -262,10 +475,27 @@ class CampaignAgentPipeline:
         except Exception as e:
             logger.warning("Could not load competitor intel", error=str(e))
 
+        # Performance feedback from past campaigns (learnings)
+        feedback_context = {}
+        try:
+            from app.services.operator.performance_feedback_service import PerformanceFeedbackService
+            feedback_svc = PerformanceFeedbackService(self.db, self.tenant_id)
+            feedback_context = await feedback_svc.get_pipeline_learnings(
+                services=biz.get("services", []),
+            )
+            if feedback_context.get("top_performing_headlines"):
+                logger.info("Loaded performance feedback",
+                    headlines=len(feedback_context.get("top_performing_headlines", [])),
+                    keywords=len(feedback_context.get("top_performing_keywords", [])),
+                )
+        except Exception as e:
+            logger.warning("Could not load performance feedback", error=str(e))
+
         return {
             "business": biz,
             "account": account_context,
             "competitors": competitor_summary,
+            "feedback": feedback_context,
         }
 
     # ── PROGRESS MESSAGES ────────────────────────────────────────
@@ -298,28 +528,19 @@ class CampaignAgentPipeline:
         self, system: str, user_msg: str,
         max_tokens: int = 4096, temperature: float = 0.5,
     ) -> Optional[Dict]:
-        """Call Claude API and parse JSON response."""
-        for attempt in range(3):
-            try:
-                response = await self.client.messages.create(
-                    model=self.model,
-                    max_tokens=max_tokens,
-                    system=system,
-                    messages=[{"role": "user", "content": user_msg}],
-                    temperature=temperature,
-                )
-                raw = response.content[0].text.strip()
-                # Strip markdown code fences
-                if raw.startswith("```"):
-                    raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-                return json.loads(raw)
-            except json.JSONDecodeError:
-                logger.warning("Claude JSON parse failed", attempt=attempt, raw=raw[:200] if raw else "")
-            except anthropic.APIError as e:
-                logger.warning("Claude API error", attempt=attempt, error=str(e))
-            except Exception as e:
-                logger.warning("Claude call failed", attempt=attempt, error=str(e))
-        return None
+        """Call Claude API with GPT-4o fallback. Parse JSON response."""
+        result = await self.llm.call_json(
+            system=system,
+            user_msg=user_msg,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            preferred_model=self.model,
+        )
+        if result is None:
+            return None
+        if result.get("fallback"):
+            logger.info("Pipeline agent used fallback model", model=result.get("model_used"))
+        return result.get("data")
 
     # ── AGENT 1: STRATEGIST ──────────────────────────────────────
 
@@ -376,6 +597,7 @@ COMPETITIVE LANDSCAPE:
   Opportunity gaps: {json.dumps(competitors.get('opportunity_gaps', []))}
   Top competitors: {json.dumps([c.get('domain', '') for c in competitors.get('top_competitors', [])[:5]])}
 
+{self._format_feedback_for_strategist(context.get('feedback', {}))}
 Return this JSON structure:
 {{
   "campaign_name": "A.X | [Service Theme] | [Location]",
@@ -696,6 +918,7 @@ ALWAYS USE: Specific numbers, credentials, real trust signals, the actual servic
 
 Competitor gaps to exploit: {json.dumps(competitors.get('opportunity_gaps', []))}
 
+{self._format_feedback_for_ad_copy(context.get('feedback', {}))}
 Respond with ONLY valid JSON."""
 
         user_msg = f"""CAMPAIGN: {strategy.get('campaign_name', 'New Campaign')}
@@ -730,54 +953,187 @@ Each ad group MUST have exactly 15 headlines and 4 descriptions."""
 
         return await self._call_claude_json(system, user_msg, max_tokens=8192, temperature=0.7)
 
-    # ── AGENT 6: QA ──────────────────────────────────────────────
+    # ── AGENT 6: QA (HARDENED — programmatic + LLM) ────────────────
 
     async def _agent_qa(self, spec: Dict, context: Dict, user_prompt: str) -> Optional[Dict]:
-        system = """You are a Google Ads compliance auditor and quality reviewer. You check campaigns before they go live.
+        """
+        Two-phase QA:
+        1. Programmatic checks (character limits, duplicates, missing URLs) — FACTS
+        2. LLM review (strategic quality, ad relevance, campaign coherence) — JUDGMENT
+        3. Keyword-headline match scoring — MATHEMATICAL
+        """
+        # ── Phase 1: Programmatic checks (instant, free, 100% accurate) ──
+        programmatic_issues = _programmatic_qa(spec)
+        critical_count = sum(1 for i in programmatic_issues if i["severity"] == "critical")
+        warning_count = len(programmatic_issues) - critical_count
 
-CHECK THESE THINGS:
-1. Character limits: headlines max 30, descriptions max 90, sitelink text max 25, sitelink descriptions max 35, callouts max 25
-2. Minimum counts: at least 3 headlines per ad (Google requires minimum 3), at least 2 descriptions (minimum 2), RSA best practice is 15 headlines + 4 descriptions
-3. No duplicate headlines within the same ad group
-4. Every ad has final_urls set (not empty)
-5. Keywords are segmented — no keyword appears in multiple ad groups
-6. Negative keywords don't accidentally block own keywords
-7. Budget is reasonable (not $0, not $10000/day for a local business)
-8. Sitelink URLs look real (not placeholder URLs)
-9. Phone number format is valid if present
-10. Campaign name follows conventions
+        # ── Phase 2: Keyword-headline match scoring ──
+        kw_match = _compute_keyword_headline_match(spec)
+        avg_match_score = 0
+        if kw_match:
+            scores = [v["score"] for v in kw_match.values()]
+            avg_match_score = sum(scores) / len(scores) if scores else 0
 
-For each issue, provide:
-- severity: "critical" (will fail to deploy) vs "warning" (suboptimal but works)
-- field: which part of the spec has the issue
-- message: what's wrong
-- fix: the corrected value (so we can auto-apply it)
+        # ── Phase 3: Ahrefs relevance check ──
+        ahrefs_section = ""
+        ahrefs = context.get("ahrefs", {})
+        if ahrefs and ahrefs.get("seed_keywords"):
+            high_vol_kws = [kw["keyword"] for kw in ahrefs.get("seed_keywords", [])
+                           if kw.get("volume", 0) >= 30][:20]
+            if high_vol_kws:
+                # Check how many high-volume Ahrefs keywords made it into the spec
+                spec_keywords = set()
+                for ag in spec.get("ad_groups", []):
+                    for kw in ag.get("keywords", []):
+                        text = kw.get("text", "").lower() if isinstance(kw, dict) else str(kw).lower()
+                        spec_keywords.add(text)
+                matched_ahrefs = [kw for kw in high_vol_kws if kw.lower() in spec_keywords]
+                ahrefs_section = f"""
+AHREFS KEYWORD COVERAGE:
+  High-volume keywords from Ahrefs: {len(high_vol_kws)}
+  Keywords that made it into the campaign: {len(matched_ahrefs)}
+  Coverage: {round(len(matched_ahrefs) / len(high_vol_kws) * 100) if high_vol_kws else 0}%
+  Missing high-volume keywords: {json.dumps([kw for kw in high_vol_kws if kw.lower() not in spec_keywords][:10])}
+"""
 
-Score 0-100 based on campaign quality. 90+ is excellent. Below 70 needs correction.
+        # ── Phase 4: LLM strategic review (only what programmatic can't check) ──
+        system = f"""You are a Google Ads campaign quality reviewer. You evaluate STRATEGIC quality — not character limits (those are already checked programmatically).
+
+PROGRAMMATIC CHECKS ALREADY DONE (don't re-check these):
+- Character limits: {critical_count} critical, {warning_count} warnings found
+- Keyword-headline match: avg {avg_match_score:.0f}% across ad groups
+
+YOUR JOB — Strategic quality only:
+1. Does the ad copy match search intent? (Someone searching "emergency locksmith" should see urgency, not generic "quality service")
+2. Are the headlines compelling and differentiated? (Not 15 variations of the same generic headline)
+3. Do the keywords cover the full search funnel? (Emergency + high-intent + research + local)
+4. Is the bidding strategy appropriate for this business type and budget?
+5. Are sitelink URLs realistic and relevant?
+6. Does the campaign name follow conventions?
+7. Will this campaign actually CONVERT? Rate the persuasion quality.
+{ahrefs_section}
+KEYWORD-HEADLINE MATCH BY AD GROUP:
+{json.dumps(kw_match, indent=2)}
+
+Score STRATEGIC quality 0-100 (separate from programmatic issues).
+If keyword-headline match is below 50%, flag it as a warning.
 
 Respond with ONLY valid JSON."""
 
         user_msg = f"""ORIGINAL USER REQUEST: "{user_prompt}"
 
-FULL CAMPAIGN SPEC TO REVIEW:
-{json.dumps(spec, indent=2)}
+CAMPAIGN SPEC (abbreviated — focus on quality not structure):
+  Campaign: {spec.get('campaign', {}).get('name')}
+  Budget: ${spec.get('campaign', {}).get('budget_micros', 0) / 1_000_000:.0f}/day
+  Ad Groups: {len(spec.get('ad_groups', []))}
+  Sitelinks: {len(spec.get('sitelinks', []))}
+  Callouts: {len(spec.get('callouts', []))}
+
+AD GROUPS DETAIL:
+{json.dumps([{
+    'name': ag.get('name'),
+    'keywords': len(ag.get('keywords', [])),
+    'headlines': [h[:30] if isinstance(h, str) else h.get('text', '')[:30] for h in ag.get('ads', [{}])[0].get('headlines', [])[:5]] if ag.get('ads') else [],
+    'descriptions': [d[:50] if isinstance(d, str) else d.get('text', '')[:50] for d in ag.get('ads', [{}])[0].get('descriptions', [])[:2]] if ag.get('ads') else [],
+} for ag in spec.get('ad_groups', [])], indent=2)}
 
 Return this JSON:
 {{
-  "score": 85,
+  "strategic_score": 85,
   "grade": "B+",
-  "issues": [
-    {{"severity": "critical"|"warning", "field": "ad_groups[0].ads[0].headlines[2]", "message": "Headline exceeds 30 chars", "fix": "Shortened Headline"}},
+  "strategic_issues": [
+    {{"severity": "warning", "area": "ad_copy|keywords|targeting|budget|extensions", "message": "What's wrong strategically", "suggestion": "How to improve"}},
     ...
   ],
-  "fixes": {{
-    "field.path": "corrected value"
-  }},
+  "strengths": ["What's done well"],
   "approved": true,
-  "summary": "Brief assessment of campaign quality"
+  "summary": "1-2 sentence assessment"
 }}"""
 
-        return await self._call_claude_json(system, user_msg, max_tokens=2048, temperature=0.2)
+        llm_result = await self._call_claude_json(system, user_msg, max_tokens=2048, temperature=0.2)
+
+        # ── Merge programmatic + LLM results ──
+        strategic_score = llm_result.get("strategic_score", 75) if llm_result else 75
+        programmatic_penalty = min(critical_count * 5 + warning_count * 2, 30)
+        kw_match_penalty = max(0, (50 - avg_match_score) * 0.3) if avg_match_score < 50 else 0
+        final_score = max(0, strategic_score - programmatic_penalty - kw_match_penalty)
+
+        combined = {
+            "score": round(final_score),
+            "grade": self._score_to_grade(final_score),
+            "strategic_score": strategic_score,
+            "programmatic_issues": programmatic_issues,
+            "strategic_issues": llm_result.get("strategic_issues", []) if llm_result else [],
+            "strengths": llm_result.get("strengths", []) if llm_result else [],
+            "keyword_headline_match": kw_match,
+            "avg_keyword_match": round(avg_match_score),
+            "issues": programmatic_issues + (llm_result.get("strategic_issues", []) if llm_result else []),
+            "approved": final_score >= 60,
+            "summary": (
+                f"Score {round(final_score)}/100 ({self._score_to_grade(final_score)}). "
+                f"{critical_count} critical issues, {warning_count} warnings. "
+                f"Keyword-headline match: {avg_match_score:.0f}%. "
+                f"{llm_result.get('summary', '') if llm_result else ''}"
+            ),
+        }
+        return combined
+
+    @staticmethod
+    def _score_to_grade(score: float) -> str:
+        if score >= 95: return "A+"
+        if score >= 90: return "A"
+        if score >= 85: return "A-"
+        if score >= 80: return "B+"
+        if score >= 75: return "B"
+        if score >= 70: return "B-"
+        if score >= 65: return "C+"
+        if score >= 60: return "C"
+        if score >= 50: return "D"
+        return "F"
+
+    # ── FEEDBACK FORMATTERS ─────────────────────────────────────
+
+    def _format_feedback_for_strategist(self, feedback: Dict) -> str:
+        """Format performance feedback for the Strategist agent's prompt."""
+        if not feedback or not feedback.get("budget_insights"):
+            return ""
+
+        lines = ["PERFORMANCE LEARNINGS FROM PAST CAMPAIGNS:"]
+        if feedback.get("budget_insights"):
+            bi = feedback["budget_insights"]
+            lines.append(f"  Avg budget that converted: ${bi.get('avg_converting_budget', 0):.0f}/day")
+            lines.append(f"  Best performing campaign type: {bi.get('best_campaign_type', 'SEARCH')}")
+        if feedback.get("avg_pipeline_quality"):
+            lines.append(f"  Avg pipeline QA score: {feedback['avg_pipeline_quality']:.0f}/100")
+        if feedback.get("winning_angles"):
+            lines.append(f"  Best ad copy angles: {', '.join(feedback['winning_angles'][:3])}")
+        lines.append("  Use these learnings to inform your budget and strategy decisions.")
+        return "\n".join(lines)
+
+    def _format_feedback_for_ad_copy(self, feedback: Dict) -> str:
+        """Format performance feedback for the Ad Copy agent's prompt."""
+        if not feedback:
+            return ""
+
+        lines = []
+        if feedback.get("top_performing_headlines"):
+            lines.append("PROVEN HEADLINES FROM PAST CAMPAIGNS (high CTR — use this style):")
+            for h in feedback["top_performing_headlines"][:8]:
+                lines.append(f'  "{h.get("text", "")}" — CTR: {h.get("ctr", 0):.1%}')
+            lines.append("  ↑ Write NEW headlines in a SIMILAR style to these winners.")
+
+        if feedback.get("failed_patterns"):
+            lines.append("\nFAILED HEADLINES (low CTR — avoid this style):")
+            for h in feedback["failed_patterns"][:5]:
+                lines.append(f'  "{h.get("text", "")}" — CTR: {h.get("ctr", 0):.1%}')
+            lines.append("  ↑ Do NOT repeat these patterns.")
+
+        if feedback.get("top_performing_keywords"):
+            lines.append("\nKEYWORDS THAT ACTUALLY CONVERT (include these terms in headlines):")
+            for kw in feedback["top_performing_keywords"][:5]:
+                lines.append(f'  "{kw.get("text", "")}" — {kw.get("conversions", 0)} conversions')
+
+        return "\n".join(lines) if lines else ""
 
     # ── SPEC ASSEMBLY ────────────────────────────────────────────
 
@@ -856,51 +1212,35 @@ Return this JSON:
     # ── QA FIX APPLICATION ───────────────────────────────────────
 
     def _apply_qa_fixes(self, spec: Dict, qa_result: Dict) -> Dict:
-        """Apply QA agent corrections to the assembled spec."""
+        """Apply QA corrections — programmatic fixes are deterministic, strategic are logged."""
         if not qa_result:
             return spec
 
         # Store QA score in metadata
         if "_pipeline_metadata" in spec:
             spec["_pipeline_metadata"]["qa_score"] = qa_result.get("score")
+            spec["_pipeline_metadata"]["qa_grade"] = qa_result.get("grade")
+            spec["_pipeline_metadata"]["keyword_headline_match"] = qa_result.get("avg_keyword_match")
+            spec["_pipeline_metadata"]["programmatic_issues"] = len(qa_result.get("programmatic_issues", []))
+            spec["_pipeline_metadata"]["strategic_issues"] = len(qa_result.get("strategic_issues", []))
 
-        # Apply character limit fixes
-        for issue in qa_result.get("issues", []):
-            if issue.get("severity") != "critical":
-                continue
-            fix = issue.get("fix")
-            field = issue.get("field", "")
-            if not fix or not field:
-                continue
-
-            # Auto-truncate headlines that are too long
-            if "headlines" in field:
-                try:
-                    parts = field.replace("]", "").replace("[", ".").split(".")
-                    for ag in spec.get("ad_groups", []):
-                        for ad in ag.get("ads", []):
-                            for i, h in enumerate(ad.get("headlines", [])):
-                                if len(h) > 30:
-                                    ad["headlines"][i] = h[:30]
-                except Exception:
-                    pass
-
-            # Auto-truncate descriptions that are too long
-            if "descriptions" in field:
-                try:
-                    for ag in spec.get("ad_groups", []):
-                        for ad in ag.get("ads", []):
-                            for i, d in enumerate(ad.get("descriptions", [])):
-                                if len(d) > 90:
-                                    ad["descriptions"][i] = d[:90]
-                except Exception:
-                    pass
-
-        # Always do a safety pass on character limits
+        # ── Auto-fix all programmatic issues (character limits, etc.) ──
+        # These are deterministic — just truncate to limits
         for ag in spec.get("ad_groups", []):
             for ad in ag.get("ads", []):
-                ad["headlines"] = [h[:30] for h in ad.get("headlines", [])]
-                ad["descriptions"] = [d[:90] for d in ad.get("descriptions", [])]
+                # Remove duplicates while preserving order
+                seen_headlines = set()
+                unique_headlines = []
+                for h in ad.get("headlines", []):
+                    text = h if isinstance(h, str) else h.get("text", "")
+                    if text.lower().strip() not in seen_headlines:
+                        seen_headlines.add(text.lower().strip())
+                        unique_headlines.append(h[:30] if isinstance(h, str) else h)
+                ad["headlines"] = unique_headlines
+
+                # Truncate all to limits
+                ad["headlines"] = [h[:30] if isinstance(h, str) else h for h in ad.get("headlines", [])]
+                ad["descriptions"] = [d[:90] if isinstance(d, str) else d for d in ad.get("descriptions", [])]
 
         # Truncate sitelink fields
         for sl in spec.get("sitelinks", []):
@@ -912,7 +1252,15 @@ Return this JSON:
                 sl["description2"] = sl["description2"][:35]
 
         # Truncate callouts
-        spec["callouts"] = [c[:25] for c in spec.get("callouts", [])]
+        spec["callouts"] = [c[:25] if isinstance(c, str) else str(c)[:25] for c in spec.get("callouts", [])]
+
+        # ── If QA score < 70 and we haven't retried, trigger correction round ──
+        if qa_result.get("score", 100) < 70 and not spec.get("_qa_retry"):
+            spec["_qa_retry"] = True
+            logger.warning("QA score below 70 — correction round recommended",
+                score=qa_result.get("score"),
+                critical=len([i for i in qa_result.get("programmatic_issues", []) if i.get("severity") == "critical"]),
+            )
 
         return spec
 

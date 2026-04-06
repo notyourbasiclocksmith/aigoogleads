@@ -116,6 +116,11 @@ celery_app.conf.beat_schedule = {
         "task": "app.jobs.tasks.sync_all_gbp_daily",
         "schedule": crontab(hour=3, minute=0),
     },
+    # Pipeline A/B variant performance update — weekly on Wednesday
+    "pipeline-ab-performance-weekly": {
+        "task": "app.jobs.operator_tasks.update_pipeline_ab_performance_task",
+        "schedule": crontab(hour=11, minute=0, day_of_week=3),
+    },
 }
 
 celery_app.autodiscover_tasks(["app.jobs", "app.jobs.operator_tasks"])

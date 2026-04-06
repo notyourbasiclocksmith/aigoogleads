@@ -870,6 +870,154 @@ async def get_pipeline_log_detail(
     }
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Revenue Attribution — IntelliDrive
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class ConversionEventRequest(BaseModel):
+    event_type: str = Field(..., description="call, form_submit, booking, walk_in")
+    caller_phone: Optional[str] = None
+    lead_name: Optional[str] = None
+    lead_email: Optional[str] = None
+    campaign_id: Optional[str] = None
+    keyword_text: Optional[str] = None
+    click_id: Optional[str] = None  # gclid
+
+
+class LinkRevenueRequest(BaseModel):
+    conversion_id: str
+    job_id: str
+    invoice_amount: float  # Dollars
+    invoice_date: Optional[str] = None  # YYYY-MM-DD
+
+
+@router.post("/revenue/conversion")
+async def record_conversion(
+    req: ConversionEventRequest,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Record a conversion event (call, form, booking) and optionally link to Google Ads."""
+    from app.services.operator.revenue_attribution import RevenueAttributionService
+
+    svc = RevenueAttributionService(db, str(user.tenant_id))
+    result = await svc.record_conversion_event(
+        event_type=req.event_type,
+        source_data={
+            "caller_phone": req.caller_phone,
+            "lead_name": req.lead_name,
+            "lead_email": req.lead_email,
+        },
+    )
+    # Link to campaign if provided
+    if req.campaign_id and result.get("conversion_id"):
+        await svc.link_to_campaign(
+            conversion_id=result["conversion_id"],
+            campaign_id=req.campaign_id,
+            keyword_text=req.keyword_text,
+            click_id=req.click_id,
+        )
+    await db.commit()
+    return result
+
+
+@router.post("/revenue/link-job")
+async def link_job_revenue(
+    req: LinkRevenueRequest,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Link actual job revenue to a conversion event for true ROAS."""
+    from app.services.operator.revenue_attribution import RevenueAttributionService
+    from datetime import date as dt_date
+
+    invoice_date = None
+    if req.invoice_date:
+        invoice_date = dt_date.fromisoformat(req.invoice_date)
+
+    svc = RevenueAttributionService(db, str(user.tenant_id))
+    result = await svc.record_job_revenue(
+        conversion_id=req.conversion_id,
+        job_id=req.job_id,
+        invoice_amount=req.invoice_amount,
+        invoice_date=invoice_date,
+    )
+    await db.commit()
+    return result
+
+
+@router.get("/revenue/true-roas/{campaign_id}")
+async def get_true_roas(
+    campaign_id: str,
+    days: int = Query(30, ge=7, le=90),
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get true ROAS for a campaign based on actual invoice revenue vs ad spend."""
+    from app.services.operator.revenue_attribution import RevenueAttributionService
+
+    svc = RevenueAttributionService(db, str(user.tenant_id))
+    return await svc.get_true_roas(campaign_id, days)
+
+
+@router.get("/revenue/report")
+async def get_attribution_report(
+    days: int = Query(30, ge=7, le=90),
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Full revenue attribution report: spend, clicks, calls, jobs, revenue per campaign."""
+    from app.services.operator.revenue_attribution import RevenueAttributionService
+
+    svc = RevenueAttributionService(db, str(user.tenant_id))
+    return await svc.get_attribution_report(str(user.tenant_id), days)
+
+
+@router.get("/revenue/top-keywords")
+async def get_top_revenue_keywords(
+    limit: int = Query(20, le=100),
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Keywords ranked by actual revenue generated (not just conversions)."""
+    from app.services.operator.revenue_attribution import RevenueAttributionService
+
+    svc = RevenueAttributionService(db, str(user.tenant_id))
+    return await svc.get_top_revenue_keywords(str(user.tenant_id), limit)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Pipeline A/B Variant Tracking
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/pipeline/ab-variants")
+async def get_ab_variants(
+    limit: int = Query(50, le=200),
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get pipeline A/B variant history with performance data."""
+    from app.services.operator.pipeline_ab_tracker import PipelineABTracker
+
+    tracker = PipelineABTracker(db)
+    winning = await tracker.get_winning_variants(str(user.tenant_id))
+    return winning
+
+
+@router.get("/pipeline/feedback")
+async def get_pipeline_feedback(
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get performance feedback learnings for this tenant's pipeline runs."""
+    from app.services.operator.performance_feedback_service import PerformanceFeedbackService
+
+    svc = PerformanceFeedbackService(db, str(user.tenant_id))
+    return await svc.get_pipeline_learnings()
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _parse_date_range(date_range: str):

@@ -145,6 +145,24 @@ def run_budget_auto_scaler_task(self):
         raise
 
 
+@celery_app.task(name="app.jobs.operator_tasks.update_pipeline_ab_performance_task", bind=True, max_retries=1)
+def update_pipeline_ab_performance_task(self):
+    """
+    Weekly task: update pipeline A/B variant records with real campaign performance
+    (CTR, conversions, ROAS) after 7+ days of data.
+    """
+    logger.info("Starting pipeline A/B performance update")
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(_update_ab_performance())
+        loop.close()
+        logger.info("Pipeline A/B performance update completed", result=result)
+    except Exception as ex:
+        logger.error("Pipeline A/B performance update failed", error=str(ex))
+        raise
+
+
 @celery_app.task(name="app.jobs.operator_tasks.rollback_cycle_task", bind=True, max_retries=1)
 def rollback_cycle_task(self, cycle_id: str):
     """Rollback all mutations from an optimization cycle."""
@@ -280,6 +298,80 @@ async def _run_budget_scaler_all():
         await eng.dispose()
 
     return {"campaigns_evaluated": len(results), "results": results}
+
+
+async def _update_ab_performance():
+    """Update A/B variant records with real campaign performance after 7+ days."""
+    from app.services.operator.pipeline_ab_tracker import PipelineABTracker, PipelineABVariant
+    from app.models import IntegrationGoogleAds
+    from app.core.security import decrypt_token
+    from app.integrations.google_ads.client import GoogleAdsClient
+    from sqlalchemy import select, and_
+    from datetime import datetime, timezone, timedelta
+
+    eng, factory = _make_task_session()
+    updated = 0
+    try:
+        async with factory() as db:
+            # Find variants older than 7 days with no performance data
+            cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+            result = await db.execute(
+                select(PipelineABVariant).where(
+                    and_(
+                        PipelineABVariant.created_at <= cutoff,
+                        PipelineABVariant.real_ctr.is_(None),
+                        PipelineABVariant.campaign_id.isnot(None),
+                    )
+                ).limit(50)
+            )
+            variants = result.scalars().all()
+
+            for variant in variants:
+                try:
+                    # Find the tenant's Google Ads integration
+                    int_result = await db.execute(
+                        select(IntegrationGoogleAds).where(
+                            and_(
+                                IntegrationGoogleAds.tenant_id == variant.tenant_id,
+                                IntegrationGoogleAds.customer_id != "pending",
+                            )
+                        ).limit(1)
+                    )
+                    integration = int_result.scalar_one_or_none()
+                    if not integration:
+                        continue
+
+                    ads_client = GoogleAdsClient(
+                        customer_id=integration.customer_id,
+                        refresh_token=decrypt_token(integration.encrypted_refresh_token),
+                    )
+                    perf = await ads_client.get_performance_metrics("LAST_30_DAYS")
+                    campaign_perf = next(
+                        (p for p in (perf if isinstance(perf, list) else [perf])
+                         if p.get("campaign_id") == variant.campaign_id),
+                        None,
+                    )
+                    if campaign_perf:
+                        tracker = PipelineABTracker(db)
+                        await tracker.record_campaign_performance(
+                            campaign_id=variant.campaign_id,
+                            metrics={
+                                "ctr": campaign_perf.get("ctr", 0),
+                                "conversions": campaign_perf.get("conversions", 0),
+                                "roas": (campaign_perf.get("conversions_value", 0) /
+                                         max(campaign_perf.get("cost_micros", 1) / 1_000_000, 0.01)),
+                            },
+                        )
+                        updated += 1
+                except Exception as e:
+                    logger.warning("Failed to update AB variant performance",
+                        variant_id=variant.id, error=str(e)[:200])
+
+            await db.commit()
+    finally:
+        await eng.dispose()
+
+    return {"variants_updated": updated}
 
 
 async def _apply_changes(change_set_id: str):
