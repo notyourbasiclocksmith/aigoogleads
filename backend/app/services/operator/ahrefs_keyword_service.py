@@ -13,8 +13,12 @@ Instead of Claude "imagining" keywords, this service provides ground truth:
 
 The Keyword Research Agent then uses this data to make intelligent decisions
 about which keywords to bid on, what match types to use, and what to exclude.
+
+NOTE: Ahrefs CPC values are in USD cents (integer). We convert to dollars
+in the output for consistency with Google Ads reporting.
 """
 
+import asyncio
 import httpx
 import structlog
 from typing import Dict, Any, List, Optional
@@ -30,6 +34,10 @@ AHREFS_API_BASE = "https://api.ahrefs.com/v3"
 # Default timeout for Ahrefs API calls (30 seconds)
 AHREFS_TIMEOUT = 30.0
 
+# Retry config
+MAX_RETRIES = 2
+RETRY_BACKOFF = [1.0, 3.0]  # seconds between retries
+
 
 class AhrefsKeywordService:
     """Pulls real keyword data from Ahrefs to power the campaign pipeline."""
@@ -37,6 +45,19 @@ class AhrefsKeywordService:
     def __init__(self, api_token: Optional[str] = None):
         self.api_token = api_token or getattr(settings, "AHREFS_API_KEY", "")
         self.available = bool(self.api_token)
+        # Shared client for connection pooling
+        self._client: Optional[httpx.AsyncClient] = None
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Get or create a shared httpx client for connection pooling."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=AHREFS_TIMEOUT)
+        return self._client
+
+    async def close(self):
+        """Close the shared httpx client."""
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
 
     # ── PUBLIC API ──────────────────────────────────────────────
 
@@ -45,7 +66,7 @@ class AhrefsKeywordService:
         services: List[str],
         locations: List[str],
         business_website: str = "",
-        competitor_domains: List[str] = None,
+        competitor_domains: Optional[List[str]] = None,
         country: str = "us",
     ) -> Dict[str, Any]:
         """
@@ -70,6 +91,9 @@ class AhrefsKeywordService:
             logger.info("Ahrefs API key not configured — returning empty enrichment")
             return self._empty_result()
 
+        # Normalize country to uppercase (Ahrefs requires ISO 3166-1 alpha-2)
+        country = country.upper()
+
         results: Dict[str, Any] = {
             "seed_keywords": [],
             "expanded_keywords": [],
@@ -84,7 +108,6 @@ class AhrefsKeywordService:
             seed_queries = self._build_seed_queries(services, locations)
 
             # Run parallel Ahrefs calls
-            import asyncio
             tasks = [
                 self._get_keyword_overview(seed_queries, country),
                 self._get_matching_terms(services, country),
@@ -94,7 +117,7 @@ class AhrefsKeywordService:
             # Add competitor spying if we have domains
             if competitor_domains:
                 for domain in competitor_domains[:3]:  # Max 3 competitors
-                    tasks.append(self._get_competitor_paid_keywords(domain, country))
+                    tasks.append(self._get_competitor_keywords(domain, country))
 
             # Also spy on our own organic keywords for cross-pollination
             if business_website:
@@ -105,15 +128,15 @@ class AhrefsKeywordService:
             # Unpack results
             idx = 0
             if not isinstance(gathered[idx], Exception):
-                results["seed_keywords"] = gathered[idx]
+                results["seed_keywords"] = gathered[idx] or []
             idx += 1
 
             if not isinstance(gathered[idx], Exception):
-                results["expanded_keywords"] = gathered[idx]
+                results["expanded_keywords"] = gathered[idx] or []
             idx += 1
 
             if not isinstance(gathered[idx], Exception):
-                results["search_suggestions"] = gathered[idx]
+                results["search_suggestions"] = gathered[idx] or []
             idx += 1
 
             # Competitor keywords
@@ -121,14 +144,14 @@ class AhrefsKeywordService:
             if competitor_domains:
                 for i in range(min(3, len(competitor_domains))):
                     if idx < len(gathered) and not isinstance(gathered[idx], Exception):
-                        comp_kws.extend(gathered[idx])
+                        comp_kws.extend(gathered[idx] or [])
                     idx += 1
             results["competitor_keywords"] = comp_kws
 
             # Own organic keywords (for ideas)
             if business_website and idx < len(gathered):
                 if not isinstance(gathered[idx], Exception):
-                    organic = gathered[idx]
+                    organic = gathered[idx] or []
                     # Add organic keywords as potential paid targets
                     results["expanded_keywords"].extend([
                         {**kw, "source": "own_organic"} for kw in organic
@@ -149,13 +172,15 @@ class AhrefsKeywordService:
                     "avg_volume": round(sum(volumes) / len(volumes)) if volumes else 0,
                     "high_value_keywords": len([
                         kw for kw in all_kws
-                        if (kw.get("volume") or 0) >= 50 and (kw.get("cpc") or 0) >= 1.0
+                        if (kw.get("volume") or 0) >= 50 and (kw.get("cpc") or 0) >= 0.50
                     ]),
                     "competitor_keywords_found": len(results["competitor_keywords"]),
                 }
 
         except Exception as e:
             logger.error("Ahrefs enrichment failed", error=str(e))
+        finally:
+            await self.close()
 
         return results
 
@@ -174,22 +199,24 @@ class AhrefsKeywordService:
         data = await self._api_call(
             "/keywords-explorer/overview",
             params={
-                "select": "keyword,volume,cpc,difficulty,global_volume",
+                "select": "keyword,volume,cpc,difficulty,global_volume,clicks,traffic_potential",
                 "keywords": keyword_str,
                 "country": country,
             },
         )
 
-        if not data or "keywords" not in data:
+        if not data or not isinstance(data, dict) or "keywords" not in data:
             return []
 
         return [
             {
                 "keyword": kw.get("keyword", ""),
-                "volume": kw.get("volume", 0),
-                "cpc": kw.get("cpc", 0),
-                "difficulty": kw.get("difficulty", 0),
-                "global_volume": kw.get("global_volume", 0),
+                "volume": kw.get("volume") or 0,
+                "cpc": self._cents_to_dollars(kw.get("cpc")),
+                "difficulty": kw.get("difficulty") or 0,
+                "global_volume": kw.get("global_volume") or 0,
+                "clicks": kw.get("clicks") or 0,
+                "traffic_potential": kw.get("traffic_potential") or 0,
                 "source": "ahrefs_overview",
             }
             for kw in data["keywords"]
@@ -213,13 +240,13 @@ class AhrefsKeywordService:
                 },
             )
 
-            if data and "keywords" in data:
+            if data and isinstance(data, dict) and "keywords" in data:
                 for kw in data["keywords"]:
                     all_terms.append({
                         "keyword": kw.get("keyword", ""),
-                        "volume": kw.get("volume", 0),
-                        "cpc": kw.get("cpc", 0),
-                        "difficulty": kw.get("difficulty", 0),
+                        "volume": kw.get("volume") or 0,
+                        "cpc": self._cents_to_dollars(kw.get("cpc")),
+                        "difficulty": kw.get("difficulty") or 0,
                         "parent_service": service,
                         "source": "ahrefs_matching",
                     })
@@ -236,72 +263,66 @@ class AhrefsKeywordService:
             data = await self._api_call(
                 "/keywords-explorer/search-suggestions",
                 params={
-                    "select": "keyword,volume,cpc",
+                    "select": "keyword,volume,cpc,difficulty",
                     "keywords": service,
                     "country": country,
                     "limit": 20,
                 },
             )
 
-            if data and "keywords" in data:
+            if data and isinstance(data, dict) and "keywords" in data:
                 for kw in data["keywords"]:
                     all_suggestions.append({
                         "keyword": kw.get("keyword", ""),
-                        "volume": kw.get("volume", 0),
-                        "cpc": kw.get("cpc", 0),
+                        "volume": kw.get("volume") or 0,
+                        "cpc": self._cents_to_dollars(kw.get("cpc")),
+                        "difficulty": kw.get("difficulty") or 0,
                         "parent_service": service,
                         "source": "ahrefs_suggestion",
                     })
 
         return all_suggestions
 
-    async def _get_competitor_paid_keywords(
+    async def _get_competitor_keywords(
         self, domain: str, country: str
     ) -> List[Dict]:
-        """Spy on what keywords a competitor is running Google Ads for."""
+        """
+        Spy on what organic keywords a competitor ranks for that have CPC > 0
+        (meaning advertisers bid on them = commercially valuable).
+        """
         data = await self._api_call(
-            "/site-explorer/paid-pages",
-            params={
-                "select": "url,paid_keywords,paid_traffic,paid_cost",
-                "target": domain,
-                "country": country,
-                "mode": "subdomains",
-                "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-                "limit": 20,
-                "order_by": "paid_traffic:desc",
-            },
-        )
-
-        if not data or "pages" not in data:
-            return []
-
-        # Get the organic keywords they rank for (which they might also bid on)
-        organic_data = await self._api_call(
             "/site-explorer/organic-keywords",
             params={
-                "select": "keyword,volume,cpc,position,traffic",
+                "select": "keyword,volume,cpc,best_position,sum_traffic",
                 "target": domain,
                 "country": country,
                 "mode": "subdomains",
                 "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                 "limit": 50,
-                "order_by": "traffic:desc",
-                "where": "position<=10 and cpc>0",
+                "order_by": "sum_traffic:desc",
+                "where": {
+                    "and": [
+                        {"field": "best_position", "is": ["lte", 10]},
+                        {"field": "cpc", "is": ["gt", 0]},
+                    ]
+                },
             },
         )
 
+        if not data or not isinstance(data, dict) or "keywords" not in data:
+            return []
+
         competitor_kws = []
-        if organic_data and "keywords" in organic_data:
-            for kw in organic_data["keywords"]:
-                competitor_kws.append({
-                    "keyword": kw.get("keyword", ""),
-                    "volume": kw.get("volume", 0),
-                    "cpc": kw.get("cpc", 0),
-                    "competitor_domain": domain,
-                    "competitor_position": kw.get("position", 0),
-                    "competitor_traffic": kw.get("traffic", 0),
-                    "source": "competitor_spy",
-                })
+        for kw in data["keywords"]:
+            competitor_kws.append({
+                "keyword": kw.get("keyword", ""),
+                "volume": kw.get("volume") or 0,
+                "cpc": self._cents_to_dollars(kw.get("cpc")),
+                "competitor_domain": domain,
+                "competitor_position": kw.get("best_position") or 0,
+                "competitor_traffic": kw.get("sum_traffic") or 0,
+                "source": "competitor_spy",
+            })
 
         return competitor_kws
 
@@ -315,27 +336,32 @@ class AhrefsKeywordService:
         data = await self._api_call(
             "/site-explorer/organic-keywords",
             params={
-                "select": "keyword,volume,cpc,position,traffic",
+                "select": "keyword,volume,cpc,best_position,sum_traffic",
                 "target": domain,
                 "country": country,
                 "mode": "subdomains",
                 "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                 "limit": 50,
-                "order_by": "traffic:desc",
-                "where": "position>=4 and cpc>0",  # Position 4+ = not dominant, worth bidding
+                "order_by": "sum_traffic:desc",
+                "where": {
+                    "and": [
+                        {"field": "best_position", "is": ["gte", 4]},
+                        {"field": "cpc", "is": ["gt", 0]},
+                    ]
+                },
             },
         )
 
-        if not data or "keywords" not in data:
+        if not data or not isinstance(data, dict) or "keywords" not in data:
             return []
 
         return [
             {
                 "keyword": kw.get("keyword", ""),
-                "volume": kw.get("volume", 0),
-                "cpc": kw.get("cpc", 0),
-                "organic_position": kw.get("position", 0),
-                "organic_traffic": kw.get("traffic", 0),
+                "volume": kw.get("volume") or 0,
+                "cpc": self._cents_to_dollars(kw.get("cpc")),
+                "organic_position": kw.get("best_position") or 0,
+                "organic_traffic": kw.get("sum_traffic") or 0,
                 "source": "own_organic",
             }
             for kw in data["keywords"]
@@ -346,44 +372,90 @@ class AhrefsKeywordService:
     async def _api_call(
         self, endpoint: str, params: Dict[str, Any]
     ) -> Optional[Dict]:
-        """Make an authenticated call to the Ahrefs API."""
+        """Make an authenticated call to the Ahrefs API with retry logic."""
         url = f"{AHREFS_API_BASE}{endpoint}"
         headers = {
             "Authorization": f"Bearer {self.api_token}",
             "Accept": "application/json",
         }
 
-        try:
-            async with httpx.AsyncClient(timeout=AHREFS_TIMEOUT) as client:
+        # Handle JSON-style `where` filter — Ahrefs accepts it as a JSON string param
+        if "where" in params and isinstance(params["where"], dict):
+            import json
+            params["where"] = json.dumps(params["where"])
+
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                client = await self._get_client()
                 resp = await client.get(url, params=params, headers=headers)
 
                 if resp.status_code == 200:
-                    return resp.json()
+                    result = resp.json()
+                    if isinstance(result, dict):
+                        return result
+                    logger.warning("Ahrefs returned non-dict response",
+                        endpoint=endpoint, type=type(result).__name__)
+                    return None
                 elif resp.status_code == 429:
-                    logger.warning("Ahrefs rate limit hit", endpoint=endpoint)
+                    # Rate limit — retry with backoff
+                    if attempt < MAX_RETRIES:
+                        wait = RETRY_BACKOFF[attempt] if attempt < len(RETRY_BACKOFF) else 5.0
+                        logger.warning("Ahrefs rate limit hit, retrying",
+                            endpoint=endpoint, attempt=attempt + 1, wait=wait)
+                        await asyncio.sleep(wait)
+                        continue
+                    logger.warning("Ahrefs rate limit exhausted after retries", endpoint=endpoint)
+                    return None
+                elif resp.status_code >= 500:
+                    # Server error — retry
+                    if attempt < MAX_RETRIES:
+                        wait = RETRY_BACKOFF[attempt] if attempt < len(RETRY_BACKOFF) else 5.0
+                        logger.warning("Ahrefs server error, retrying",
+                            endpoint=endpoint, status=resp.status_code, attempt=attempt + 1)
+                        await asyncio.sleep(wait)
+                        continue
+                    logger.warning("Ahrefs server error after retries",
+                        endpoint=endpoint, status=resp.status_code, body=resp.text[:200])
                     return None
                 else:
                     logger.warning(
                         "Ahrefs API error",
                         endpoint=endpoint,
                         status=resp.status_code,
-                        body=resp.text[:200],
+                        body=resp.text[:300],
                     )
                     return None
 
-        except httpx.TimeoutException:
-            logger.warning("Ahrefs API timeout", endpoint=endpoint)
-            return None
-        except Exception as e:
-            logger.error("Ahrefs API call failed", endpoint=endpoint, error=str(e))
-            return None
+            except httpx.TimeoutException:
+                if attempt < MAX_RETRIES:
+                    logger.warning("Ahrefs API timeout, retrying",
+                        endpoint=endpoint, attempt=attempt + 1)
+                    await asyncio.sleep(RETRY_BACKOFF[attempt] if attempt < len(RETRY_BACKOFF) else 5.0)
+                    continue
+                logger.warning("Ahrefs API timeout after retries", endpoint=endpoint)
+                return None
+            except Exception as e:
+                logger.error("Ahrefs API call failed", endpoint=endpoint, error=str(e))
+                return None
+
+        return None
 
     # ── HELPERS ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _cents_to_dollars(cpc_cents: Any) -> float:
+        """Convert Ahrefs CPC (in USD cents) to dollars."""
+        if cpc_cents is None:
+            return 0.0
+        try:
+            return round(float(cpc_cents) / 100, 2)
+        except (TypeError, ValueError):
+            return 0.0
 
     def _build_seed_queries(
         self, services: List[str], locations: List[str]
     ) -> List[str]:
-        """Build seed keyword queries from services × locations."""
+        """Build seed keyword queries from services x locations."""
         seeds = []
 
         # Plain service terms
