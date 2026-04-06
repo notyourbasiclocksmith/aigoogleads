@@ -10,8 +10,8 @@ import {
   Send, Bot, User, AlertTriangle, CheckCircle, XCircle,
   Loader2, Zap, Search, TrendingDown, PlusCircle, Ban,
   DollarSign, BarChart3, Wrench, ChevronDown, ChevronUp,
-  Sparkles, Shield, Clock, Globe, Image, Star, MessageSquare,
-  StopCircle, PanelLeftOpen, PanelLeftClose, Pencil, Trash2, Plus, Check, X,
+  Sparkles, Shield, Clock, Globe, Image as ImageIcon, Star, MessageSquare,
+  StopCircle, PanelLeftOpen, PanelLeftClose, Pencil, Trash2, Plus, Check, X, ExternalLink,
 } from "lucide-react";
 
 // ── Types ───────────────────────────────────────────────────
@@ -123,7 +123,7 @@ const MODE_CONFIG: Record<OperatorMode, ModeConfig> = {
   },
   image: {
     label: "Image",
-    icon: Image,
+    icon: ImageIcon,
     color: "text-emerald-400",
     gradient: "from-emerald-500 to-teal-600",
     description: "Generate AI images for ads, social posts, and marketing materials.",
@@ -166,7 +166,7 @@ const QUICK_PROMPTS: Record<OperatorMode, { icon: any; label: string; prompt: st
     { icon: Sparkles, label: "AI post with image", prompt: "Create an engaging GBP post with an AI-generated image" },
   ],
   image: [
-    { icon: Image, label: "Ad image", prompt: "Generate a professional ad image for my business" },
+    { icon: ImageIcon, label: "Ad image", prompt: "Generate a professional ad image for my business" },
     { icon: Globe, label: "Social media image", prompt: "Create an eye-catching Instagram post image for my business" },
     { icon: PlusCircle, label: "Facebook cover", prompt: "Generate a Facebook-sized promotional image for my business" },
     { icon: Sparkles, label: "Promo banner", prompt: "Create a promotional banner image for a seasonal sale" },
@@ -581,6 +581,49 @@ function PipelineProgressCard({ messages: pipelineMsgs }: { messages: Message[] 
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+// ── Image Generation Result Card ──────────────────────────
+
+function ImageResultCard({ payload }: { payload: any }) {
+  if (!payload || payload?.type !== "image_generation_result") return null;
+  const images = payload.images || [];
+  const successful = images.filter((img: any) => img.status === "success" && img.image_url);
+  if (successful.length === 0) return null;
+
+  return (
+    <div className="mt-3 rounded-xl border border-violet-500/20 bg-violet-500/5 p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <ImageIcon className="w-4 h-4 text-violet-400" />
+        <span className="text-xs font-semibold text-violet-300 uppercase tracking-wider">
+          Generated Images ({successful.length})
+        </span>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        {successful.map((img: any, i: number) => (
+          <div key={i} className="group relative rounded-lg overflow-hidden border border-white/10 bg-black/30">
+            <img
+              src={img.image_url}
+              alt={img.service || `Campaign image ${i + 1}`}
+              className="w-full h-32 object-cover transition-transform group-hover:scale-105"
+              loading="lazy"
+            />
+            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-2">
+              <p className="text-[10px] text-white/80 truncate">{img.service || "Campaign Image"}</p>
+            </div>
+            <a
+              href={img.image_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="absolute top-1.5 right-1.5 w-6 h-6 bg-black/60 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+            >
+              <ExternalLink className="w-3 h-3 text-white/70" />
+            </a>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -1502,6 +1545,7 @@ export default function OperatorPage() {
                               ))}
                             <ExecutionResultCard payload={msg.structured_payload} />
                             <AuditResultCard payload={msg.structured_payload} onApprove={handleApprove} approving={approving} />
+                            <ImageResultCard payload={msg.structured_payload} />
                             {/* Next Steps */}
                             {msg.structured_payload?.next_steps?.length ? (
                               <div className="mt-3 bg-violet-500/10 border border-violet-500/20 rounded-xl p-3">

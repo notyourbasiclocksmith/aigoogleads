@@ -268,8 +268,10 @@ class CampaignAgentPipeline:
         user_prompt: str,
         account_context: Dict[str, Any],
         conversation_id: str,
+        intent_hints: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Execute the full 6-agent pipeline. Returns deploy_full_campaign spec."""
+        self._intent_hints = intent_hints or {}
         self.conversation_id = conversation_id
         self._pipeline_start = time.time()
         self._agent_timings = []
@@ -327,7 +329,7 @@ class CampaignAgentPipeline:
             exec_log.ahrefs_data = ahrefs_data.get("summary", {})
             ahrefs_count = ahrefs_data.get("summary", {}).get("total_keywords_found", 0)
             if ahrefs_count > 0:
-                await self._emit_progress("Keyword Research", "running", f"Found {ahrefs_count} real keywords from Ahrefs (avg CPC: ${ahrefs_data.get('summary', {}).get('avg_cpc', 0):.2f}). Now building strategy...")
+                await self._emit_progress("Keyword Research", "running", f"Found {ahrefs_count} real keywords from Ahrefs (avg CPC: ${ahrefs_data.get('summary', {}).get('avg_cpc') or 0:.2f}). Now building strategy...")
         else:
             await self._emit_progress("Keyword Research", "running", f"Building tiered keyword strategy across {len(strategy.get('services', []))} services...")
 
@@ -540,10 +542,11 @@ class CampaignAgentPipeline:
         # Performance feedback from past campaigns (learnings)
         feedback_context = {}
         try:
-            from app.services.operator.performance_feedback_service import PerformanceFeedbackService
-            feedback_svc = PerformanceFeedbackService(self.db, self.tenant_id)
-            feedback_context = await feedback_svc.get_pipeline_learnings(
+            from app.services.operator.performance_feedback_service import get_pipeline_learnings
+            feedback_context = await get_pipeline_learnings(
+                tenant_id=self.tenant_id,
                 services=biz.get("services", []),
+                db=self.db,
             )
             if feedback_context.get("top_performing_headlines"):
                 logger.info("Loaded performance feedback",
@@ -616,7 +619,7 @@ class CampaignAgentPipeline:
         if account.get("campaigns"):
             lines = []
             for c in account["campaigns"][:10]:
-                lines.append(f"  [{c.get('status', '?')}] {c.get('name', '?')} \u2014 Budget:${c.get('budget_daily', '?')}/day | Cost:${c.get('cost', 0):.0f} | Conv:{c.get('conversions', 0)} | CPA:${c.get('cpa', 0):.0f}")
+                lines.append(f"  [{c.get('status', '?')}] {c.get('name', '?')} \u2014 Budget:${c.get('budget_daily') or '?'}/day | Cost:${c.get('cost') or 0:.0f} | Conv:{c.get('conversions') or 0} | CPA:${c.get('cpa') or 0:.0f}")
             campaigns_text = "\n".join(lines)
 
         system = """You are a senior Google Ads strategist. You're designing the architecture for a new campaign.
@@ -628,25 +631,36 @@ Your job is to make ONE set of decisions:
 - Campaign naming convention
 - What the strategic angle is (why THIS campaign, why NOW)
 
+Campaign type guide:
+- SEARCH: Best for high-intent services (people searching for specific services). Most reliable for local businesses.
+- CALL: Best for emergency/mobile-heavy services (towing, emergency locksmith). Phone call IS the conversion.
+- PERFORMANCE_MAX: Best for visual products/services. Shows ads across ALL Google channels (Search, Display, YouTube, Maps). Requires images.
+
 Think step by step:
 1. What does the user actually want? Parse their intent carefully.
 2. Look at existing campaigns — what's already covered? Don't duplicate. Fill gaps.
 3. What services would be MOST profitable? Consider the business's specialties.
 4. What budget makes sense given the competitive landscape and ticket size?
-5. Is this a SEARCH campaign (intent-driven) or CALL campaign (emergency/mobile)?
+5. What campaign type best fits the business? (Emergency → CALL, High-intent local → SEARCH, Visual + broad → PERFORMANCE_MAX)
+6. If the user specified a campaign type, RESPECT their choice.
 
 Be SPECIFIC. Don't be generic. If the user says "BMW specialized services" and the business is an automotive locksmith, think about what BMW owners actually search for: FRM repair, key programming, comfort access, CAS module, coding. These are HIGH-TICKET services ($500-2000+).
 
 Respond with ONLY valid JSON."""
 
-        user_msg = f"""USER REQUEST: "{user_prompt}"
+        # Pass along any campaign type preference from user's intent
+        campaign_type_hint = ""
+        if self._intent_hints.get("campaign_type"):
+            campaign_type_hint = f"\nUSER REQUESTED CAMPAIGN TYPE: {self._intent_hints['campaign_type']} — respect this choice unless there's a strong reason not to.\n"
 
+        user_msg = f"""USER REQUEST: "{user_prompt}"
+{campaign_type_hint}
 BUSINESS CONTEXT:
   Name: {biz.get('name', 'Unknown')}
   Industry: {biz.get('industry', 'Unknown')}
   Services offered: {json.dumps(biz.get('services', []))}
   Locations: {biz.get('city', '')}, {biz.get('state', '')} (radius: {biz.get('service_radius_miles', 40)} miles)
-  Avg ticket: ${biz.get('avg_ticket', 0)}
+  Avg ticket: ${biz.get('avg_ticket') or 'N/A'}
   Primary goal: {biz.get('primary_goal', 'calls')}
   Phone: {biz.get('phone', '')}
   Website: {biz.get('website', '')}
@@ -696,7 +710,7 @@ Return this JSON structure:
                 key=lambda k: k.get("volume", 0), reverse=True,
             )[:30]
             seed_lines = [
-                f"  {kw['keyword']} — vol:{kw.get('volume', 0)} CPC:${kw.get('cpc', 0):.2f} diff:{kw.get('difficulty', 0)}"
+                f"  {kw['keyword']} — vol:{kw.get('volume') or 0} CPC:${kw.get('cpc') or 0:.2f} diff:{kw.get('difficulty') or 0}"
                 for kw in top_seeds
             ]
 
@@ -705,7 +719,7 @@ Return this JSON structure:
                 key=lambda k: k.get("volume", 0), reverse=True,
             )[:40]
             expanded_lines = [
-                f"  {kw['keyword']} — vol:{kw.get('volume', 0)} CPC:${kw.get('cpc', 0):.2f} [from: {kw.get('parent_service', kw.get('source', ''))}]"
+                f"  {kw['keyword']} — vol:{kw.get('volume') or 0} CPC:${kw.get('cpc') or 0:.2f} [from: {kw.get('parent_service', kw.get('source', ''))}]"
                 for kw in top_expanded
             ]
 
@@ -714,7 +728,7 @@ Return this JSON structure:
                 key=lambda k: k.get("volume", 0), reverse=True,
             )[:20]
             suggestion_lines = [
-                f"  {kw['keyword']} — vol:{kw.get('volume', 0)} CPC:${kw.get('cpc', 0):.2f}"
+                f"  {kw['keyword']} — vol:{kw.get('volume') or 0} CPC:${kw.get('cpc') or 0:.2f}"
                 for kw in top_suggestions
             ]
 
@@ -723,7 +737,7 @@ Return this JSON structure:
                 key=lambda k: k.get("volume", 0), reverse=True,
             )[:25]
             comp_lines = [
-                f"  {kw['keyword']} — vol:{kw.get('volume', 0)} CPC:${kw.get('cpc', 0):.2f} [{kw.get('competitor_domain', '')}]"
+                f"  {kw['keyword']} — vol:{kw.get('volume') or 0} CPC:${kw.get('cpc') or 0:.2f} [{kw.get('competitor_domain', '')}]"
                 for kw in comp_kws
             ]
 
@@ -1063,7 +1077,7 @@ AHREFS KEYWORD COVERAGE:
 
 PROGRAMMATIC CHECKS ALREADY DONE (don't re-check these):
 - Character limits: {critical_count} critical, {warning_count} warnings found
-- Keyword-headline match: avg {avg_match_score:.0f}% across ad groups
+- Keyword-headline match: avg {avg_match_score or 0:.0f}% across ad groups
 
 YOUR JOB — Strategic quality only:
 1. Does the ad copy match search intent? (Someone searching "emergency locksmith" should see urgency, not generic "quality service")
@@ -1086,7 +1100,7 @@ Respond with ONLY valid JSON."""
 
 CAMPAIGN SPEC (abbreviated — focus on quality not structure):
   Campaign: {spec.get('campaign', {}).get('name')}
-  Budget: ${spec.get('campaign', {}).get('budget_micros', 0) / 1_000_000:.0f}/day
+  Budget: ${(spec.get('campaign', {}).get('budget_micros') or 0) / 1_000_000:.0f}/day
   Ad Groups: {len(spec.get('ad_groups', []))}
   Sitelinks: {len(spec.get('sitelinks', []))}
   Callouts: {len(spec.get('callouts', []))}
@@ -1134,7 +1148,7 @@ Return this JSON:
             "summary": (
                 f"Score {round(final_score)}/100 ({self._score_to_grade(final_score)}). "
                 f"{critical_count} critical issues, {warning_count} warnings. "
-                f"Keyword-headline match: {avg_match_score:.0f}%. "
+                f"Keyword-headline match: {avg_match_score or 0:.0f}%. "
                 f"{llm_result.get('summary', '') if llm_result else ''}"
             ),
         }
@@ -1163,10 +1177,10 @@ Return this JSON:
         lines = ["PERFORMANCE LEARNINGS FROM PAST CAMPAIGNS:"]
         if feedback.get("budget_insights"):
             bi = feedback["budget_insights"]
-            lines.append(f"  Avg budget that converted: ${bi.get('avg_converting_budget', 0):.0f}/day")
+            lines.append(f"  Avg budget that converted: ${bi.get('avg_converting_budget') or 0:.0f}/day")
             lines.append(f"  Best performing campaign type: {bi.get('best_campaign_type', 'SEARCH')}")
         if feedback.get("avg_pipeline_quality"):
-            lines.append(f"  Avg pipeline QA score: {feedback['avg_pipeline_quality']:.0f}/100")
+            lines.append(f"  Avg pipeline QA score: {feedback.get('avg_pipeline_quality') or 0:.0f}/100")
         if feedback.get("winning_angles"):
             lines.append(f"  Best ad copy angles: {', '.join(feedback['winning_angles'][:3])}")
         lines.append("  Use these learnings to inform your budget and strategy decisions.")

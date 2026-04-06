@@ -117,7 +117,7 @@ async def meta_disconnect(
     conn = result.scalar_one_or_none()
     if conn:
         conn.is_active = False
-        conn.access_token_encrypted = None
+        conn.access_token_encrypted = ""  # Empty string, not None (DB has NOT NULL constraint)
         conn.sync_error = None
         await db.commit()
     return {"status": "disconnected"}

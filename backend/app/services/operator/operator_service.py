@@ -113,10 +113,18 @@ class GoogleAdsOperatorService:
         """Run the multi-agent pipeline and return the enriched deploy_full_campaign payload."""
         pipeline = CampaignAgentPipeline(self.db, tenant_id, customer_id)
         try:
+            # Extract campaign type and other hints from Claude's original intent
+            intent_payload = claude_intent.get("payload", {})
+            intent_hints = {
+                "campaign_type": intent_payload.get("campaign", {}).get("campaign_type"),
+                "services": intent_payload.get("services"),
+                "locations": intent_payload.get("locations"),
+            }
             spec = await pipeline.run(
                 user_prompt=user_message,
                 account_context=account_context,
                 conversation_id=conversation_id,
+                intent_hints=intent_hints,
             )
             return spec
         except Exception as e:
