@@ -33,6 +33,7 @@ class GoogleAdsClient:
         self._refresh_token = decrypt_token(refresh_token_encrypted)
         self._access_token: Optional[str] = None
         self._token_expires_at: Optional[datetime] = None
+        self._cached_client = None
 
     async def _ensure_token(self):
         if self._access_token and self._token_expires_at and datetime.now(timezone.utc) < self._token_expires_at:
@@ -51,9 +52,11 @@ class GoogleAdsClient:
 
     def _get_client(self):
         """
-        In production, instantiate google.ads.googleads.client.GoogleAdsClient
-        using credentials. This is a placeholder for the integration pattern.
+        Get or create a cached Google Ads API client.
+        The client is cached to reuse the gRPC channel across calls.
         """
+        if self._cached_client is not None:
+            return self._cached_client
         from google.ads.googleads.client import GoogleAdsClient as GAdsClient
         credentials = {
             "developer_token": settings.GOOGLE_ADS_DEVELOPER_TOKEN,
@@ -64,7 +67,8 @@ class GoogleAdsClient:
         }
         if self.login_customer_id:
             credentials["login_customer_id"] = self.login_customer_id
-        return GAdsClient.load_from_dict(credentials)
+        self._cached_client = GAdsClient.load_from_dict(credentials)
+        return self._cached_client
 
     # ── READ OPERATIONS ──────────────────────────────────────────────
 
@@ -711,9 +715,20 @@ class GoogleAdsClient:
                 operations.append(operation)
 
             response = campaign_criterion_service.mutate_campaign_criteria(
-                customer_id=self.customer_id, operations=operations
+                customer_id=self.customer_id,
+                operations=operations,
+                partial_failure=True,
             )
-            return {"status": "created", "count": len(response.results)}
+            failed = 0
+            if response.partial_failure_error:
+                from google.ads.googleads.errors import GoogleAdsFailure
+                failure = GoogleAdsFailure()
+                failure._pb.MergeFrom(response.partial_failure_error)
+                for error in failure.errors:
+                    logger.warning("Negative keyword partial failure",
+                        message=error.message)
+                    failed += 1
+            return {"status": "created", "count": len(response.results) - failed, "failed": failed}
         except Exception as e:
             logger.error("Failed to add negative keywords", error=str(e))
             return {"status": "error", "error": str(e)}
@@ -1041,6 +1056,15 @@ class GoogleAdsClient:
                 channel, client.enums.AdvertisingChannelTypeEnum.SEARCH
             )
 
+            # Geo target type: PRESENCE = only people physically in the area
+            # (NOT PRESENCE_OR_INTEREST which wastes budget on people just "interested in" the location)
+            campaign.geo_target_type_setting.positive_geo_target_type = (
+                client.enums.PositiveGeoTargetTypeEnum.PRESENCE
+            )
+            campaign.geo_target_type_setting.negative_geo_target_type = (
+                client.enums.NegativeGeoTargetTypeEnum.PRESENCE
+            )
+
             # Network settings (Search campaigns only)
             if channel in ("SEARCH", "CALL"):
                 network = campaign_data.get("network", "SEARCH").upper()
@@ -1127,9 +1151,23 @@ class GoogleAdsClient:
                 operations.append(operation)
 
             response = agc_service.mutate_ad_group_criteria(
-                customer_id=self.customer_id, operations=operations
+                customer_id=self.customer_id,
+                operations=operations,
+                partial_failure=True,
             )
-            return {"created": len(response.results), "status": "created"}
+            # Check for partial failures
+            failed = 0
+            if response.partial_failure_error:
+                from google.ads.googleads.errors import GoogleAdsFailure
+                failure = GoogleAdsFailure()
+                failure._pb.MergeFrom(response.partial_failure_error)
+                for error in failure.errors:
+                    logger.warning("Keyword creation partial failure",
+                        message=error.message,
+                        trigger=getattr(error.trigger, 'string_value', ''))
+                    failed += 1
+            created = len(response.results) - failed
+            return {"created": created, "failed": failed, "status": "created"}
         except Exception as e:
             logger.error("Failed to create keywords", error=str(e))
             return {"status": "error", "error": str(e)}
@@ -1165,12 +1203,33 @@ class GoogleAdsClient:
                 final_urls = ["https://www.nyblocksmith.com"]
             ag_ad.ad.final_urls.extend(final_urls)
 
+            # Display path (path1/path2) — shown in the ad URL, e.g. example.com/Locksmith/DFW
+            display_path = ad_data.get("display_path", [])
+            if display_path and len(display_path) >= 1:
+                ag_ad.ad.responsive_search_ad.path1 = str(display_path[0])[:15]
+            if display_path and len(display_path) >= 2:
+                ag_ad.ad.responsive_search_ad.path2 = str(display_path[1])[:15]
+
+            # Pinning position map (for forcing specific headlines/descriptions into certain slots)
+            pin_map = {
+                "HEADLINE_1": client.enums.ServedAssetFieldTypeEnum.HEADLINE_1,
+                "HEADLINE_2": client.enums.ServedAssetFieldTypeEnum.HEADLINE_2,
+                "HEADLINE_3": client.enums.ServedAssetFieldTypeEnum.HEADLINE_3,
+                "DESCRIPTION_1": client.enums.ServedAssetFieldTypeEnum.DESCRIPTION_1,
+                "DESCRIPTION_2": client.enums.ServedAssetFieldTypeEnum.DESCRIPTION_2,
+            }
+
             for headline in headlines[:15]:
                 text = headline if isinstance(headline, str) else headline.get("text", "") if isinstance(headline, dict) else str(headline)
                 if not text.strip():
                     continue
                 h = client.get_type("AdTextAsset")
                 h.text = text.strip()[:30]
+                # Support pinning: {"text": "Call Now", "pinned_position": "HEADLINE_1"}
+                if isinstance(headline, dict) and headline.get("pinned_position"):
+                    pin_enum = pin_map.get(headline["pinned_position"].upper())
+                    if pin_enum:
+                        h.pinned_field = pin_enum
                 ag_ad.ad.responsive_search_ad.headlines.append(h)
 
             for desc in descriptions[:4]:
@@ -1179,6 +1238,10 @@ class GoogleAdsClient:
                     continue
                 d = client.get_type("AdTextAsset")
                 d.text = text.strip()[:90]
+                if isinstance(desc, dict) and desc.get("pinned_position"):
+                    pin_enum = pin_map.get(desc["pinned_position"].upper())
+                    if pin_enum:
+                        d.pinned_field = pin_enum
                 ag_ad.ad.responsive_search_ad.descriptions.append(d)
 
             response = ag_ad_service.mutate_ad_group_ads(
