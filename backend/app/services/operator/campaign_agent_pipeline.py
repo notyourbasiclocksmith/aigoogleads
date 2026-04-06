@@ -373,6 +373,57 @@ class CampaignAgentPipeline:
             extensions or {},
         )
 
+        # ── Landing Page Agent: Check/create landing pages per service ──
+        try:
+            from app.services.operator.landing_page_agent import LandingPageAgent
+            lp_agent = LandingPageAgent(self.db, self.tenant_id)
+            await self._emit_progress("Landing Pages", "running", "Checking landing pages for each service...")
+            t0 = time.time()
+
+            # Build keyword/headline maps per service
+            kw_by_svc = {}
+            hl_by_svc = {}
+            for ag in spec.get("ad_groups", []):
+                ag_name = ag.get("name", "")
+                kw_texts = [kw.get("text", "") if isinstance(kw, dict) else str(kw) for kw in ag.get("keywords", [])]
+                kw_by_svc[ag_name] = kw_texts
+                for ad in ag.get("ads", []):
+                    hl_by_svc[ag_name] = ad.get("headlines", [])[:5]
+
+            lp_result = await lp_agent.run_for_campaign(
+                services=strategy.get("services", []),
+                locations=strategy.get("locations", []),
+                campaign_keywords=kw_by_svc,
+                campaign_headlines=hl_by_svc,
+                conversation_id=conversation_id,
+                business_context=context.get("business", {}),
+            )
+            lp_ms = int((time.time() - t0) * 1000)
+            self._agent_timings.append({"agent": "Landing Pages", "duration_ms": lp_ms, "status": "done"})
+
+            # Update ad group final_urls with landing page URLs
+            for page in lp_result.get("pages", []):
+                if page.get("url") and page.get("service"):
+                    for ag in spec.get("ad_groups", []):
+                        if page["service"].lower() in ag.get("name", "").lower():
+                            for ad in ag.get("ads", []):
+                                ad["final_url"] = page["url"]
+                                ad["final_urls"] = [page["url"]]
+
+            # Store landing page data in pipeline metadata
+            spec["_pipeline_metadata"]["landing_pages"] = lp_result.get("pages", [])
+
+            generated_count = sum(1 for p in lp_result.get("pages", []) if p.get("status") == "generated")
+            existing_count = sum(1 for p in lp_result.get("pages", []) if p.get("status") == "existing")
+            await self._emit_progress("Landing Pages", "done",
+                f"{existing_count} existing + {generated_count} new landing pages "
+                f"linked to ad groups")
+
+        except Exception as e:
+            logger.warning("Landing page agent failed — continuing without", error=str(e))
+            self._agent_timings.append({"agent": "Landing Pages", "duration_ms": 0, "status": "error"})
+            await self._emit_progress("Landing Pages", "done", "Skipped (will use existing URLs)")
+
         # ── Agent 6: QA Review ──
         await self._emit_progress("Quality Assurance", "running", "Auditing compliance, keyword-ad relevance, character limits, and campaign structure...")
         t0 = time.time()

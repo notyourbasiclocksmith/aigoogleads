@@ -1018,6 +1018,145 @@ async def get_pipeline_feedback(
     return await svc.get_pipeline_learnings()
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Landing Page Agent — edit, regenerate, approve, generate images
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class LPEditRequest(BaseModel):
+    landing_page_id: str
+    variant_key: str  # A, B, C
+    edit_prompt: str  # "change the headline to...", "add testimonials", "make it more urgent"
+    conversation_id: Optional[str] = None
+
+
+class LPApproveRequest(BaseModel):
+    landing_page_id: str
+    variant_key: str  # A, B, C
+    conversation_id: Optional[str] = None
+
+
+class LPRegenerateRequest(BaseModel):
+    landing_page_id: str
+    variant_key: str
+    angle: Optional[str] = None  # "urgent", "premium", "price", "trust"
+    conversation_id: Optional[str] = None
+
+
+@router.post("/landing-page/edit")
+async def edit_landing_page_variant(
+    req: LPEditRequest,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Apply a prompt-based edit to a landing page variant (AI-powered)."""
+    from app.services.operator.landing_page_agent import LandingPageAgent
+
+    agent = LandingPageAgent(db, str(user.tenant_id))
+    result = await agent.edit_variant(
+        landing_page_id=req.landing_page_id,
+        variant_key=req.variant_key,
+        edit_prompt=req.edit_prompt,
+        conversation_id=req.conversation_id or "",
+    )
+    if result.get("error"):
+        raise HTTPException(400, result["error"])
+    await db.commit()
+    return result
+
+
+@router.post("/landing-page/approve")
+async def approve_landing_page_variant(
+    req: LPApproveRequest,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Approve a landing page variant — publishes it and audits quality."""
+    from app.services.operator.landing_page_agent import LandingPageAgent
+
+    agent = LandingPageAgent(db, str(user.tenant_id))
+    result = await agent.approve_variant(
+        landing_page_id=req.landing_page_id,
+        variant_key=req.variant_key,
+        campaign_spec={},  # Will be linked when campaign is deployed
+    )
+    if result.get("error"):
+        raise HTTPException(400, result["error"])
+    await db.commit()
+    return result
+
+
+@router.post("/landing-page/regenerate")
+async def regenerate_landing_page_variant(
+    req: LPRegenerateRequest,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Regenerate a landing page variant with a new angle."""
+    from app.services.operator.landing_page_agent import LandingPageAgent
+
+    agent = LandingPageAgent(db, str(user.tenant_id))
+    result = await agent.regenerate_variant(
+        landing_page_id=req.landing_page_id,
+        variant_key=req.variant_key,
+        new_angle=req.angle or "",
+        conversation_id=req.conversation_id or "",
+    )
+    if result.get("error"):
+        raise HTTPException(400, result["error"])
+    await db.commit()
+    return result
+
+
+@router.post("/landing-page/{landing_page_id}/generate-images")
+async def generate_landing_page_images(
+    landing_page_id: str,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate AI hero images for all variants of a landing page."""
+    from app.services.operator.landing_page_agent import LandingPageAgent
+
+    agent = LandingPageAgent(db, str(user.tenant_id))
+    result = await agent.generate_images(landing_page_id=landing_page_id)
+    if result.get("error"):
+        raise HTTPException(400, result["error"])
+    await db.commit()
+    return result
+
+
+@router.get("/landing-page/{landing_page_id}/preview/{variant_key}")
+async def preview_landing_page(
+    landing_page_id: str,
+    variant_key: str,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get HTML preview of a landing page variant."""
+    from app.models.landing_page import LandingPage
+    from app.services.operator.landing_page_agent import LandingPageAgent
+
+    lp = await db.get(LandingPage, landing_page_id)
+    if not lp or str(lp.tenant_id) != str(user.tenant_id):
+        raise HTTPException(404, "Landing page not found")
+
+    agent = LandingPageAgent(db, str(user.tenant_id))
+    biz_ctx = await agent._get_business_context()
+
+    variant_content = {}
+    for v in (lp.variants or []):
+        if v.variant_key == variant_key.upper():
+            variant_content = v.content_json
+            break
+
+    if not variant_content:
+        raise HTTPException(404, f"Variant {variant_key} not found")
+
+    html = agent._render_preview_html(variant_content, biz_ctx, lp.strategy_json or {})
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(content=html)
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _parse_date_range(date_range: str):
