@@ -918,49 +918,52 @@ export default function OperatorPage() {
   }
 
   function startLiveLog(logMode: OperatorMode) {
-    const steps = logMode === "auto"
+    // If this is a follow-up message (conversation already exists), show shorter log
+    // since the backend uses cached context and skips the full scan
+    const isFollowUp = messages.length > 0;
+
+    const steps = isFollowUp
       ? [
-          "Classifying intent...",
-          "Checking connected systems...",
-          "Querying Google Ads API...",
-          "Fetching campaign performance (30 days)...",
-          "Pulling keyword data (top 200)...",
-          "Analyzing search term report...",
-          "Loading ad performance...",
-          "Building account context...",
-          "Sending to IntelliDrive AI for analysis...",
-          "Generating findings & recommendations...",
+          "Processing your message...",
+          "Sending to IntelliDrive AI...",
+          "Generating response...",
         ]
-      : logMode === "google_ads"
+      : logMode === "auto"
         ? [
-            "Connecting to Google Ads API...",
-            "Fetching account info...",
-            "Loading campaign performance...",
-            "Pulling keyword data (top 200 by spend)...",
-            "Analyzing search term report...",
-            "Loading ad performance...",
-            "Fetching conversion tracking config...",
-            "Computing heuristics (wasted spend, low CTR)...",
+            "Classifying intent...",
+            "Checking connected systems...",
+            "Querying Google Ads API...",
+            "Fetching campaign performance (30 days)...",
+            "Building account context...",
             "Sending to IntelliDrive AI for analysis...",
-            "Generating structured recommendations...",
+            "Generating findings & recommendations...",
           ]
-        : logMode === "meta_ads"
+        : logMode === "google_ads"
           ? [
-              "Connecting to Meta Ads API...",
-              "Fetching campaigns & ad sets...",
-              "Loading ad performance...",
+              "Connecting to Google Ads API...",
+              "Fetching account info...",
+              "Loading campaign performance...",
+              "Pulling keyword data...",
+              "Building account context...",
               "Sending to IntelliDrive AI for analysis...",
               "Generating recommendations...",
             ]
-          : [
-              "Processing request...",
-              "Fetching data...",
-              "Sending to IntelliDrive AI for analysis...",
-              "Generating response...",
-            ];
+          : logMode === "meta_ads"
+            ? [
+                "Connecting to Meta Ads API...",
+                "Fetching campaigns & ad sets...",
+                "Sending to IntelliDrive AI for analysis...",
+                "Generating recommendations...",
+              ]
+            : [
+                "Processing request...",
+                "Sending to IntelliDrive AI...",
+                "Generating response...",
+              ];
 
     setLiveLog([steps[0]]);
     let stepIdx = 1;
+    const interval = isFollowUp ? 1500 : 2500;
     logTimerRef.current = setInterval(() => {
       if (stepIdx < steps.length) {
         setLiveLog(prev => [...prev, steps[stepIdx]]);
@@ -968,7 +971,7 @@ export default function OperatorPage() {
       } else {
         if (logTimerRef.current) clearInterval(logTimerRef.current);
       }
-    }, 2500);
+    }, interval);
   }
 
   async function handleSend(text?: string) {
