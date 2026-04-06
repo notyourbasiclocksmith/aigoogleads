@@ -1135,6 +1135,18 @@ class GoogleAdsClient:
             return {"status": "error", "error": str(e)}
 
     async def create_responsive_search_ad(self, ad_group_resource: str, ad_data: Dict) -> Dict[str, Any]:
+        """Create a Responsive Search Ad (RSA). Requires at least 3 headlines and 2 descriptions."""
+        headlines = ad_data.get("headlines", [])
+        descriptions = ad_data.get("descriptions", [])
+
+        # Validate minimum requirements (Google Ads requires 3+ headlines, 2+ descriptions)
+        if len(headlines) < 3:
+            logger.error("RSA needs at least 3 headlines", got=len(headlines))
+            return {"status": "error", "error": f"RSA requires at least 3 headlines, got {len(headlines)}"}
+        if len(descriptions) < 2:
+            logger.error("RSA needs at least 2 descriptions", got=len(descriptions))
+            return {"status": "error", "error": f"RSA requires at least 2 descriptions, got {len(descriptions)}"}
+
         await self._ensure_token()
         try:
             client = self._get_client()
@@ -1153,14 +1165,20 @@ class GoogleAdsClient:
                 final_urls = ["https://www.nyblocksmith.com"]
             ag_ad.ad.final_urls.extend(final_urls)
 
-            for headline in ad_data.get("headlines", [])[:15]:
+            for headline in headlines[:15]:
+                text = headline if isinstance(headline, str) else headline.get("text", "") if isinstance(headline, dict) else str(headline)
+                if not text.strip():
+                    continue
                 h = client.get_type("AdTextAsset")
-                h.text = headline[:30]
+                h.text = text.strip()[:30]
                 ag_ad.ad.responsive_search_ad.headlines.append(h)
 
-            for desc in ad_data.get("descriptions", [])[:4]:
+            for desc in descriptions[:4]:
+                text = desc if isinstance(desc, str) else desc.get("text", "") if isinstance(desc, dict) else str(desc)
+                if not text.strip():
+                    continue
                 d = client.get_type("AdTextAsset")
-                d.text = desc[:90]
+                d.text = text.strip()[:90]
                 ag_ad.ad.responsive_search_ad.descriptions.append(d)
 
             response = ag_ad_service.mutate_ad_group_ads(
@@ -1721,6 +1739,21 @@ class GoogleAdsClient:
         }
         """
         results = {"campaign": None, "ad_groups": [], "errors": []}
+
+        # Pre-validation: check that spec has deployable content
+        ad_group_specs = spec.get("ad_groups", [])
+        if not ad_group_specs:
+            logger.error("deploy_full_campaign called with zero ad groups", spec_keys=list(spec.keys()))
+            return {"status": "error", "error": "No ad groups in campaign spec — nothing to deploy"}
+
+        # Log spec summary for debugging
+        for i, ag in enumerate(ad_group_specs):
+            kw_count = len(ag.get("keywords", []))
+            ad_count = len(ag.get("ads", []))
+            hl_count = sum(len(a.get("headlines", [])) for a in ag.get("ads", []))
+            logger.info("Ad group spec",
+                index=i, name=ag.get("name"), keywords=kw_count, ads=ad_count, headlines=hl_count)
+
         try:
             # 1. Create campaign
             campaign_result = await self.create_campaign(spec.get("campaign", {}))
@@ -1731,7 +1764,7 @@ class GoogleAdsClient:
             campaign_id = campaign_result["campaign_id"]
 
             # 2. Create ad groups with keywords and ads
-            for ag_spec in spec.get("ad_groups", []):
+            for ag_spec in ad_group_specs:
                 ag_result = {"name": ag_spec.get("name"), "keywords": 0, "ads": 0}
                 try:
                     ag_resp = await self.create_ad_group(campaign_resource, ag_spec)

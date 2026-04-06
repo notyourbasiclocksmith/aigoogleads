@@ -362,7 +362,18 @@ class CampaignAgentPipeline:
         ad_copy = await self._agent_ad_copy(context, strategy, keywords or {})
         self._agent_timings.append({"agent": "Ad Copy", "duration_ms": int((time.time() - t0) * 1000), "status": "done" if ad_copy else "error"})
         ag_count = len(ad_copy.get("ad_groups", [])) if ad_copy else 0
-        await self._emit_progress("Ad Copy", "done", f"{ag_count} ad groups with full RSA copy")
+
+        # ── RETRY: If ad copy failed or returned 0 ad groups, retry once ──
+        if ag_count == 0:
+            logger.warning("Ad copy agent returned 0 ad groups — retrying...")
+            await self._emit_progress("Ad Copy", "running", "Retrying ad copy generation...")
+            t0 = time.time()
+            ad_copy = await self._agent_ad_copy(context, strategy, keywords or {})
+            self._agent_timings.append({"agent": "Ad Copy (retry)", "duration_ms": int((time.time() - t0) * 1000), "status": "done" if ad_copy else "error"})
+            ag_count = len(ad_copy.get("ad_groups", [])) if ad_copy else 0
+
+        await self._emit_progress("Ad Copy", "done" if ag_count > 0 else "error",
+            f"{ag_count} ad groups with full RSA copy" if ag_count > 0 else "Failed to generate ad copy — campaign may deploy without ads")
 
         # ── Assemble the full spec ──
         spec = self._assemble_spec(
@@ -1220,15 +1231,43 @@ Return this JSON:
         for svc in services:
             svc_keywords = kw_by_service.get(svc, [])
             svc_copy = ad_copy_by_service.get(svc, {})
+            headlines = svc_copy.get("headlines", [])
+            descriptions = svc_copy.get("descriptions", [])
 
+            # If no ad copy was generated, create minimal fallback headlines/descriptions
+            if not headlines:
+                biz_name = strategy.get("business_name", "")
+                location = strategy.get("locations", [""])[0] if strategy.get("locations") else ""
+                headlines = [
+                    svc[:30],
+                    f"{svc} - {location}"[:30] if location else svc[:30],
+                    f"Call Now - {svc}"[:30],
+                    f"{biz_name}"[:30] if biz_name else f"Expert {svc}"[:30],
+                    f"{location} {svc}"[:30] if location else f"Professional {svc}"[:30],
+                ]
+                logger.warning("Using fallback headlines for ad group", service=svc)
+
+            if not descriptions:
+                descriptions = [
+                    f"Professional {svc} services. Call now for a free estimate!"[:90],
+                    f"Licensed & insured. Serving the {strategy.get('locations', ['local'])[0]} area."[:90],
+                ]
+                logger.warning("Using fallback descriptions for ad group", service=svc)
+
+            # Skip ad groups with no keywords
+            if not svc_keywords:
+                logger.warning("Skipping ad group with no keywords", service=svc)
+                continue
+
+            final_url = svc_copy.get("final_url", strategy.get("website", ""))
             ad_group = {
                 "name": f"{svc} \u2014 {strategy.get('locations', ['DFW'])[0] if strategy.get('locations') else 'All Areas'}",
                 "keywords": svc_keywords,
                 "ads": [{
-                    "headlines": svc_copy.get("headlines", []),
-                    "descriptions": svc_copy.get("descriptions", []),
-                    "final_url": svc_copy.get("final_url", strategy.get("website", "")),
-                    "final_urls": [svc_copy.get("final_url", strategy.get("website", ""))],
+                    "headlines": headlines,
+                    "descriptions": descriptions,
+                    "final_url": final_url,
+                    "final_urls": [final_url] if final_url else [],
                 }],
                 "negative_keywords": negatives,
             }
