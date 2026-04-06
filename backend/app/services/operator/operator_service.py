@@ -4,6 +4,7 @@ Google Ads Operator Service — orchestrates the full read → analyze → propo
 This is the main service that the API endpoints call.
 """
 import uuid
+import time
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 import structlog
@@ -21,6 +22,10 @@ from app.services.operator.post_execution_audit import PostExecutionAuditAgent
 from app.services.operator.landing_page_agent import LandingPageAgent
 
 logger = structlog.get_logger()
+
+# Simple TTL cache for account context (avoid re-fetching on every message)
+_context_cache: dict[str, tuple[float, dict]] = {}
+CONTEXT_CACHE_TTL = 300  # 5 minutes
 
 # Landing page action types that the operator can recommend and auto-execute
 LANDING_PAGE_ACTIONS = {
@@ -421,6 +426,7 @@ class GoogleAdsOperatorService:
         user_id: str,
         message: str,
         date_range: str = "LAST_30_DAYS",
+        image_engine: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Process a user chat message: read account → analyze with Claude → store results."""
 
@@ -464,8 +470,17 @@ class GoogleAdsOperatorService:
         ads_client = await self._get_ads_client(tenant_id, customer_id)
         context_svc = GoogleAdsContextService(ads_client)
 
-        # Build account context
-        account_context = await context_svc.build_full_context(date_range)
+        # Use cached context if available (avoid full diagnosis on every message)
+        cache_key = f"{customer_id}:{date_range}"
+        now = time.time()
+        cached = _context_cache.get(cache_key)
+        if cached and (now - cached[0]) < CONTEXT_CACHE_TTL:
+            account_context = cached[1]
+            logger.info("Using cached account context", customer_id=customer_id, age_seconds=int(now - cached[0]))
+        else:
+            account_context = await context_svc.build_full_context(date_range)
+            _context_cache[cache_key] = (now, account_context)
+            logger.info("Built and cached account context", customer_id=customer_id)
 
         # Inject landing page data so Claude can reference existing pages
         try:
@@ -638,6 +653,11 @@ class GoogleAdsOperatorService:
             is_auto_executed = action.get("_auto_executed", False)
             status = "executed" if is_auto_executed else "proposed"
 
+            # Inject user's preferred image engine into image actions
+            action_payload = action.get("action_payload", {})
+            if image_engine and action["action_type"] == "generate_ad_image":
+                action_payload["engine"] = image_engine
+
             pa = ProposedAction(
                 id=str(uuid.uuid4()),
                 conversation_id=conversation_id,
@@ -647,7 +667,7 @@ class GoogleAdsOperatorService:
                 reasoning=action.get("reasoning"),
                 expected_impact=action.get("expected_impact"),
                 risk_level=action.get("risk_level", "low" if is_auto_executed else "medium"),
-                action_payload=action.get("action_payload", {}),
+                action_payload=action_payload,
                 status=status,
             )
             if is_auto_executed:
@@ -860,7 +880,7 @@ class GoogleAdsOperatorService:
                             "generate_ad_image",
                             {
                                 "prompt": ip.get("prompt", ""),
-                                "engine": ip.get("engine", "flux"),
+                                "engine": ip.get("engine", "google"),
                                 "style": ip.get("style", "photorealistic"),
                                 "size": "1200x628",  # Google Ads landscape
                                 "upload_to_google": True,
@@ -900,6 +920,11 @@ class GoogleAdsOperatorService:
                         total=len(img_results),
                         success=sum(1 for r in img_results if r.get("status") == "success"),
                     )
+
+        # Invalidate context cache after mutations
+        for key in list(_context_cache.keys()):
+            if key.startswith(customer_id):
+                del _context_cache[key]
 
         response = {
             "status": "completed",

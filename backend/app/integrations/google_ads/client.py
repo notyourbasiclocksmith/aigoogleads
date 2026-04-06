@@ -1620,12 +1620,29 @@ class GoogleAdsClient:
     async def link_image_to_campaign(
         self, campaign_id: str, asset_resource: str
     ) -> Dict[str, Any]:
-        """Link an existing image asset to a campaign."""
+        """Link an existing image asset to a campaign.
+        Note: MARKETING_IMAGE is only supported by Display/PMax campaigns,
+        not Search campaigns. Skips gracefully for incompatible types."""
         await self._ensure_token()
         try:
             client = self._get_client()
-            ca_service = client.get_service("CampaignAssetService")
 
+            # Check campaign type first — Search campaigns don't support MARKETING_IMAGE
+            ga_service = client.get_service("GoogleAdsService")
+            query = f"""
+                SELECT campaign.advertising_channel_type
+                FROM campaign
+                WHERE campaign.id = {campaign_id}
+            """
+            response = ga_service.search(customer_id=self.customer_id, query=query)
+            for row in response:
+                channel_type = row.campaign.advertising_channel_type.name
+                if channel_type == "SEARCH":
+                    logger.info("Skipping image link — Search campaigns don't support MARKETING_IMAGE",
+                        campaign_id=campaign_id)
+                    return {"status": "skipped", "reason": "Search campaigns don't support image assets"}
+
+            ca_service = client.get_service("CampaignAssetService")
             link_op = client.get_type("CampaignAssetOperation")
             link = link_op.create
             link.campaign = f"customers/{self.customer_id}/campaigns/{campaign_id}"

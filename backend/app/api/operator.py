@@ -28,6 +28,7 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=5000)
     customer_id: str = Field(..., min_length=1)
     date_range: str = "LAST_30_DAYS"
+    image_engine: Optional[str] = None
 
 
 class NewConversationRequest(BaseModel):
@@ -68,6 +69,7 @@ async def send_chat_message(
             user_id=user.user_id,
             message=req.message,
             date_range=req.date_range,
+            image_engine=req.image_engine,
         )
         return result
     except ValueError as e:

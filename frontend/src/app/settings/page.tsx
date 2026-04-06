@@ -931,7 +931,7 @@ function SettingsContent() {
             ) : (
               <div className="text-center py-6">
                 <Target className="w-10 h-10 text-slate-300 mx-auto mb-3" />
-                <p className="text-sm text-muted-foreground mb-3">Connect your Meta Ads account to create and manage Facebook &amp; Instagram ad campaigns through Claude Operator.</p>
+                <p className="text-sm text-muted-foreground mb-3">Connect your Meta Ads account to create and manage Facebook &amp; Instagram ad campaigns through IntelliDrive Operator.</p>
                 <Button
                   onClick={async () => {
                     try {

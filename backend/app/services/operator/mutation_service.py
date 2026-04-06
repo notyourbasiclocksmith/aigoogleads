@@ -394,7 +394,7 @@ class GoogleAdsMutationService:
             return {"status": "failed", "error": "Image generator not configured"}
 
         prompt = payload.get("prompt", "")
-        engine = payload.get("engine", "dalle")
+        engine = payload.get("engine", "google")
         style = payload.get("style", "photorealistic")
         size = payload.get("size", "1024x1024")
 

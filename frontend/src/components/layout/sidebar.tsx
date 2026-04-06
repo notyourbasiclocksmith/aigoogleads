@@ -40,7 +40,7 @@ const coreNav: NavSection[] = [
     title: "AI Intelligence",
     items: [
       { label: "AI Operator", href: "/strategist", icon: Sparkles },
-      { label: "Claude Operator", href: "/ads/operator", icon: Bot },
+      { label: "IntelliDrive", href: "/ads/operator", icon: Bot },
       { label: "Fix My Ads", href: "/operator", icon: Brain },
     ],
   },

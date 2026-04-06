@@ -796,6 +796,7 @@ export default function OperatorPage() {
   const [editingTitle, setEditingTitle] = useState("");
 
   const [customerId, setCustomerId] = useState("");
+  const [imageEngine, setImageEngine] = useState<string>("google");
 
   useEffect(() => {
     // Auto-detect Google Ads customer ID from connected accounts
@@ -926,7 +927,7 @@ export default function OperatorPage() {
           "Analyzing search term report...",
           "Loading ad performance...",
           "Building account context...",
-          "Sending to Claude for analysis...",
+          "Sending to IntelliDrive AI for analysis...",
           "Generating findings & recommendations...",
         ]
       : logMode === "google_ads"
@@ -939,7 +940,7 @@ export default function OperatorPage() {
             "Loading ad performance...",
             "Fetching conversion tracking config...",
             "Computing heuristics (wasted spend, low CTR)...",
-            "Sending to Claude for analysis...",
+            "Sending to IntelliDrive AI for analysis...",
             "Generating structured recommendations...",
           ]
         : logMode === "meta_ads"
@@ -947,13 +948,13 @@ export default function OperatorPage() {
               "Connecting to Meta Ads API...",
               "Fetching campaigns & ad sets...",
               "Loading ad performance...",
-              "Sending to Claude for analysis...",
+              "Sending to IntelliDrive AI for analysis...",
               "Generating recommendations...",
             ]
           : [
               "Processing request...",
               "Fetching data...",
-              "Sending to Claude for analysis...",
+              "Sending to IntelliDrive AI for analysis...",
               "Generating response...",
             ];
 
@@ -1002,12 +1003,14 @@ export default function OperatorPage() {
           message: msg,
           mode: mode,
           date_range: "LAST_30_DAYS",
+          image_engine: imageEngine,
         };
         if (customerId) body.customer_id = customerId;
       } else if (apiBase === "/api/operator/meta") {
         body = {
           conversation_id: conversationId,
           message: msg,
+          image_engine: imageEngine,
         };
       } else {
         body = {
@@ -1015,6 +1018,7 @@ export default function OperatorPage() {
           message: msg,
           customer_id: customerId,
           date_range: "LAST_30_DAYS",
+          image_engine: imageEngine,
         };
       }
 
@@ -1324,7 +1328,7 @@ export default function OperatorPage() {
                 <ModeIcon className="w-5 h-5 text-white" />
               </div>
               <div>
-                <h1 className="text-lg font-bold text-white">Claude Operator</h1>
+                <h1 className="text-lg font-bold text-white">IntelliDrive Operator</h1>
                 <p className="text-xs text-white/40">{modeCfg.description}</p>
               </div>
             </div>
@@ -1348,6 +1352,20 @@ export default function OperatorPage() {
                   </button>
                 );
               })}
+            </div>
+            {/* Image Engine Selector */}
+            <div className="flex items-center gap-2 mt-2">
+              <span className="text-[10px] text-white/30 font-medium">Image AI:</span>
+              <select
+                value={imageEngine}
+                onChange={(e) => setImageEngine(e.target.value)}
+                className="bg-white/5 border border-white/10 rounded-md text-xs text-white/70 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-violet-500/50"
+              >
+                <option value="google">Google Imagen (Nano)</option>
+                <option value="dalle">DALL-E 3</option>
+                <option value="stability">Stability AI</option>
+                <option value="flux">Flux.1 Pro</option>
+              </select>
             </div>
           </div>
         </div>
@@ -1584,7 +1602,7 @@ export default function OperatorPage() {
                       ? "Connect a Google Ads account to get started..."
                       : mode === "auto"
                         ? "Ask anything — audit marketing, find wasted spend, create campaigns, manage reviews..."
-                        : `Ask Claude about your ${modeCfg.label}...`
+                        : `Ask IntelliDrive about your ${modeCfg.label}...`
                   }
                   disabled={sending || !canSend}
                   rows={1}
@@ -1611,7 +1629,7 @@ export default function OperatorPage() {
               <span>·</span>
               <span>{mode === "auto" ? "Auto-routes to connected systems" : modeCfg.label}</span>
               <span>·</span>
-              <span>Powered by Claude</span>
+              <span>Powered by IntelliDrive AI</span>
             </div>
           </div>
         </div>

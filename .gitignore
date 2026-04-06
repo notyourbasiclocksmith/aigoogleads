@@ -56,3 +56,4 @@ dump.rdb
 # Env snapshots (contain secrets)
 env_snapshot_*.json
 tmp_*.py
+.claude/

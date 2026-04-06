@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     # AI Image Generator (SEOpix Flask API)
     IMAGE_GENERATOR_API_URL: str = ""
     IMAGE_GENERATOR_API_KEY: str = ""
+    IMAGE_DEFAULT_ENGINE: str = "google"  # google, dalle, stability, flux
 
     # S3
     S3_ENDPOINT: str = ""
