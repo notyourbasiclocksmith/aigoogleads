@@ -14,7 +14,7 @@ import {
   Hash, Star, ExternalLink, Save, Loader2, Settings,
   Globe, Calendar, Link, Search, Monitor, Users,
   BarChart3, Pencil, Check, X, ChevronDown, ChevronRight,
-  ArrowUpDown, MoreHorizontal,
+  ArrowUpDown, MoreHorizontal, Image as ImageIcon,
 } from "lucide-react";
 import { HelpTip } from "@/components/ui/help-tip";
 
@@ -52,6 +52,11 @@ export default function CampaignDetailPage() {
   const [editStartDate, setEditStartDate] = useState("");
   const [editEndDate, setEditEndDate] = useState("");
 
+  // Campaign images
+  const [campaignImages, setCampaignImages] = useState<any[]>([]);
+  const [imagesLoading, setImagesLoading] = useState(false);
+  const [selectedImage, setSelectedImage] = useState<any>(null);
+
   useEffect(() => {
     api.get(`/api/campaigns/${campaignId}`)
       .then((data) => {
@@ -60,6 +65,16 @@ export default function CampaignDetailPage() {
       })
       .catch(console.error)
       .finally(() => setLoading(false));
+
+    // Fetch campaign images
+    setImagesLoading(true);
+    api.get(`/api/creative/assets?asset_type=IMAGE&campaign_id=${campaignId}&limit=50`)
+      .then((data) => {
+        const items = Array.isArray(data) ? data : data.items || [];
+        setCampaignImages(items.filter((a: any) => a.url));
+      })
+      .catch(() => {})
+      .finally(() => setImagesLoading(false));
   }, [campaignId]);
 
   function populateEditFields(c: any) {
@@ -753,6 +768,122 @@ export default function CampaignDetailPage() {
               <p className="text-sm text-slate-400 text-center py-6">
                 No ad groups found. Sync your Google Ads account from Settings to pull ad group data.
               </p>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Campaign Images */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-[15px] flex items-center gap-2">
+              <ImageIcon className="w-4 h-4" /> Campaign Images
+              {campaignImages.length > 0 && (
+                <Badge variant="outline" className="ml-1 text-[10px]">{campaignImages.length}</Badge>
+              )}
+            </CardTitle>
+            <CardDescription className="text-xs">
+              AI-generated images linked to this campaign
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {imagesLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+              </div>
+            ) : campaignImages.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-6">
+                No images generated for this campaign yet. Use IntelliDrive Operator to generate campaign images.
+              </p>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                  {campaignImages.map((img: any) => (
+                    <div
+                      key={img.id}
+                      className="group relative rounded-lg overflow-hidden border bg-muted/30 cursor-pointer hover:border-primary/30 transition-all"
+                      onClick={() => setSelectedImage(img)}
+                    >
+                      <div className="aspect-square relative">
+                        <img
+                          src={img.url}
+                          alt={img.metadata?.prompt || "Campaign image"}
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                        <div className="absolute bottom-0 left-0 right-0 p-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <p className="text-[10px] text-white line-clamp-2">{img.metadata?.prompt || "—"}</p>
+                        </div>
+                        <a
+                          href={img.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="absolute top-1.5 right-1.5 w-6 h-6 bg-black/50 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          <ExternalLink className="w-3 h-3 text-white/70" />
+                        </a>
+                      </div>
+                      <div className="p-2">
+                        <p className="text-[10px] text-muted-foreground truncate">
+                          {img.metadata?.engine === "google" ? "Google Imagen" :
+                           img.metadata?.engine === "dalle" ? "DALL-E 3" :
+                           img.metadata?.engine || "AI Generated"}
+                        </p>
+                        <p className="text-[9px] text-muted-foreground/60">
+                          {img.created_at ? new Date(img.created_at).toLocaleDateString() : "—"}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Image Lightbox */}
+                {selectedImage && (
+                  <div
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+                    onClick={() => setSelectedImage(null)}
+                  >
+                    <div
+                      className="relative max-w-2xl w-full mx-4 bg-background border rounded-2xl overflow-hidden"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        onClick={() => setSelectedImage(null)}
+                        className="absolute top-3 right-3 z-10 w-8 h-8 bg-black/50 rounded-lg flex items-center justify-center hover:bg-black/70"
+                      >
+                        <X className="w-4 h-4 text-white/70" />
+                      </button>
+                      <img
+                        src={selectedImage.url}
+                        alt={selectedImage.metadata?.prompt || "Campaign image"}
+                        className="w-full max-h-[60vh] object-contain bg-black/20"
+                      />
+                      <div className="p-4 space-y-2">
+                        {selectedImage.metadata?.prompt && (
+                          <p className="text-sm text-muted-foreground">{selectedImage.metadata.prompt}</p>
+                        )}
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline" className="text-[10px]">
+                            {selectedImage.metadata?.engine || "AI"}
+                          </Badge>
+                          {selectedImage.metadata?.size && (
+                            <Badge variant="outline" className="text-[10px]">{selectedImage.metadata.size}</Badge>
+                          )}
+                          {selectedImage.metadata?.style && (
+                            <Badge variant="outline" className="text-[10px]">{selectedImage.metadata.style}</Badge>
+                          )}
+                        </div>
+                        <a href={selectedImage.url} target="_blank" rel="noopener noreferrer">
+                          <Button variant="outline" size="sm" className="text-xs mt-2">
+                            <ExternalLink className="w-3 h-3 mr-1.5" /> Open Full Size
+                          </Button>
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </CardContent>
         </Card>

@@ -141,15 +141,15 @@ class AhrefsKeywordService:
                 + results["search_suggestions"]
             )
             if all_kws:
-                cpcs = [kw.get("cpc", 0) for kw in all_kws if kw.get("cpc")]
-                volumes = [kw.get("volume", 0) for kw in all_kws if kw.get("volume")]
+                cpcs = [kw.get("cpc") or 0 for kw in all_kws if kw.get("cpc")]
+                volumes = [kw.get("volume") or 0 for kw in all_kws if kw.get("volume")]
                 results["summary"] = {
                     "total_keywords_found": len(all_kws),
                     "avg_cpc": round(sum(cpcs) / len(cpcs), 2) if cpcs else 0,
                     "avg_volume": round(sum(volumes) / len(volumes)) if volumes else 0,
                     "high_value_keywords": len([
                         kw for kw in all_kws
-                        if kw.get("volume", 0) >= 50 and kw.get("cpc", 0) >= 1.0
+                        if (kw.get("volume") or 0) >= 50 and (kw.get("cpc") or 0) >= 1.0
                     ]),
                     "competitor_keywords_found": len(results["competitor_keywords"]),
                 }

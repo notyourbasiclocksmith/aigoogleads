@@ -707,7 +707,7 @@ Return this JSON structure:
             # Format real keyword data for Claude
             top_seeds = sorted(
                 ahrefs.get("seed_keywords", []),
-                key=lambda k: k.get("volume", 0), reverse=True,
+                key=lambda k: k.get("volume") or 0, reverse=True,
             )[:30]
             seed_lines = [
                 f"  {kw['keyword']} — vol:{kw.get('volume') or 0} CPC:${kw.get('cpc') or 0:.2f} diff:{kw.get('difficulty') or 0}"
@@ -716,7 +716,7 @@ Return this JSON structure:
 
             top_expanded = sorted(
                 ahrefs.get("expanded_keywords", []),
-                key=lambda k: k.get("volume", 0), reverse=True,
+                key=lambda k: k.get("volume") or 0, reverse=True,
             )[:40]
             expanded_lines = [
                 f"  {kw['keyword']} — vol:{kw.get('volume') or 0} CPC:${kw.get('cpc') or 0:.2f} [from: {kw.get('parent_service', kw.get('source', ''))}]"
@@ -725,7 +725,7 @@ Return this JSON structure:
 
             top_suggestions = sorted(
                 ahrefs.get("search_suggestions", []),
-                key=lambda k: k.get("volume", 0), reverse=True,
+                key=lambda k: k.get("volume") or 0, reverse=True,
             )[:20]
             suggestion_lines = [
                 f"  {kw['keyword']} — vol:{kw.get('volume') or 0} CPC:${kw.get('cpc') or 0:.2f}"
@@ -734,7 +734,7 @@ Return this JSON structure:
 
             comp_kws = sorted(
                 ahrefs.get("competitor_keywords", []),
-                key=lambda k: k.get("volume", 0), reverse=True,
+                key=lambda k: k.get("volume") or 0, reverse=True,
             )[:25]
             comp_lines = [
                 f"  {kw['keyword']} — vol:{kw.get('volume') or 0} CPC:${kw.get('cpc') or 0:.2f} [{kw.get('competitor_domain', '')}]"
@@ -1055,7 +1055,7 @@ Each ad group MUST have exactly 15 headlines and 4 descriptions."""
         ahrefs = context.get("ahrefs", {})
         if ahrefs and ahrefs.get("seed_keywords"):
             high_vol_kws = [kw["keyword"] for kw in ahrefs.get("seed_keywords", [])
-                           if kw.get("volume", 0) >= 30][:20]
+                           if (kw.get("volume") or 0) >= 30][:20]
             if high_vol_kws:
                 # Check how many high-volume Ahrefs keywords made it into the spec
                 spec_keywords = set()

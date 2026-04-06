@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+import sqlalchemy as sa
 from sqlalchemy import select, desc
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
@@ -183,6 +184,9 @@ async def image_generator_health():
 @router.get("/assets")
 async def list_assets(
     asset_type: Optional[str] = None,
+    campaign_id: Optional[str] = None,
+    source: Optional[str] = None,
+    search: Optional[str] = None,
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=100),
     user: CurrentUser = Depends(require_tenant),
@@ -191,22 +195,48 @@ async def list_assets(
     query = select(Asset).where(Asset.tenant_id == user.tenant_id)
     if asset_type:
         query = query.where(Asset.asset_type == asset_type)
+    if source:
+        query = query.where(Asset.source == source)
+    if campaign_id:
+        # Filter by campaign_id stored in metadata_json
+        query = query.where(
+            Asset.metadata_json["campaign_id"].astext == campaign_id
+        )
+    if search:
+        # Search in prompt or content
+        query = query.where(
+            sa.or_(
+                Asset.content.ilike(f"%{search}%"),
+                Asset.metadata_json["prompt"].astext.ilike(f"%{search}%"),
+            )
+        )
+
+    # Count total for pagination
+    from sqlalchemy import func
+    count_query = query.with_only_columns(func.count()).order_by(None)
+    total = (await db.execute(count_query)).scalar() or 0
+
     query = query.order_by(desc(Asset.created_at)).offset((page - 1) * limit).limit(limit)
 
     result = await db.execute(query)
     assets = result.scalars().all()
-    return [
-        {
-            "id": a.id,
-            "type": a.asset_type,
-            "source": a.source,
-            "url": a.url,
-            "content": a.content,
-            "metadata": a.metadata_json,
-            "created_at": a.created_at.isoformat() if a.created_at else None,
-        }
-        for a in assets
-    ]
+    return {
+        "items": [
+            {
+                "id": a.id,
+                "type": a.asset_type,
+                "source": a.source,
+                "url": a.url,
+                "content": a.content,
+                "metadata": a.metadata_json or {},
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+            }
+            for a in assets
+        ],
+        "total": total,
+        "page": page,
+        "pages": (total + limit - 1) // limit if limit else 1,
+    }
 
 
 @router.post("/assets")
@@ -226,6 +256,24 @@ async def save_asset(
     db.add(asset)
     await db.flush()
     return {"id": asset.id, "status": "saved"}
+
+
+@router.delete("/assets/{asset_id}")
+async def delete_asset(
+    asset_id: str,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete an asset by ID (must belong to user's tenant)."""
+    result = await db.execute(
+        select(Asset).where(Asset.id == asset_id, Asset.tenant_id == user.tenant_id)
+    )
+    asset = result.scalar_one_or_none()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    await db.delete(asset)
+    await db.flush()
+    return {"status": "deleted"}
 
 
 class DeployAdCopyRequest(BaseModel):

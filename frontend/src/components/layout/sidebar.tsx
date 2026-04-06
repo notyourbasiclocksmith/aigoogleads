@@ -10,7 +10,7 @@ import {
   Search, Zap, FlaskConical, FileText, Settings, LogOut,
   Shield, BarChart3, Building2, GitBranch, Plug, Scale,
   CreditCard, Bell, Trophy, Crosshair, Brain, Bot,
-  MessageSquare, Key, Image, Globe, Phone,
+  MessageSquare, Key, Image, Globe, Phone, Images,
   ChevronDown, Menu, X, Sparkles, Users, MapPin,
 } from "lucide-react";
 
@@ -49,6 +49,7 @@ const coreNav: NavSection[] = [
     items: [
       { label: "Campaigns", href: "/ads/campaigns", icon: Megaphone },
       { label: "Creative Studio", href: "/creative", icon: Wand2 },
+      { label: "Asset Library", href: "/assets/library", icon: Images },
       { label: "Ads", href: "/ads/ads", icon: Image },
       { label: "Keywords", href: "/ads/keywords", icon: Key },
       { label: "Search Terms", href: "/ads/search-terms", icon: MessageSquare },
