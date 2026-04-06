@@ -418,7 +418,7 @@ async def send_test_notification(
     from app.services.email_service import _wrap_html
     html = _wrap_html(
         "✅ Test Notification",
-        '<p style="font-size:15px;color:#334155;">This is a test email from <strong>IgniteAds AI</strong>.</p>'
+        '<p style="font-size:15px;color:#334155;">This is a test email from <strong>IntelliAds AI</strong>.</p>'
         '<p style="font-size:14px;color:#64748b;">If you received this, your email notifications are working correctly!</p>'
         '<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:12px 16px;margin:12px 0;">'
         '<p style="font-size:13px;color:#15803d;margin:0;">✓ SendGrid connected</p>'
@@ -426,7 +426,7 @@ async def send_test_notification(
         '<p style="font-size:13px;color:#15803d;margin:4px 0;">✓ Notification preferences active</p>'
         '</div>',
     )
-    result = await send_email(to_email=email, subject="[IgniteAds] Test Notification", html_body=html)
+    result = await send_email(to_email=email, subject="[IntelliAds] Test Notification", html_body=html)
     if result.get("success"):
         return {"status": "sent", "email": email}
     raise HTTPException(status_code=500, detail=result.get("error", "Failed to send"))

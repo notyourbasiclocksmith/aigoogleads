@@ -20,6 +20,9 @@ from app.services.meta_operator.claude_agent_service import ClaudeMetaAgentServi
 
 logger = structlog.get_logger()
 
+# Read-only Meta actions that can be auto-executed without confirmation
+META_AUTO_EXECUTE_ACTIONS = {"search_targeting", "preview_ad", "get_instagram_accounts"}
+
 
 class MetaAdsOperatorService:
     """Orchestrates the Claude Meta Ads Operator chat flow."""
@@ -151,6 +154,50 @@ class MetaAdsOperatorService:
             conversation_history=conversation_history[:-1],
         )
 
+        # ── AUTO-EXECUTE read-only actions (targeting search, ad preview, etc.) ──
+        auto_results = []
+        has_auto = any(
+            a.get("action_type") in META_AUTO_EXECUTE_ACTIONS
+            for a in claude_response.get("recommended_actions", [])
+        )
+        if has_auto:
+            meta_client = await self._get_meta_client(tenant_id)
+            mutation_svc = MetaAdsMutationService(meta_client)
+            for action in claude_response.get("recommended_actions", []):
+                if action.get("action_type") in META_AUTO_EXECUTE_ACTIONS:
+                    try:
+                        result = await mutation_svc.execute_action(
+                            action["action_type"], action.get("action_payload", {})
+                        )
+                        action["_execution_result"] = result
+                        action["_auto_executed"] = True
+                        auto_results.append({
+                            "action_type": action["action_type"],
+                            "status": result.get("status", "failed"),
+                            "result": result,
+                        })
+                    except Exception as e:
+                        logger.error("Meta auto-execute failed",
+                            action=action["action_type"], error=str(e))
+
+            # Enrich summary with auto-execution results
+            if auto_results:
+                claude_response["_auto_results"] = auto_results
+                summaries = []
+                for r in auto_results:
+                    if r["action_type"] == "search_targeting" and r["status"] == "success":
+                        count = r["result"].get("count", 0)
+                        summaries.append(f"Found {count} targeting options for '{r['result'].get('query', '')}'")
+                    elif r["action_type"] == "preview_ad" and r["status"] == "success":
+                        summaries.append("Ad preview generated")
+                    elif r["action_type"] == "get_instagram_accounts" and r["status"] == "success":
+                        count = r["result"].get("count", 0)
+                        summaries.append(f"Found {count} Instagram account(s)")
+                if summaries:
+                    claude_response["summary"] = (
+                        claude_response.get("summary", "") + f" [{' | '.join(summaries)}]"
+                    ).strip()
+
         # Save assistant message
         assistant_msg = OperatorMessage(
             id=str(uuid.uuid4()),
@@ -165,6 +212,8 @@ class MetaAdsOperatorService:
         # Save proposed actions
         proposed_actions = []
         for action in claude_response.get("recommended_actions", []):
+            is_auto = action.get("_auto_executed", False)
+            status = "executed" if is_auto else "proposed"
             pa = ProposedAction(
                 id=str(uuid.uuid4()),
                 conversation_id=conversation_id,
@@ -173,10 +222,12 @@ class MetaAdsOperatorService:
                 label=action.get("label", action["action_type"]),
                 reasoning=action.get("reasoning"),
                 expected_impact=action.get("expected_impact"),
-                risk_level=action.get("risk_level", "medium"),
+                risk_level=action.get("risk_level", "low" if is_auto else "medium"),
                 action_payload=action.get("action_payload", {}),
-                status="proposed",
+                status=status,
             )
+            if is_auto:
+                pa.executed_at = datetime.now(timezone.utc)
             self.db.add(pa)
             proposed_actions.append({
                 "id": pa.id,
@@ -187,6 +238,7 @@ class MetaAdsOperatorService:
                 "risk_level": pa.risk_level,
                 "status": pa.status,
                 "action_payload": pa.action_payload,
+                "_execution_result": action.get("_execution_result") if is_auto else None,
             })
 
         conv.updated_at = datetime.now(timezone.utc)
@@ -200,6 +252,7 @@ class MetaAdsOperatorService:
             "recommended_actions": proposed_actions,
             "questions": claude_response.get("questions", []),
             "message": claude_response.get("message", ""),
+            "auto_results": auto_results if auto_results else None,
         }
 
     # ── APPROVE / REJECT ──────────────────────────────────────────

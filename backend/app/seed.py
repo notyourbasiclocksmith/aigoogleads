@@ -22,7 +22,7 @@ async def seed():
         user_id = str(uuid.uuid4())
         user = User(
             id=user_id,
-            email="demo@igniteads.ai",
+            email="demo@getintelliads.com",
             password_hash=hash_password("demo1234"),
             full_name="Demo User",
         )
@@ -352,7 +352,7 @@ async def seed():
 
         await db.commit()
         print("✅ Demo seed complete!")
-        print(f"   Email: demo@igniteads.ai")
+        print(f"   Email: demo@getintelliads.com")
         print(f"   Password: demo1234")
         print(f"   Tenant: Ace Locksmith Dallas")
         print(f"   Tenant ID: {tenant_id}")

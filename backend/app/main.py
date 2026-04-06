@@ -14,7 +14,7 @@ logger = structlog.get_logger()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting Ignite Ads AI backend", env=settings.APP_ENV)
+    logger.info("Starting IntelliAds AI backend", env=settings.APP_ENV)
 
     # 1. Ensure all tables exist (create_all is safe — won't drop/alter existing)
     try:
@@ -44,11 +44,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("Alembic migration error", error=str(e))
     yield
-    logger.info("Shutting down Ignite Ads AI backend")
+    logger.info("Shutting down IntelliAds AI backend")
 
 
 app = FastAPI(
-    title="Ignite Ads AI",
+    title="IntelliAds AI",
     description="Multi-Tenant AI Google Ads Marketing Worker",
     version="1.0.0",
     lifespan=lifespan,
@@ -80,7 +80,7 @@ app.include_router(experiments.router, prefix="/api/experiments", tags=["Experim
 app.include_router(reports.router, prefix="/api/reports", tags=["Reports"])
 app.include_router(admin_settings.router, prefix="/api/settings", tags=["Settings"])
 app.include_router(lsa.router, prefix="/api/lsa", tags=["LSA (Local Services Ads)"])
-app.include_router(bridge.router, prefix="/api/bridge", tags=["Bridge (CallFlux ↔ IgniteAds)"])
+app.include_router(bridge.router, prefix="/api/bridge", tags=["Bridge (CallFlux ↔ IntelliAds)"])
 app.include_router(gbp.router, prefix="/api/gbp", tags=["Google Business Profile"])
 app.include_router(meta.router, prefix="/api/meta", tags=["Meta Ads (Facebook/Instagram)"])
 app.include_router(operator.router, prefix="/api/operator", tags=["Claude Operator"])

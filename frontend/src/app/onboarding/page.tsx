@@ -330,11 +330,11 @@ function OnboardingContent() {
         <div className="relative z-10 flex flex-col h-full">
           {/* Logo */}
           <div className="flex items-center gap-3 mb-12">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-600 to-indigo-600 flex items-center justify-center">
               <Sparkles className="w-5 h-5 text-white" />
             </div>
             <div>
-              <h1 className="text-lg font-bold text-white">IgniteAds.ai</h1>
+              <h1 className="text-lg font-bold text-white">IntelliAds</h1>
               <p className="text-xs text-slate-400">Intelligent Ad Management</p>
             </div>
           </div>
@@ -394,10 +394,10 @@ function OnboardingContent() {
         {/* Mobile top bar */}
         <div className="lg:hidden flex items-center justify-between p-4 border-b border-slate-800/50">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-600 to-indigo-600 flex items-center justify-center">
               <Sparkles className="w-4 h-4 text-white" />
             </div>
-            <span className="text-sm font-bold text-white">IgniteAds.ai</span>
+            <span className="text-sm font-bold text-white">IntelliAds</span>
           </div>
           <span className="text-xs text-slate-400">Step {step + 1}/{steps.length}</span>
         </div>
@@ -818,7 +818,7 @@ function OnboardingContent() {
                   <div className="p-4 rounded-xl bg-pink-500/5 border border-pink-500/20">
                     <p className="text-sm text-pink-300 flex items-center gap-2">
                       <Brain className="w-4 h-4" />
-                      Choose how much control IgniteAds.ai has over your campaigns. You can change this anytime.
+                      Choose how much control IntelliAds has over your campaigns. You can change this anytime.
                     </p>
                   </div>
 

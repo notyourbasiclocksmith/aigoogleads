@@ -18,8 +18,18 @@ from app.services.operator.mutation_service import GoogleAdsMutationService
 from app.services.operator.claude_agent_service import ClaudeAdsAgentService
 from app.services.operator.campaign_agent_pipeline import CampaignAgentPipeline
 from app.services.operator.post_execution_audit import PostExecutionAuditAgent
+from app.services.operator.landing_page_agent import LandingPageAgent
 
 logger = structlog.get_logger()
+
+# Landing page action types that the operator can recommend and auto-execute
+LANDING_PAGE_ACTIONS = {
+    "edit_landing_page",
+    "regenerate_landing_page",
+    "approve_landing_page",
+    "generate_landing_page_images",
+    "list_landing_pages",
+}
 
 
 class GoogleAdsOperatorService:
@@ -108,6 +118,199 @@ class GoogleAdsOperatorService:
             logger.error("Campaign pipeline failed", error=str(e))
             # Fall back to Claude's original thin spec
             return claude_intent.get("payload", {})
+
+    # ── LANDING PAGE ACTION DETECTION & EXECUTION ────────────────
+
+    def _has_landing_page_actions(self, claude_response: Dict[str, Any]) -> bool:
+        """Check if Claude recommended any landing page actions."""
+        for action in claude_response.get("recommended_actions", []):
+            if action.get("action_type") in LANDING_PAGE_ACTIONS:
+                return True
+        return False
+
+    async def _execute_landing_page_actions(
+        self,
+        conversation_id: str,
+        tenant_id: str,
+        claude_response: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """
+        Auto-execute landing page actions from Claude's response.
+        These are safe, non-destructive operations that don't modify the ad account.
+        Returns list of execution results.
+        """
+        agent = LandingPageAgent(self.db, tenant_id)
+        results = []
+
+        for action in claude_response.get("recommended_actions", []):
+            action_type = action.get("action_type")
+            payload = action.get("action_payload", {})
+
+            if action_type not in LANDING_PAGE_ACTIONS:
+                continue
+
+            try:
+                if action_type == "edit_landing_page":
+                    result = await agent.edit_variant(
+                        landing_page_id=payload.get("landing_page_id", ""),
+                        variant_key=payload.get("variant_key", "A"),
+                        edit_prompt=payload.get("edit_prompt", ""),
+                        conversation_id=payload.get("conversation_id", conversation_id),
+                    )
+                    action["_execution_result"] = result
+                    action["_auto_executed"] = True
+                    results.append({
+                        "action_type": action_type,
+                        "status": "error" if result.get("error") else "success",
+                        "result": result,
+                    })
+
+                elif action_type == "regenerate_landing_page":
+                    result = await agent.regenerate_variant(
+                        landing_page_id=payload.get("landing_page_id", ""),
+                        variant_key=payload.get("variant_key", "A"),
+                        new_angle=payload.get("new_angle", ""),
+                        conversation_id=payload.get("conversation_id", conversation_id),
+                    )
+                    action["_execution_result"] = result
+                    action["_auto_executed"] = True
+                    results.append({
+                        "action_type": action_type,
+                        "status": "error" if result.get("error") else "success",
+                        "result": result,
+                    })
+
+                elif action_type == "approve_landing_page":
+                    result = await agent.approve_variant(
+                        landing_page_id=payload.get("landing_page_id", ""),
+                        variant_key=payload.get("variant_key", "A"),
+                        campaign_spec={},  # No campaign spec when approving standalone
+                    )
+                    action["_execution_result"] = result
+                    action["_auto_executed"] = True
+                    results.append({
+                        "action_type": action_type,
+                        "status": "error" if result.get("error") else "success",
+                        "result": result,
+                    })
+
+                elif action_type == "generate_landing_page_images":
+                    result = await agent.generate_images(
+                        landing_page_id=payload.get("landing_page_id", ""),
+                        conversation_id=conversation_id,
+                    )
+                    action["_execution_result"] = result
+                    action["_auto_executed"] = True
+                    results.append({
+                        "action_type": action_type,
+                        "status": "error" if result.get("error") else "success",
+                        "result": result,
+                    })
+
+                elif action_type == "list_landing_pages":
+                    result = await self._list_landing_pages(
+                        tenant_id=tenant_id,
+                        service_filter=payload.get("service_filter"),
+                    )
+                    action["_execution_result"] = result
+                    action["_auto_executed"] = True
+                    results.append({
+                        "action_type": action_type,
+                        "status": "success",
+                        "result": result,
+                    })
+
+            except Exception as e:
+                logger.error("Landing page action failed",
+                    action_type=action_type, error=str(e))
+                results.append({
+                    "action_type": action_type,
+                    "status": "error",
+                    "error": str(e)[:200],
+                })
+
+        return results
+
+    async def _list_landing_pages(
+        self, tenant_id: str, service_filter: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """List landing pages for the tenant."""
+        from app.models.landing_page import LandingPage
+
+        query = select(LandingPage).where(
+            LandingPage.tenant_id == tenant_id,
+        ).order_by(LandingPage.created_at.desc()).limit(20)
+
+        if service_filter:
+            query = query.where(LandingPage.service.ilike(f"%{service_filter}%"))
+
+        result = await self.db.execute(query)
+        pages = result.scalars().all()
+
+        return {
+            "pages": [
+                {
+                    "landing_page_id": p.id,
+                    "name": p.name,
+                    "service": p.service,
+                    "status": p.status,
+                    "url": p.url or f"/lp/{p.slug}",
+                    "audit_score": p.audit_score,
+                    "created_at": p.created_at.isoformat() if p.created_at else None,
+                    "variant_count": len(p.variants) if p.variants else 0,
+                }
+                for p in pages
+            ],
+            "total": len(pages),
+        }
+
+    async def _execute_single_lp_action(
+        self,
+        tenant_id: str,
+        conversation_id: str,
+        action_type: str,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Execute a single landing page action via the LandingPageAgent."""
+        agent = LandingPageAgent(self.db, tenant_id)
+
+        if action_type == "edit_landing_page":
+            result = await agent.edit_variant(
+                landing_page_id=payload.get("landing_page_id", ""),
+                variant_key=payload.get("variant_key", "A"),
+                edit_prompt=payload.get("edit_prompt", ""),
+                conversation_id=payload.get("conversation_id", conversation_id),
+            )
+        elif action_type == "regenerate_landing_page":
+            result = await agent.regenerate_variant(
+                landing_page_id=payload.get("landing_page_id", ""),
+                variant_key=payload.get("variant_key", "A"),
+                new_angle=payload.get("new_angle", ""),
+                conversation_id=payload.get("conversation_id", conversation_id),
+            )
+        elif action_type == "approve_landing_page":
+            result = await agent.approve_variant(
+                landing_page_id=payload.get("landing_page_id", ""),
+                variant_key=payload.get("variant_key", "A"),
+                campaign_spec={},
+            )
+        elif action_type == "generate_landing_page_images":
+            result = await agent.generate_images(
+                landing_page_id=payload.get("landing_page_id", ""),
+                conversation_id=conversation_id,
+            )
+        elif action_type == "list_landing_pages":
+            result = await self._list_landing_pages(
+                tenant_id=tenant_id,
+                service_filter=payload.get("service_filter"),
+            )
+        else:
+            return {"status": "failed", "error": f"Unknown landing page action: {action_type}"}
+
+        if result.get("error"):
+            return {"status": "failed", "error": result["error"]}
+        result["status"] = "success"
+        return result
 
     # ── CONVERSATION MANAGEMENT ──────────────────────────────────
 
@@ -264,6 +467,13 @@ class GoogleAdsOperatorService:
         # Build account context
         account_context = await context_svc.build_full_context(date_range)
 
+        # Inject landing page data so Claude can reference existing pages
+        try:
+            lp_data = await self._list_landing_pages(tenant_id)
+            account_context["landing_pages"] = lp_data.get("pages", [])
+        except Exception:
+            account_context["landing_pages"] = []
+
         # Get conversation history for Claude
         history_result = await self.db.execute(
             select(OperatorMessage)
@@ -365,6 +575,51 @@ class GoogleAdsOperatorService:
                     if enhanced_data.get("image_prompts"):
                         pipeline_spec["_image_prompts"] = enhanced_data["image_prompts"]
 
+        # ── LANDING PAGE ACTION INTERCEPT: Auto-execute landing page actions
+        # since they are non-destructive (don't modify ad account) ──
+        lp_results = []
+        if self._has_landing_page_actions(claude_response):
+            logger.info("Landing page action detected", conversation_id=conversation_id)
+            lp_results = await self._execute_landing_page_actions(
+                conversation_id=conversation_id,
+                tenant_id=tenant_id,
+                claude_response=claude_response,
+            )
+            # Enrich Claude's response with execution results
+            if lp_results:
+                claude_response["_landing_page_results"] = lp_results
+                # Update summary to include LP action outcomes
+                lp_successes = [r for r in lp_results if r.get("status") == "success"]
+                lp_errors = [r for r in lp_results if r.get("status") == "error"]
+                if lp_successes:
+                    lp_summary_parts = []
+                    for r in lp_successes:
+                        res = r.get("result", {})
+                        if r["action_type"] == "edit_landing_page":
+                            lp_summary_parts.append(
+                                f"Edited variant {res.get('variant_key', '?')}: \"{res.get('edit_applied', '')}\""
+                            )
+                        elif r["action_type"] == "regenerate_landing_page":
+                            lp_summary_parts.append(
+                                f"Regenerated variant {res.get('variant_key', '?')} with {res.get('angle', 'fresh')} angle"
+                            )
+                        elif r["action_type"] == "approve_landing_page":
+                            lp_summary_parts.append(
+                                f"Approved variant {res.get('variant_approved', '?')} — published at {res.get('url', '')}"
+                            )
+                        elif r["action_type"] == "generate_landing_page_images":
+                            imgs = res.get("images", [])
+                            ok = sum(1 for i in imgs if i.get("status") == "success")
+                            lp_summary_parts.append(f"Generated {ok}/{len(imgs)} hero images")
+                        elif r["action_type"] == "list_landing_pages":
+                            pages = res.get("pages", [])
+                            lp_summary_parts.append(f"Found {len(pages)} landing page(s)")
+                    if lp_summary_parts:
+                        extra_summary = " | ".join(lp_summary_parts)
+                        claude_response["summary"] = (
+                            claude_response.get("summary", "") + f" [{extra_summary}]"
+                        ).strip()
+
         # Save assistant message
         assistant_msg = OperatorMessage(
             id=str(uuid.uuid4()),
@@ -376,9 +631,13 @@ class GoogleAdsOperatorService:
         self.db.add(assistant_msg)
         await self.db.flush()
 
-        # Save proposed actions
+        # Save proposed actions (skip auto-executed landing page actions)
         proposed_actions = []
         for action in claude_response.get("recommended_actions", []):
+            # Landing page actions that were auto-executed get saved as "executed"
+            is_auto_executed = action.get("_auto_executed", False)
+            status = "executed" if is_auto_executed else "proposed"
+
             pa = ProposedAction(
                 id=str(uuid.uuid4()),
                 conversation_id=conversation_id,
@@ -387,10 +646,12 @@ class GoogleAdsOperatorService:
                 label=action.get("label", action["action_type"]),
                 reasoning=action.get("reasoning"),
                 expected_impact=action.get("expected_impact"),
-                risk_level=action.get("risk_level", "medium"),
+                risk_level=action.get("risk_level", "low" if is_auto_executed else "medium"),
                 action_payload=action.get("action_payload", {}),
-                status="proposed",
+                status=status,
             )
+            if is_auto_executed:
+                pa.executed_at = datetime.now(timezone.utc)
             self.db.add(pa)
             proposed_actions.append({
                 "id": pa.id,
@@ -401,6 +662,7 @@ class GoogleAdsOperatorService:
                 "risk_level": pa.risk_level,
                 "status": pa.status,
                 "action_payload": pa.action_payload,
+                "_execution_result": action.get("_execution_result") if is_auto_executed else None,
             })
 
         conv.updated_at = datetime.now(timezone.utc)
@@ -414,6 +676,7 @@ class GoogleAdsOperatorService:
             "recommended_actions": proposed_actions,
             "questions": claude_response.get("questions", []),
             "message": claude_response.get("message", ""),
+            "landing_page_results": lp_results if lp_results else None,
         }
 
     # ── APPROVE / REJECT / EXECUTE ──────────────────────────────
@@ -469,11 +732,19 @@ class GoogleAdsOperatorService:
             action.approved_at = now
             action.executed_by = user_id
 
-            # Execute
+            # Execute — route landing page actions to LandingPageAgent
             try:
-                exec_result = await mutation_svc.execute_action(
-                    action.action_type, action.action_payload
-                )
+                if action.action_type in LANDING_PAGE_ACTIONS:
+                    exec_result = await self._execute_single_lp_action(
+                        tenant_id=tenant_id,
+                        conversation_id=conversation_id,
+                        action_type=action.action_type,
+                        payload=action.action_payload or {},
+                    )
+                else:
+                    exec_result = await mutation_svc.execute_action(
+                        action.action_type, action.action_payload
+                    )
 
                 exec_status = exec_result.get("status", "failed")
                 action.status = "executed" if exec_status == "success" else "failed"

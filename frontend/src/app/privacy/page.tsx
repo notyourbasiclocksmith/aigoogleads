@@ -1,5 +1,5 @@
 export const metadata = {
-  title: "Privacy Policy — IgniteAds.ai",
+  title: "Privacy Policy — IntelliAds.ai",
 };
 
 export default function PrivacyPage() {
@@ -11,7 +11,7 @@ export default function PrivacyPage() {
 
         <h2>1. Introduction</h2>
         <p>
-          IgniteAds.ai (&quot;we&quot;, &quot;our&quot;, &quot;us&quot;) operates the IgniteAds.ai platform
+          IntelliAds.ai (&quot;we&quot;, &quot;our&quot;, &quot;us&quot;) operates the IntelliAds.ai platform
           (the &quot;Service&quot;). This Privacy Policy explains how we collect, use, and protect
           your information when you use our Service.
         </p>

@@ -152,7 +152,7 @@ require_viewer = require_role("owner", "admin", "analyst", "viewer")
 
 # ── S2S (Service-to-Service) Auth for Brain API ────────────────────
 class S2SContext:
-    """Context for service-to-service calls (e.g. Jarvis → IgniteAds)."""
+    """Context for service-to-service calls (e.g. Jarvis → IntelliAds)."""
     def __init__(self, tenant_id: str):
         self.tenant_id = tenant_id
 

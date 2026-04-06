@@ -140,15 +140,32 @@ async def connect_account(
     if not tokens or "refresh_token" not in tokens:
         raise HTTPException(status_code=400, detail="Failed to exchange auth code for tokens")
 
-    integration = IntegrationGoogleAds(
-        tenant_id=user.tenant_id,
-        customer_id=req.customer_id,
-        login_customer_id=req.login_customer_id,
-        refresh_token_encrypted=encrypt_token(tokens["refresh_token"]),
-        access_token_cache=tokens.get("access_token"),
-        account_name=f"Account {req.customer_id}",
+    # Check for existing integration to avoid duplicates
+    existing_result = await db.execute(
+        select(IntegrationGoogleAds).where(
+            IntegrationGoogleAds.tenant_id == user.tenant_id,
+            IntegrationGoogleAds.customer_id == req.customer_id,
+        )
     )
-    db.add(integration)
+    existing = existing_result.scalars().first()
+    if existing:
+        # Update existing integration instead of creating duplicate
+        existing.login_customer_id = req.login_customer_id
+        existing.refresh_token_encrypted = encrypt_token(tokens["refresh_token"])
+        existing.access_token_cache = tokens.get("access_token")
+        existing.is_active = True
+        existing.sync_error = None
+        integration = existing
+    else:
+        integration = IntegrationGoogleAds(
+            tenant_id=user.tenant_id,
+            customer_id=req.customer_id,
+            login_customer_id=req.login_customer_id,
+            refresh_token_encrypted=encrypt_token(tokens["refresh_token"]),
+            access_token_cache=tokens.get("access_token"),
+            account_name=f"Account {req.customer_id}",
+        )
+        db.add(integration)
     await db.flush()
 
     # Trigger initial sync

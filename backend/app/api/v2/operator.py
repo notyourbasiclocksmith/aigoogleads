@@ -1157,6 +1157,87 @@ async def preview_landing_page(
     return HTMLResponse(content=html)
 
 
+# ── Landing Page Gallery — folder-style campaign→pages→ads view ────────────
+
+@router.get("/landing-pages/gallery")
+async def landing_page_gallery(
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get all landing pages grouped by service/campaign with variant previews.
+    Returns a folder-style structure: Service → Landing Page → Variants (with preview thumbnails).
+    """
+    from app.models.landing_page import LandingPage, LandingPageVariant
+    from app.services.operator.landing_page_agent import LandingPageAgent
+
+    # Get all landing pages for this tenant
+    result = await db.execute(
+        select(LandingPage).where(
+            LandingPage.tenant_id == str(user.tenant_id),
+        ).order_by(LandingPage.created_at.desc())
+    )
+    pages = result.scalars().all()
+
+    agent = LandingPageAgent(db, str(user.tenant_id))
+    biz_ctx = await agent._get_business_context()
+
+    # Group by service
+    services: dict = {}
+    for lp in pages:
+        service_key = lp.service or "Uncategorized"
+        if service_key not in services:
+            services[service_key] = {
+                "service": service_key,
+                "pages": [],
+                "total_variants": 0,
+                "published_count": 0,
+            }
+
+        variants_data = []
+        for v in (lp.variants or []):
+            # Generate a mini preview summary (not full HTML — too heavy for list)
+            hero = (v.content_json or {}).get("hero", {})
+            variants_data.append({
+                "id": v.id,
+                "key": v.variant_key,
+                "name": v.variant_name if hasattr(v, "variant_name") else v.variant_key,
+                "is_winner": v.is_winner if hasattr(v, "is_winner") else False,
+                "headline": hero.get("headline", ""),
+                "subheadline": hero.get("subheadline", ""),
+                "cta_text": hero.get("cta_text", ""),
+                "urgency_badge": hero.get("urgency_badge", ""),
+                "hero_image_url": hero.get("hero_image_url"),
+                "preview_url": f"/api/v2/operator/landing-page/{lp.id}/preview/{v.variant_key}",
+            })
+
+        page_data = {
+            "id": lp.id,
+            "name": lp.name,
+            "slug": lp.slug,
+            "service": lp.service,
+            "location": lp.location,
+            "status": lp.status,
+            "url": lp.url or f"/lp/{lp.slug}",
+            "audit_score": lp.audit_score,
+            "created_at": lp.created_at.isoformat() if lp.created_at else None,
+            "published_at": lp.published_at.isoformat() if hasattr(lp, "published_at") and lp.published_at else None,
+            "variant_count": len(variants_data),
+            "variants": variants_data,
+        }
+
+        services[service_key]["pages"].append(page_data)
+        services[service_key]["total_variants"] += len(variants_data)
+        if lp.status == "published":
+            services[service_key]["published_count"] += 1
+
+    return {
+        "services": list(services.values()),
+        "total_pages": len(pages),
+        "total_services": len(services),
+    }
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _parse_date_range(date_range: str):

@@ -173,7 +173,7 @@ class EmailConnector(BaseConnector):
         from_email = creds.get("from_email", "")
 
         to_email = payload.get("to_email", "")
-        subject = payload.get("subject", "Notification from Ignite Ads AI")
+        subject = payload.get("subject", "Notification from IntelliAds AI")
         body = payload.get("body", payload.get("message", ""))
 
         if not to_email:
@@ -181,7 +181,7 @@ class EmailConnector(BaseConnector):
 
         sendgrid_payload = {
             "personalizations": [{"to": [{"email": to_email}]}],
-            "from": {"email": from_email, "name": "Ignite Ads AI"},
+            "from": {"email": from_email, "name": "IntelliAds AI"},
             "subject": subject,
             "content": [
                 {"type": "text/plain", "value": body},

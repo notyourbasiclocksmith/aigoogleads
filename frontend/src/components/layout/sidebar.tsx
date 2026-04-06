@@ -163,11 +163,11 @@ export function Sidebar() {
     <>
       <div className="px-5 py-5 border-b border-white/[0.06] flex items-center justify-between">
         <Link href="/dashboard" className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center font-bold text-sm shadow-lg shadow-blue-500/20">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-600 to-indigo-600 flex items-center justify-center font-bold text-sm shadow-lg shadow-violet-500/20">
             IA
           </div>
           <div>
-            <div className="font-semibold text-[15px] leading-tight tracking-tight">IgniteAds.ai</div>
+            <div className="font-semibold text-[15px] leading-tight tracking-tight">IntelliAds</div>
             <div className="text-[11px] text-white/40 font-medium">AI Marketing System</div>
           </div>
         </Link>

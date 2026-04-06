@@ -130,10 +130,10 @@ function RegisterContent() {
       <div className="hidden lg:flex lg:w-[480px] flex-col justify-between p-10 border-r border-white/10">
         <div>
           <a href="/marketing" className="flex items-center gap-2 mb-12">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-600 to-indigo-600 flex items-center justify-center">
               <Zap className="w-5 h-5 text-white" />
             </div>
-            <span className="text-lg font-bold text-white">IgniteAds.ai</span>
+            <span className="text-lg font-bold text-white">IntelliAds</span>
           </a>
 
           <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r ${currentPlan.color} mb-6`}>
@@ -184,10 +184,10 @@ function RegisterContent() {
         <div className="w-full max-w-md">
           {/* Mobile logo */}
           <div className="lg:hidden flex items-center gap-2 mb-8">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-600 to-indigo-600 flex items-center justify-center">
               <Zap className="w-5 h-5 text-white" />
             </div>
-            <span className="text-lg font-bold text-white">IgniteAds.ai</span>
+            <span className="text-lg font-bold text-white">IntelliAds</span>
           </div>
 
           {/* Mobile plan badge */}

@@ -1,16 +1,16 @@
 """
-CallFlux ↔ IgniteAds Bridge API
+CallFlux ↔ IntelliAds Bridge API
 
 Service-to-service endpoints authenticated via X-Bridge-API-Key header.
-Allows CallFlux to pull LSA data from IgniteAds and push call insights back.
-Allows IgniteAds to pull call data from CallFlux.
+Allows CallFlux to pull LSA data from IntelliAds and push call insights back.
+Allows IntelliAds to pull call data from CallFlux.
 
 Endpoints:
   GET  /api/bridge/lsa/leads          — CallFlux pulls LSA leads for a customer
   GET  /api/bridge/lsa/leads/{id}     — Single LSA lead with conversations
   POST /api/bridge/lsa/leads/{id}/ai  — CallFlux pushes AI analysis results back
-  GET  /api/bridge/callflux/calls     — IgniteAds pulls CallFlux call data (proxied)
-  GET  /api/bridge/callflux/analytics — IgniteAds pulls CallFlux analytics (proxied)
+  GET  /api/bridge/callflux/calls     — IntelliAds pulls CallFlux call data (proxied)
+  GET  /api/bridge/callflux/analytics — IntelliAds pulls CallFlux analytics (proxied)
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Query, status
@@ -67,7 +67,7 @@ class AIAnalysisPayload(BaseModel):
     conversation_id: Optional[str] = None
 
 
-# ── LSA Endpoints (CallFlux reads from IgniteAds) ────────────
+# ── LSA Endpoints (CallFlux reads from IntelliAds) ────────────
 
 @router.get("/lsa/leads")
 async def bridge_list_lsa_leads(
@@ -190,7 +190,7 @@ async def bridge_push_ai_analysis(
     _key: str = Depends(require_bridge_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """CallFlux pushes AI analysis results (transcription, insights) back to IgniteAds."""
+    """CallFlux pushes AI analysis results (transcription, insights) back to IntelliAds."""
     result = await db.execute(select(LSALead).where(LSALead.id == lead_id))
     lead = result.scalar_one_or_none()
     if not lead:
@@ -233,7 +233,7 @@ async def bridge_push_ai_analysis(
     return {"status": "updated", "lead_id": lead_id}
 
 
-# ── CallFlux Proxy Endpoints (IgniteAds reads from CallFlux) ─
+# ── CallFlux Proxy Endpoints (IntelliAds reads from CallFlux) ─
 
 async def _callflux_request(method: str, path: str, params: dict = None) -> dict:
     """Make an authenticated request to the CallFlux external API."""

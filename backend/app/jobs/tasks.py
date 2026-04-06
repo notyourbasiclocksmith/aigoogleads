@@ -1,5 +1,5 @@
 """
-Background Jobs — All Celery tasks for Ignite Ads AI.
+Background Jobs — All Celery tasks for IntelliAds AI.
 """
 from app.jobs.celery_app import celery_app
 from sqlalchemy import select, and_, func, delete, create_engine
@@ -1122,9 +1122,9 @@ async def _launch_campaign_async(tenant_id: str, campaign_id: str, actor_id: str
                 IntegrationGoogleAds.tenant_id == tenant_id,
                 IntegrationGoogleAds.customer_id == campaign.google_customer_id,
                 IntegrationGoogleAds.is_active == True,
-            )
+            ).order_by(IntegrationGoogleAds.created_at.desc()).limit(1)
         )
-        integration = integration_result.scalar_one_or_none()
+        integration = integration_result.scalars().first()
         if not integration:
             campaign.status = "FAILED"
             campaign.settings_json = {**(campaign.settings_json or {}), "launch_error": "No active Google Ads integration"}
@@ -1784,9 +1784,9 @@ async def _auto_dispute_lsa_leads_async():
                 select(IntegrationGoogleAds).where(
                     IntegrationGoogleAds.customer_id == customer_id,
                     IntegrationGoogleAds.is_active == True,
-                )
+                ).order_by(IntegrationGoogleAds.created_at.desc()).limit(1)
             )
-            integration = integ_result.scalar_one_or_none()
+            integration = integ_result.scalars().first()
             if not integration:
                 logger.warning("LSA auto-dispute: no integration for customer", customer_id=customer_id)
                 continue

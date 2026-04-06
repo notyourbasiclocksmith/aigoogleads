@@ -129,7 +129,7 @@ export default function MCCPage() {
               <Link2 className="w-5 h-5" /> Bound Accounts ({bindings.length})
             </CardTitle>
             <CardDescription>
-              These are the Google Ads accounts you&apos;ve chosen to actively manage through IgniteAds.
+              These are the Google Ads accounts you&apos;ve chosen to actively manage through IntelliAds.
               Bound accounts will have their data synced, campaigns monitored, and AI optimizations applied.
               Think of binding as saying &quot;I want to manage this account.&quot;
             </CardDescription>

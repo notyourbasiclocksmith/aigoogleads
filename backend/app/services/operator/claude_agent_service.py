@@ -13,7 +13,7 @@ from app.core.config import settings
 
 logger = structlog.get_logger()
 
-SYSTEM_PROMPT = """You are the Google Ads Operator for a multi-tenant SaaS platform called IgniteAds.
+SYSTEM_PROMPT = """You are the Google Ads Operator for a multi-tenant SaaS platform called IntelliAds.
 
 Your job is to help users manage their Google Ads account through conversation.
 
@@ -47,7 +47,7 @@ Always respond with valid JSON matching this schema:
   ],
   "recommended_actions": [
     {
-      "action_type": "pause_keyword|enable_keyword|update_keyword_bid|add_negative_keyword|update_campaign_budget|pause_campaign|enable_campaign|pause_ad|enable_ad|pause_ad_group|enable_ad_group|set_device_bid_modifier|add_location_targeting|set_ad_schedule|apply_recommendation|create_sitelinks|create_callouts|create_structured_snippets|create_image_asset|link_image_to_campaign|create_promotion|deploy_full_campaign|create_campaign|create_ad_group|create_responsive_search_ad|create_call_ad|add_keywords|generate_ad_image|list_google_ads_assets",
+      "action_type": "pause_keyword|enable_keyword|update_keyword_bid|add_negative_keyword|update_campaign_budget|pause_campaign|enable_campaign|pause_ad|enable_ad|pause_ad_group|enable_ad_group|set_device_bid_modifier|add_location_targeting|set_ad_schedule|apply_recommendation|create_sitelinks|create_callouts|create_structured_snippets|create_image_asset|link_image_to_campaign|create_promotion|deploy_full_campaign|create_campaign|create_ad_group|create_responsive_search_ad|create_call_ad|add_keywords|generate_ad_image|list_google_ads_assets|edit_landing_page|regenerate_landing_page|approve_landing_page|generate_landing_page_images|list_landing_pages",
       "label": "Human-readable action label",
       "reasoning": "Why this action should be taken",
       "risk_level": "low|medium|high",
@@ -91,6 +91,25 @@ ACTION PAYLOAD FORMATS:
 - add_keywords: {"ad_group_resource": "...", "keywords": [{"text": "...", "match_type": "PHRASE"}]}
 - generate_ad_image: {"prompt": "descriptive image prompt", "engine": "dalle|stability|flux|google", "style": "photorealistic|cartoon|artistic", "size": "1024x1024|1792x1024|1024x1792", "upload_to_google": true, "campaign_id": "123", "asset_name": "My Ad Image"}
 - list_google_ads_assets: {"asset_types": ["IMAGE", "SITELINK", "CALLOUT", "STRUCTURED_SNIPPET", "PROMOTION"]}
+- edit_landing_page: {"landing_page_id": "uuid", "variant_key": "A", "edit_prompt": "change the headline to 'Fast BMW Key Replacement'", "conversation_id": "uuid"}
+- regenerate_landing_page: {"landing_page_id": "uuid", "variant_key": "A", "new_angle": "emergency urgency", "conversation_id": "uuid"}
+- approve_landing_page: {"landing_page_id": "uuid", "variant_key": "A"}
+- generate_landing_page_images: {"landing_page_id": "uuid"}
+- list_landing_pages: {"service_filter": "optional service name to filter by"}
+
+LANDING PAGE MANAGEMENT NOTES:
+- The campaign pipeline automatically generates landing pages during campaign creation.
+- After campaign creation, users can manage their landing pages through chat:
+  - "Edit the landing page headline" → use edit_landing_page. Ask which variant (A/B/C) if unclear.
+  - "Regenerate variant B with a professional angle" → use regenerate_landing_page
+  - "Approve variant A" / "Use variant A" → use approve_landing_page to publish it
+  - "Generate images for the landing page" → use generate_landing_page_images
+  - "Show my landing pages" / "List landing pages" → use list_landing_pages
+- Landing pages have 3 variants: A (Emergency/Urgency), B (Savings/Value), C (Expert/Authority)
+- Always reference the landing_page_id from previous messages in the conversation.
+- When the user says "edit the landing page" without specifying a variant, ask which variant (A, B, or C).
+- For edit_landing_page, write a clear edit_prompt that describes EXACTLY what to change — be specific.
+- The edit is AI-powered: the user can say natural language like "make it more urgent", "add a money-back guarantee", "change the phone number to 555-1234", "add more trust signals", etc.
 
 IMAGE GENERATION NOTES:
 - Use generate_ad_image when the user asks to create images for ads. Write a detailed, professional prompt.
@@ -246,6 +265,21 @@ USER REQUEST: {user_message}"""
                     f"Counting:{ca.get('counting_type', 'N/A')} | Attribution:{attr} | {included} | "
                     f"Click lookback:{ca.get('click_through_lookback_days', 'N/A')}d | "
                     f"View lookback:{ca.get('view_through_lookback_days', 'N/A')}d"
+                )
+
+        # Landing pages
+        landing_pages = ctx.get("landing_pages", [])
+        if landing_pages:
+            parts.append(f"\nLANDING PAGES ({len(landing_pages)}):")
+            for lp in landing_pages[:20]:
+                variants_str = f"{lp.get('variant_count', 0)} variants" if lp.get("variant_count") else ""
+                parts.append(
+                    f"  [{lp.get('status', '?')}] {lp.get('name', 'Untitled')} — "
+                    f"Service: {lp.get('service', 'N/A')} | "
+                    f"URL: {lp.get('url', 'N/A')} | "
+                    f"Score: {lp.get('audit_score', 'unaudited')} | "
+                    f"{variants_str} | "
+                    f"ID: {lp.get('landing_page_id', 'N/A')}"
                 )
 
         return "\n".join(parts)

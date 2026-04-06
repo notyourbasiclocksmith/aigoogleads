@@ -22,7 +22,7 @@ async def send_email(
     html_body: str,
     plain_text: Optional[str] = None,
     from_email: Optional[str] = None,
-    from_name: str = "IgniteAds AI",
+    from_name: str = "IntelliAds AI",
 ) -> Dict[str, Any]:
     """Send an email via SendGrid."""
     api_key = settings.EMAIL_PROVIDER_KEY
@@ -66,7 +66,7 @@ def _wrap_html(title: str, body_html: str) -> str:
         f'<div style="padding:24px 28px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 8px 8px;">'
         f'{body_html}'
         f'<hr style="border:none;border-top:1px solid #e2e8f0;margin:20px 0;">'
-        f'<p style="font-size:11px;color:#94a3b8;">Sent by IgniteAds AI &bull; '
+        f'<p style="font-size:11px;color:#94a3b8;">Sent by IntelliAds AI &bull; '
         f'<a href="{settings.APP_URL}/settings" style="color:#3b82f6;">Manage preferences</a></p>'
         f'</div></div>'
     )
@@ -134,7 +134,7 @@ async def send_tenant_alert(
     if not prefs.get(alert_type, True):
         return {"success": False, "error": f"{alert_type} disabled by user"}
     html = build_alert_html(alert_type, message, details)
-    subject = f"[IgniteAds] {alert_type.replace('_', ' ').title()}: {message[:80]}"
+    subject = f"[IntelliAds] {alert_type.replace('_', ' ').title()}: {message[:80]}"
     return await send_email(to_email=email, subject=subject, html_body=html, plain_text=message)
 
 
@@ -149,4 +149,4 @@ async def send_tenant_weekly_report(
     if not prefs.get("weekly_report", True):
         return {"success": False, "error": "weekly_report disabled by user"}
     html = build_weekly_report_html(business_name, period, metrics, highlights)
-    return await send_email(to_email=email, subject=f"[IgniteAds] Weekly Report — {business_name}", html_body=html)
+    return await send_email(to_email=email, subject=f"[IntelliAds] Weekly Report — {business_name}", html_body=html)

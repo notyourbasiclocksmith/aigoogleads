@@ -94,7 +94,7 @@ class SocialAnalyzer:
             timeout=20.0,
             follow_redirects=True,
             headers={
-                "User-Agent": "Mozilla/5.0 (compatible; IgniteAdsBot/2.0; +https://igniteads.ai)",
+                "User-Agent": "Mozilla/5.0 (compatible; IntelliAdsBot/2.0; +https://getintelliads.com)",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.5",
             },

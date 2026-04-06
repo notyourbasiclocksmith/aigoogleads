@@ -264,7 +264,7 @@ export default function DashboardPage() {
                   <Rocket className="w-5 h-5 text-indigo-600" />
                 </div>
                 <div>
-                  <h2 className="text-[16px] font-semibold text-slate-900 tracking-tight">Get Started with IgniteAds</h2>
+                  <h2 className="text-[16px] font-semibold text-slate-900 tracking-tight">Get Started with IntelliAds</h2>
                   <p className="text-[12px] text-slate-400">{onboarding.completed} of {onboarding.total} steps complete</p>
                 </div>
               </div>
@@ -386,7 +386,7 @@ export default function DashboardPage() {
               <div className="w-16 h-16 rounded-2xl bg-white/10 flex items-center justify-center mx-auto mb-5 ring-1 ring-white/10">
                 <Rocket className="w-7 h-7 text-indigo-400" />
               </div>
-              <h2 className="text-[22px] font-semibold tracking-tight mb-2">Welcome to IgniteAds</h2>
+              <h2 className="text-[22px] font-semibold tracking-tight mb-2">Welcome to IntelliAds</h2>
               <p className="text-white/40 text-[14px] leading-relaxed mb-6">
                 Connect your Google Ads account or create your first AI-powered campaign to start seeing live performance data here.
               </p>

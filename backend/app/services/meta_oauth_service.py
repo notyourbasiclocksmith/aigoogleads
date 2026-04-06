@@ -18,15 +18,19 @@ from app.models.v2.integration_meta import IntegrationMeta
 
 logger = structlog.get_logger()
 
-META_AUTH_URL = "https://www.facebook.com/v21.0/dialog/oauth"
-META_TOKEN_URL = "https://graph.facebook.com/v21.0/oauth/access_token"
-META_GRAPH_URL = "https://graph.facebook.com/v21.0"
+META_AUTH_URL = "https://www.facebook.com/v22.0/dialog/oauth"
+META_TOKEN_URL = "https://graph.facebook.com/v22.0/oauth/access_token"
+META_GRAPH_URL = "https://graph.facebook.com/v22.0"
 
 META_SCOPES = [
-    "ads_management",
-    "ads_read",
-    "pages_show_list",
-    "pages_read_engagement",
+    "ads_management",           # Create/edit/delete campaigns, ad sets, ads, creatives
+    "ads_read",                 # Read campaign data, insights, performance metrics
+    "pages_show_list",          # List Facebook Pages (required to find page_id for creatives)
+    "pages_read_engagement",    # Read page engagement metrics
+    "pages_manage_ads",         # Use Pages for ad creation (required for object_story_spec)
+    "instagram_basic",          # Read Instagram account info (for instagram_user_id)
+    "instagram_manage_insights", # Read Instagram insights
+    "business_management",      # Access business-level ad accounts and pages
 ]
 
 

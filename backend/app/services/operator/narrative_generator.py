@@ -56,7 +56,7 @@ async def _llm_narrative(
 
     biz = business_context or {}
 
-    prompt = f"""You are the AI Campaign Operator for IgniteAds.ai — a senior Google Ads strategist
+    prompt = f"""You are the AI Campaign Operator for IntelliAds.ai — a senior Google Ads strategist
 analyzing a client's account.
 
 ACCOUNT CONTEXT:

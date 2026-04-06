@@ -21,7 +21,7 @@ class BusinessScanner:
         self.client = httpx.AsyncClient(
             timeout=15.0,
             follow_redirects=True,
-            headers={"User-Agent": "IgniteAdsBot/1.0 (+https://igniteads.ai)"},
+            headers={"User-Agent": "IntelliAdsBot/1.0 (+https://getintelliads.com)"},
         )
 
     async def scan_website(self, website_url: str) -> Dict[str, Any]:

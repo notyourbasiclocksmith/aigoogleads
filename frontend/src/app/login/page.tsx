@@ -48,11 +48,11 @@ export default function LoginPage() {
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
           <div className="inline-flex items-center gap-2 mb-4">
-            <div className="w-12 h-12 rounded-xl bg-blue-500 flex items-center justify-center font-bold text-white text-xl">
+            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-violet-600 to-indigo-600 flex items-center justify-center font-bold text-white text-xl">
               IA
             </div>
           </div>
-          <h1 className="text-3xl font-bold text-white">IgniteAds.ai</h1>
+          <h1 className="text-3xl font-bold text-white">IntelliAds</h1>
           <p className="text-blue-200 mt-2">AI-Powered Google Ads Management</p>
         </div>
 

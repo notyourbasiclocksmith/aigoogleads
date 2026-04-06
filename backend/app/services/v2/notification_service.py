@@ -131,7 +131,7 @@ async def _send_slack(channel: NotificationChannel, event_type: str, payload: Di
     if not webhook_url:
         raise ValueError("Slack webhook URL not configured")
 
-    message = payload.get("message", f"[{event_type}] Notification from Ignite Ads AI")
+    message = payload.get("message", f"[{event_type}] Notification from IntelliAds AI")
     slack_payload = {
         "text": message,
         "blocks": [
@@ -157,7 +157,7 @@ async def _send_email(channel: NotificationChannel, event_type: str, payload: Di
         raise ValueError("to_email not set on email notification channel")
 
     from_email = channel.config_json.get("from_email") or settings.EMAIL_FROM
-    subject = f"[Ignite Ads AI] {event_type}"
+    subject = f"[IntelliAds AI] {event_type}"
     message = payload.get("message", f"Notification: {event_type}")
 
     # Build HTML body
@@ -174,13 +174,13 @@ async def _send_email(channel: NotificationChannel, event_type: str, payload: Di
             html_body += f'<p style="margin:4px 0;font-size:13px;color:#666;"><strong>{key}:</strong> {val}</p>'
     html_body += (
         f'<hr style="border:none;border-top:1px solid #eee;margin:16px 0;">'
-        f'<p style="font-size:12px;color:#999;">Sent by Ignite Ads AI</p>'
+        f'<p style="font-size:12px;color:#999;">Sent by IntelliAds AI</p>'
         f'</div></div>'
     )
 
     sendgrid_payload = {
         "personalizations": [{"to": [{"email": to_email}]}],
-        "from": {"email": from_email, "name": "Ignite Ads AI"},
+        "from": {"email": from_email, "name": "IntelliAds AI"},
         "subject": subject,
         "content": [
             {"type": "text/plain", "value": message},
@@ -231,7 +231,7 @@ async def send_test_notification(db: AsyncSession, tenant_id: str, channel_id: s
         return {"error": "Channel not found"}
 
     test_payload = {
-        "message": "🧪 Test notification from Ignite Ads AI. If you see this, your channel is configured correctly!",
+        "message": "🧪 Test notification from IntelliAds AI. If you see this, your channel is configured correctly!",
         "test": True,
     }
     return await _deliver_to_channel(db, tenant_id, channel, "test", test_payload, None)
