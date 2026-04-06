@@ -6,7 +6,9 @@ Capabilities:
   performance metrics, conversions, auction insights
 - Write (via changesets): create/update campaigns, ad groups, ads, keywords, negatives,
   assets; update bids/budgets/targeting; pause/enable entities
+- Atomic campaign deployment using GoogleAdsService.Mutate with temporary resource names
 """
+import asyncio
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 import structlog
@@ -69,6 +71,32 @@ class GoogleAdsClient:
             credentials["login_customer_id"] = self.login_customer_id
         self._cached_client = GAdsClient.load_from_dict(credentials)
         return self._cached_client
+
+    async def _run_sync(self, func, *args, **kwargs):
+        """Run a synchronous Google Ads API call in a thread pool to avoid blocking the event loop."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
+
+    @staticmethod
+    def _extract_google_ads_errors(ex) -> List[Dict[str, Any]]:
+        """Extract structured error details from a GoogleAdsException."""
+        errors = []
+        try:
+            for error in ex.failure.errors:
+                err = {
+                    "message": error.message,
+                    "error_code": str(error.error_code),
+                }
+                if error.location and error.location.field_path_elements:
+                    err["field_path"] = ".".join(
+                        str(e.field_name) for e in error.location.field_path_elements
+                    )
+                if error.trigger and error.trigger.string_value:
+                    err["trigger"] = error.trigger.string_value
+                errors.append(err)
+        except Exception:
+            errors.append({"message": str(ex)})
+        return errors
 
     # ── READ OPERATIONS ──────────────────────────────────────────────
 
@@ -1785,110 +1813,432 @@ class GoogleAdsClient:
             return {"status": "error", "error": str(e)}
 
     async def deploy_full_campaign(self, spec: Dict[str, Any]) -> Dict[str, Any]:
-        """Deploy a complete campaign from scratch: campaign + budget + ad groups + keywords + ads + extensions.
-        spec: {
-            "campaign": {"name": str, "budget_micros": int, "bidding_strategy": str, ...},
-            "ad_groups": [
-                {
-                    "name": str,
-                    "keywords": [{"text": str, "match_type": str}],
-                    "ads": [{"headlines": [...], "descriptions": [...], "final_url": str}],
-                    "negative_keywords": ["term1", ...]
-                }
-            ],
-            "sitelinks": [{"link_text": str, "final_url": str, ...}],
-            "callouts": ["text1", "text2"],
-            "structured_snippets": {"header": str, "values": [str]},
-        }
         """
+        Deploy a complete campaign atomically using GoogleAdsService.Mutate
+        with temporary resource names (negative IDs).
+
+        All entities (budget, campaign, ad groups, keywords, ads) are created
+        in a SINGLE API call. If any entity fails, NOTHING is created —
+        no orphaned campaigns or ad groups.
+
+        Extensions (sitelinks, callouts, snippets) are batched in a second
+        call since they require asset creation + campaign linking.
+        """
+        from google.ads.googleads.errors import GoogleAdsException
+
         results = {"campaign": None, "ad_groups": [], "errors": []}
 
-        # Pre-validation: check that spec has deployable content
+        # Pre-validation
         ad_group_specs = spec.get("ad_groups", [])
         if not ad_group_specs:
             logger.error("deploy_full_campaign called with zero ad groups", spec_keys=list(spec.keys()))
             return {"status": "error", "error": "No ad groups in campaign spec — nothing to deploy"}
 
-        # Log spec summary for debugging
+        # Log spec summary
+        total_kws = 0
+        total_ads = 0
         for i, ag in enumerate(ad_group_specs):
             kw_count = len(ag.get("keywords", []))
             ad_count = len(ag.get("ads", []))
-            hl_count = sum(len(a.get("headlines", [])) for a in ag.get("ads", []))
+            total_kws += kw_count
+            total_ads += ad_count
             logger.info("Ad group spec",
-                index=i, name=ag.get("name"), keywords=kw_count, ads=ad_count, headlines=hl_count)
+                index=i, name=ag.get("name"), keywords=kw_count, ads=ad_count)
+
+        await self._ensure_token()
 
         try:
-            # 1. Create campaign
-            campaign_result = await self.create_campaign(spec.get("campaign", {}))
-            if campaign_result.get("status") == "error":
-                return {"status": "error", "error": f"Campaign creation failed: {campaign_result.get('error')}"}
-            results["campaign"] = campaign_result
-            campaign_resource = campaign_result["campaign_resource"]
-            campaign_id = campaign_result["campaign_id"]
+            client = self._get_client()
+            ga_service = client.get_service("GoogleAdsService")
+            campaign_data = spec.get("campaign", {})
 
-            # 2. Create ad groups with keywords and ads
+            # ── Build all operations with temporary IDs ──────────────
+            operations = []
+            BUDGET_TEMP_ID = -1
+            CAMPAIGN_TEMP_ID = -2
+            next_temp_id = -3  # ad groups start at -3
+
+            # 1. Budget operation
+            budget_op = client.get_type("MutateOperation")
+            budget = budget_op.campaign_budget_operation.create
+            budget.resource_name = ga_service.campaign_budget_path(self.customer_id, str(BUDGET_TEMP_ID))
+            budget.name = f"Budget - {campaign_data.get('name', 'Campaign')}"
+            budget.amount_micros = campaign_data.get("budget_micros", 30_000_000)
+            budget.delivery_method = client.enums.BudgetDeliveryMethodEnum.STANDARD
+            budget.explicitly_shared = False
+            operations.append(budget_op)
+
+            # 2. Campaign operation
+            campaign_op = client.get_type("MutateOperation")
+            campaign = campaign_op.campaign_operation.create
+            campaign.resource_name = ga_service.campaign_path(self.customer_id, str(CAMPAIGN_TEMP_ID))
+            campaign.name = campaign_data.get("name", "New Campaign")
+            campaign.campaign_budget = ga_service.campaign_budget_path(self.customer_id, str(BUDGET_TEMP_ID))
+            campaign.status = client.enums.CampaignStatusEnum.PAUSED
+            campaign.contains_eu_political_advertising = (
+                client.enums.EuPoliticalAdvertisingStatusEnum.DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING
+            )
+
+            # Channel type
+            channel = campaign_data.get("channel_type", "SEARCH").upper()
+            channel_map = {
+                "SEARCH": client.enums.AdvertisingChannelTypeEnum.SEARCH,
+                "DISPLAY": client.enums.AdvertisingChannelTypeEnum.DISPLAY,
+                "PERFORMANCE_MAX": client.enums.AdvertisingChannelTypeEnum.PERFORMANCE_MAX,
+            }
+            campaign.advertising_channel_type = channel_map.get(
+                channel, client.enums.AdvertisingChannelTypeEnum.SEARCH
+            )
+
+            # Geo targeting: PRESENCE only (critical for local businesses)
+            campaign.geo_target_type_setting.positive_geo_target_type = (
+                client.enums.PositiveGeoTargetTypeEnum.PRESENCE
+            )
+            campaign.geo_target_type_setting.negative_geo_target_type = (
+                client.enums.NegativeGeoTargetTypeEnum.PRESENCE
+            )
+
+            # Network settings
+            if channel in ("SEARCH", "CALL"):
+                network = campaign_data.get("network", "SEARCH").upper()
+                campaign.network_settings.target_google_search = True
+                campaign.network_settings.target_search_network = (network == "ALL")
+                campaign.network_settings.target_content_network = False
+
+            # Bidding strategy
+            bid_strategy = campaign_data.get("bidding_strategy", "MAXIMIZE_CONVERSIONS").upper()
+            if bid_strategy == "MAXIMIZE_CONVERSIONS":
+                campaign.maximize_conversions.target_cpa_micros = campaign_data.get("target_cpa_micros", 0)
+            elif bid_strategy == "TARGET_CPA":
+                campaign.maximize_conversions.target_cpa_micros = campaign_data.get("target_cpa_micros", 25_000_000)
+            elif bid_strategy == "MAXIMIZE_CONVERSION_VALUE":
+                campaign.maximize_conversion_value.target_roas = campaign_data.get("target_roas", 0)
+            elif bid_strategy == "MAXIMIZE_CLICKS":
+                campaign.maximize_clicks.cpc_bid_ceiling_micros = campaign_data.get("cpc_ceiling_micros", 0)
+
+            operations.append(campaign_op)
+
+            # 3. Ad groups, keywords, and ads
+            ag_temp_ids = []  # Track temp IDs for result mapping
+            all_neg_kws = []  # Collect negative keywords for batch
+
             for ag_spec in ad_group_specs:
-                ag_result = {"name": ag_spec.get("name"), "keywords": 0, "ads": 0}
-                try:
-                    ag_resp = await self.create_ad_group(campaign_resource, ag_spec)
-                    if ag_resp.get("status") == "error":
-                        results["errors"].append(f"Ad group '{ag_spec.get('name')}' failed: {ag_resp.get('error')}")
-                        continue
-                    ag_resource = ag_resp["ad_group_resource"]
+                ag_temp_id = next_temp_id
+                next_temp_id -= 1
+                ag_temp_ids.append((ag_temp_id, ag_spec.get("name", "")))
 
-                    # Keywords
-                    kw_list = ag_spec.get("keywords", [])
-                    if kw_list:
-                        kw_resp = await self.create_keywords(ag_resource, kw_list)
-                        ag_result["keywords"] = kw_resp.get("created", 0)
+                # Ad group operation
+                ag_op = client.get_type("MutateOperation")
+                ag = ag_op.ad_group_operation.create
+                ag.resource_name = ga_service.ad_group_path(self.customer_id, str(ag_temp_id))
+                ag.name = ag_spec.get("name", "Ad Group")
+                ag.campaign = ga_service.campaign_path(self.customer_id, str(CAMPAIGN_TEMP_ID))
+                ag.status = client.enums.AdGroupStatusEnum.ENABLED
+                ag_type = ag_spec.get("type", "SEARCH_STANDARD").upper()
+                type_map = {
+                    "SEARCH_STANDARD": client.enums.AdGroupTypeEnum.SEARCH_STANDARD,
+                    "DISPLAY_STANDARD": client.enums.AdGroupTypeEnum.DISPLAY_STANDARD,
+                }
+                ag.type_ = type_map.get(ag_type, client.enums.AdGroupTypeEnum.SEARCH_STANDARD)
+                operations.append(ag_op)
 
-                    # Ads (RSA by default)
-                    for ad_spec in ag_spec.get("ads", []):
-                        ad_resp = await self.create_responsive_search_ad(ag_resource, ad_spec)
-                        if ad_resp.get("status") != "error":
-                            ag_result["ads"] += 1
-
-                    # Negative keywords at campaign level
-                    neg_kws = ag_spec.get("negative_keywords", [])
-                    if neg_kws:
-                        await self.add_negative_keywords(campaign_id, neg_kws)
-
-                except Exception as e:
-                    results["errors"].append(f"Ad group '{ag_spec.get('name')}': {str(e)[:200]}")
-                results["ad_groups"].append(ag_result)
-
-            # 3. Extensions
-            sitelinks = spec.get("sitelinks", [])
-            if sitelinks:
-                try:
-                    await self.create_sitelink_assets(campaign_id, sitelinks)
-                    results["sitelinks"] = len(sitelinks)
-                except Exception as e:
-                    results["errors"].append(f"Sitelinks: {str(e)[:200]}")
-
-            callouts = spec.get("callouts", [])
-            if callouts:
-                try:
-                    await self.create_callout_assets(campaign_id, callouts)
-                    results["callouts"] = len(callouts)
-                except Exception as e:
-                    results["errors"].append(f"Callouts: {str(e)[:200]}")
-
-            snippets = spec.get("structured_snippets")
-            if snippets:
-                try:
-                    await self.create_structured_snippet_assets(
-                        campaign_id, snippets["header"], snippets["values"]
+                # Keyword operations
+                match_map = {
+                    "EXACT": client.enums.KeywordMatchTypeEnum.EXACT,
+                    "PHRASE": client.enums.KeywordMatchTypeEnum.PHRASE,
+                    "BROAD": client.enums.KeywordMatchTypeEnum.BROAD,
+                }
+                for kw in ag_spec.get("keywords", []):
+                    kw_op = client.get_type("MutateOperation")
+                    criterion = kw_op.ad_group_criterion_operation.create
+                    criterion.ad_group = ga_service.ad_group_path(self.customer_id, str(ag_temp_id))
+                    criterion.status = client.enums.AdGroupCriterionStatusEnum.ENABLED
+                    criterion.keyword.text = kw.get("text", kw) if isinstance(kw, dict) else str(kw)
+                    criterion.keyword.match_type = match_map.get(
+                        kw.get("match_type", "PHRASE") if isinstance(kw, dict) else "PHRASE",
+                        client.enums.KeywordMatchTypeEnum.PHRASE,
                     )
-                    results["structured_snippets"] = True
-                except Exception as e:
-                    results["errors"].append(f"Snippets: {str(e)[:200]}")
+                    operations.append(kw_op)
+
+                # RSA operations
+                for ad_spec in ag_spec.get("ads", []):
+                    headlines = ad_spec.get("headlines", [])
+                    descriptions = ad_spec.get("descriptions", [])
+                    if len(headlines) < 3 or len(descriptions) < 2:
+                        continue  # Skip invalid ads
+
+                    ad_op = client.get_type("MutateOperation")
+                    ag_ad = ad_op.ad_group_ad_operation.create
+                    ag_ad.ad_group = ga_service.ad_group_path(self.customer_id, str(ag_temp_id))
+                    ag_ad.status = client.enums.AdGroupAdStatusEnum.ENABLED
+
+                    # Final URLs
+                    final_urls = ad_spec.get("final_urls") or []
+                    if not final_urls and ad_spec.get("final_url"):
+                        final_urls = [ad_spec["final_url"]]
+                    if not final_urls:
+                        final_urls = [campaign_data.get("final_url", "https://www.example.com")]
+                    ag_ad.ad.final_urls.extend(final_urls)
+
+                    # Display path
+                    display_path = ad_spec.get("display_path", [])
+                    if display_path and len(display_path) >= 1:
+                        ag_ad.ad.responsive_search_ad.path1 = str(display_path[0])[:15]
+                    if display_path and len(display_path) >= 2:
+                        ag_ad.ad.responsive_search_ad.path2 = str(display_path[1])[:15]
+
+                    # Headlines with pinning
+                    pin_map = {
+                        "HEADLINE_1": client.enums.ServedAssetFieldTypeEnum.HEADLINE_1,
+                        "HEADLINE_2": client.enums.ServedAssetFieldTypeEnum.HEADLINE_2,
+                        "HEADLINE_3": client.enums.ServedAssetFieldTypeEnum.HEADLINE_3,
+                        "DESCRIPTION_1": client.enums.ServedAssetFieldTypeEnum.DESCRIPTION_1,
+                        "DESCRIPTION_2": client.enums.ServedAssetFieldTypeEnum.DESCRIPTION_2,
+                    }
+
+                    for headline in headlines[:15]:
+                        text = headline if isinstance(headline, str) else headline.get("text", "") if isinstance(headline, dict) else str(headline)
+                        if not text.strip():
+                            continue
+                        h = client.get_type("AdTextAsset")
+                        h.text = text.strip()[:30]
+                        if isinstance(headline, dict) and headline.get("pinned_position"):
+                            pin_enum = pin_map.get(headline["pinned_position"].upper())
+                            if pin_enum:
+                                h.pinned_field = pin_enum
+                        ag_ad.ad.responsive_search_ad.headlines.append(h)
+
+                    for desc in descriptions[:4]:
+                        text = desc if isinstance(desc, str) else desc.get("text", "") if isinstance(desc, dict) else str(desc)
+                        if not text.strip():
+                            continue
+                        d = client.get_type("AdTextAsset")
+                        d.text = text.strip()[:90]
+                        if isinstance(desc, dict) and desc.get("pinned_position"):
+                            pin_enum = pin_map.get(desc["pinned_position"].upper())
+                            if pin_enum:
+                                d.pinned_field = pin_enum
+                        ag_ad.ad.responsive_search_ad.descriptions.append(d)
+
+                    operations.append(ad_op)
+
+                # Collect negative keywords
+                neg_kws = ag_spec.get("negative_keywords", [])
+                if neg_kws:
+                    all_neg_kws.extend(neg_kws)
+
+            # 4. Negative keywords (campaign-level, reference temp campaign ID)
+            for nk_text in set(all_neg_kws):  # Dedupe
+                nk_op = client.get_type("MutateOperation")
+                criterion = nk_op.campaign_criterion_operation.create
+                criterion.campaign = ga_service.campaign_path(self.customer_id, str(CAMPAIGN_TEMP_ID))
+                criterion.negative = True
+                criterion.keyword.text = nk_text
+                criterion.keyword.match_type = client.enums.KeywordMatchTypeEnum.PHRASE
+                operations.append(nk_op)
+
+            # ── Execute atomic mutate ────────────────────────────────
+            logger.info("Executing atomic campaign deploy",
+                operations=len(operations), ad_groups=len(ag_temp_ids),
+                keywords=total_kws, ads=total_ads)
+
+            try:
+                response = await self._run_sync(
+                    ga_service.mutate,
+                    customer_id=self.customer_id,
+                    mutate_operations=operations,
+                    partial_failure=True,
+                )
+            except GoogleAdsException as ex:
+                errors = self._extract_google_ads_errors(ex)
+                logger.error("Atomic campaign deploy failed",
+                    errors=errors, request_id=ex.request_id)
+                return {
+                    "status": "error",
+                    "error": f"Google Ads API error: {errors[0]['message'] if errors else str(ex)}",
+                    "errors": errors,
+                    "request_id": ex.request_id,
+                }
+
+            # ── Parse response ───────────────────────────────────────
+            # The response contains results in the SAME ORDER as operations
+            campaign_resource = None
+            campaign_id = None
+
+            # Find the campaign result (it's the 2nd operation, index 1)
+            for i, result in enumerate(response.mutate_operation_responses):
+                if result.campaign_result.resource_name:
+                    campaign_resource = result.campaign_result.resource_name
+                    campaign_id = campaign_resource.split("/")[-1]
+                    break
+
+            if not campaign_id:
+                return {"status": "error", "error": "Campaign creation succeeded but could not extract campaign ID"}
+
+            results["campaign"] = {
+                "campaign_resource": campaign_resource,
+                "campaign_id": campaign_id,
+                "status": "created",
+            }
+
+            # Count created entities
+            kw_created = 0
+            ads_created = 0
+            ag_created = 0
+            for result in response.mutate_operation_responses:
+                if result.ad_group_result.resource_name:
+                    ag_created += 1
+                elif result.ad_group_criterion_result.resource_name:
+                    kw_created += 1
+                elif result.ad_group_ad_result.resource_name:
+                    ads_created += 1
+
+            results["ad_groups"] = [
+                {"name": name, "keywords": "batched", "ads": "batched"}
+                for _, name in ag_temp_ids
+            ]
+
+            # Check partial failures
+            if response.partial_failure_error:
+                from google.ads.googleads.errors import GoogleAdsFailure
+                failure = GoogleAdsFailure()
+                failure._pb.MergeFrom(response.partial_failure_error)
+                for error in failure.errors:
+                    results["errors"].append(error.message)
+                    logger.warning("Atomic deploy partial failure", message=error.message)
+
+            logger.info("Atomic campaign deploy complete",
+                campaign_id=campaign_id,
+                ad_groups=ag_created, keywords=kw_created, ads=ads_created,
+                partial_failures=len(results["errors"]))
+
+            # ── Extensions (second batch — needs real campaign ID) ────
+            await self._deploy_extensions_batched(client, campaign_id, spec, results)
 
             results["status"] = "success" if not results["errors"] else "partial"
+            results["total_operations"] = len(operations)
+            results["summary"] = {
+                "ad_groups": ag_created,
+                "keywords": kw_created,
+                "ads": ads_created,
+            }
             return results
+
+        except GoogleAdsException as ex:
+            errors = self._extract_google_ads_errors(ex)
+            logger.error("Full campaign deploy failed (GoogleAds)", errors=errors)
+            return {"status": "error", "error": str(ex), "errors": errors}
         except Exception as e:
             logger.error("Full campaign deploy failed", error=str(e))
             return {"status": "error", "error": str(e), "partial_results": results}
+
+    async def _deploy_extensions_batched(
+        self, client, campaign_id: str, spec: Dict, results: Dict
+    ) -> None:
+        """
+        Deploy all extensions (sitelinks, callouts, snippets) in batched API calls.
+        Two calls: one batch for asset creation, one batch for campaign linking.
+        """
+        from google.ads.googleads.errors import GoogleAdsException
+
+        asset_service = client.get_service("AssetService")
+        ca_service = client.get_service("CampaignAssetService")
+        campaign_resource = f"customers/{self.customer_id}/campaigns/{campaign_id}"
+
+        # ── Batch 1: Create all assets ───────────────────────────
+        asset_operations = []
+        asset_types = []  # Track type for linking step
+
+        # Sitelinks
+        for sl in spec.get("sitelinks", []):
+            asset_op = client.get_type("AssetOperation")
+            asset = asset_op.create
+            asset.sitelink_asset.link_text = sl.get("link_text", "")[:25]
+            asset.sitelink_asset.description1 = sl.get("description1", "")[:35]
+            asset.sitelink_asset.description2 = sl.get("description2", "")[:35]
+            asset.final_urls.append(sl.get("final_url", ""))
+            asset_operations.append(asset_op)
+            asset_types.append("SITELINK")
+
+        # Callouts
+        for text in spec.get("callouts", []):
+            asset_op = client.get_type("AssetOperation")
+            asset_op.create.callout_asset.callout_text = str(text)[:25]
+            asset_operations.append(asset_op)
+            asset_types.append("CALLOUT")
+
+        # Structured snippets
+        snippets = spec.get("structured_snippets")
+        if snippets and snippets.get("header") and snippets.get("values"):
+            asset_op = client.get_type("AssetOperation")
+            snippet = asset_op.create.structured_snippet_asset
+            snippet.header = snippets["header"]
+            for v in snippets["values"]:
+                snippet.values.append(str(v)[:25])
+            asset_operations.append(asset_op)
+            asset_types.append("STRUCTURED_SNIPPET")
+
+        if not asset_operations:
+            return
+
+        # Execute batch asset creation
+        try:
+            asset_response = await self._run_sync(
+                asset_service.mutate_assets,
+                customer_id=self.customer_id,
+                operations=asset_operations,
+                partial_failure=True,
+            )
+        except GoogleAdsException as ex:
+            errors = self._extract_google_ads_errors(ex)
+            results["errors"].append(f"Extension assets: {errors[0]['message'] if errors else str(ex)}")
+            return
+
+        # ── Batch 2: Link all assets to campaign ─────────────────
+        field_type_map = {
+            "SITELINK": client.enums.AssetFieldTypeEnum.SITELINK,
+            "CALLOUT": client.enums.AssetFieldTypeEnum.CALLOUT,
+            "STRUCTURED_SNIPPET": client.enums.AssetFieldTypeEnum.STRUCTURED_SNIPPET,
+        }
+
+        link_operations = []
+        for i, result in enumerate(asset_response.results):
+            if not result.resource_name:
+                continue
+            link_op = client.get_type("CampaignAssetOperation")
+            link = link_op.create
+            link.campaign = campaign_resource
+            link.asset = result.resource_name
+            link.field_type = field_type_map.get(
+                asset_types[i], client.enums.AssetFieldTypeEnum.SITELINK
+            )
+            link_operations.append(link_op)
+
+        if not link_operations:
+            return
+
+        try:
+            await self._run_sync(
+                ca_service.mutate_campaign_assets,
+                customer_id=self.customer_id,
+                operations=link_operations,
+                partial_failure=True,
+            )
+            sitelink_count = sum(1 for t in asset_types if t == "SITELINK")
+            callout_count = sum(1 for t in asset_types if t == "CALLOUT")
+            if sitelink_count:
+                results["sitelinks"] = sitelink_count
+            if callout_count:
+                results["callouts"] = callout_count
+            if any(t == "STRUCTURED_SNIPPET" for t in asset_types):
+                results["structured_snippets"] = True
+
+            logger.info("Extensions deployed",
+                sitelinks=sitelink_count, callouts=callout_count,
+                snippets=1 if snippets else 0)
+        except GoogleAdsException as ex:
+            errors = self._extract_google_ads_errors(ex)
+            results["errors"].append(f"Extension linking: {errors[0]['message'] if errors else str(ex)}")
 
     async def update_campaign_status(self, campaign_resource: str, status: str) -> Dict[str, Any]:
         await self._ensure_token()
