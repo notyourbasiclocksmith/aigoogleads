@@ -17,6 +17,7 @@ Pipeline:
 
 import json
 import time
+import traceback
 import uuid
 import asyncio
 from datetime import datetime, timezone
@@ -370,6 +371,22 @@ class CampaignAgentPipeline:
         self._agent_timings = []
         logger.info("Campaign pipeline started", conversation_id=conversation_id)
 
+        try:
+            return await self._run_pipeline_inner(user_prompt, account_context, conversation_id)
+        except Exception as e:
+            logger.error("Campaign pipeline failed with traceback",
+                error=str(e),
+                traceback=traceback.format_exc(),
+                conversation_id=conversation_id)
+            return self._fallback_spec(user_prompt, {"business": {}})
+
+    async def _run_pipeline_inner(
+        self,
+        user_prompt: str,
+        account_context: Dict[str, Any],
+        conversation_id: str,
+    ) -> Dict[str, Any]:
+        """Inner pipeline logic — separated so run() can catch and log tracebacks."""
         # Initialize execution log
         exec_log = PipelineExecutionLog(
             id=str(uuid.uuid4()),
@@ -528,7 +545,12 @@ class CampaignAgentPipeline:
                     "Generating campaign images...")
 
                 biz = context.get("business", {})
-                services = strategy.get("services", [])[:3]  # Top 3 services
+                raw_services = strategy.get("services") or []
+                if isinstance(raw_services, dict):
+                    raw_services = list(raw_services.keys())
+                if not isinstance(raw_services, list):
+                    raw_services = list(raw_services) if raw_services else []
+                services = raw_services[:3]  # Top 3 services
                 image_results = []
 
                 for svc in services:
@@ -840,9 +862,12 @@ class CampaignAgentPipeline:
 
         # Format existing campaigns for context
         campaigns_text = "No existing campaigns found."
-        if account.get("campaigns"):
+        raw_campaigns = account.get("campaigns") or []
+        if isinstance(raw_campaigns, dict):
+            raw_campaigns = list(raw_campaigns.values())
+        if raw_campaigns:
             lines = []
-            for c in account["campaigns"][:10]:
+            for c in list(raw_campaigns)[:10]:
                 lines.append(f"  [{c.get('status', '?')}] {c.get('name', '?')} \u2014 Budget:${c.get('budget_daily') or '?'}/day | Cost:${c.get('cost') or 0:.0f} | Conv:{c.get('conversions') or 0} | CPA:${c.get('cpa') or 0:.0f}")
             campaigns_text = "\n".join(lines)
 

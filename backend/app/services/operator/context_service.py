@@ -258,7 +258,7 @@ class GoogleAdsContextService:
             ga_service = client.get_service("GoogleAdsService")
             query = """
                 SELECT
-                    campaign.id, campaign.name,
+                    campaign.id, campaign.name, campaign.status,
                     asset.id, asset.name, asset.type,
                     asset.sitelink_asset.link_text, asset.sitelink_asset.description1,
                     asset.callout_asset.callout_text,
@@ -290,36 +290,64 @@ class GoogleAdsContextService:
             return []
 
     async def _get_geo_targeting(self) -> List[Dict[str, Any]]:
-        """Get location and proximity targeting for campaigns."""
+        """Get location and proximity targeting for campaigns.
+
+        GAQL does not support SQL-style parentheses in WHERE clauses, so we
+        run two separate queries (LOCATION and PROXIMITY) and merge results.
+        """
+        geo_data: List[Dict[str, Any]] = []
         try:
             client = self.client._get_client()
             ga_service = client.get_service("GoogleAdsService")
-            query = """
+
+            # Query 1: LOCATION criteria
+            loc_query = """
                 SELECT
-                    campaign.id, campaign.name,
-                    campaign_criterion.location.geo_target_constant,
+                    campaign.id, campaign.name, campaign.status,
+                    campaign_criterion.location.geo_target_constant
+                FROM campaign_criterion
+                WHERE campaign.status != 'REMOVED'
+                    AND campaign_criterion.type = 'LOCATION'
+            """
+            try:
+                response = ga_service.search(customer_id=self.client.customer_id, query=loc_query)
+                for row in response:
+                    entry = {
+                        "campaign_id": str(row.campaign.id),
+                        "campaign_name": row.campaign.name,
+                    }
+                    if row.campaign_criterion.location.geo_target_constant:
+                        entry["geo_target_constant"] = row.campaign_criterion.location.geo_target_constant
+                    geo_data.append(entry)
+            except Exception as e:
+                logger.warning("Failed to get location criteria", error=str(e))
+
+            # Query 2: PROXIMITY criteria
+            prox_query = """
+                SELECT
+                    campaign.id, campaign.name, campaign.status,
                     campaign_criterion.proximity.geo_point.latitude_in_micro_degrees,
                     campaign_criterion.proximity.geo_point.longitude_in_micro_degrees,
                     campaign_criterion.proximity.radius
                 FROM campaign_criterion
                 WHERE campaign.status != 'REMOVED'
-                    AND (campaign_criterion.type = 'LOCATION'
-                    OR campaign_criterion.type = 'PROXIMITY')
+                    AND campaign_criterion.type = 'PROXIMITY'
             """
-            response = ga_service.search(customer_id=self.client.customer_id, query=query)
-            geo_data = []
-            for row in response:
-                entry = {
-                    "campaign_id": str(row.campaign.id),
-                    "campaign_name": row.campaign.name,
-                }
-                if row.campaign_criterion.location.geo_target_constant:
-                    entry["geo_target_constant"] = row.campaign_criterion.location.geo_target_constant
-                if row.campaign_criterion.proximity.geo_point.latitude_in_micro_degrees:
-                    entry["latitude_micro"] = row.campaign_criterion.proximity.geo_point.latitude_in_micro_degrees
-                    entry["longitude_micro"] = row.campaign_criterion.proximity.geo_point.longitude_in_micro_degrees
-                    entry["radius"] = row.campaign_criterion.proximity.radius
-                geo_data.append(entry)
+            try:
+                response = ga_service.search(customer_id=self.client.customer_id, query=prox_query)
+                for row in response:
+                    entry = {
+                        "campaign_id": str(row.campaign.id),
+                        "campaign_name": row.campaign.name,
+                    }
+                    if row.campaign_criterion.proximity.geo_point.latitude_in_micro_degrees:
+                        entry["latitude_micro"] = row.campaign_criterion.proximity.geo_point.latitude_in_micro_degrees
+                        entry["longitude_micro"] = row.campaign_criterion.proximity.geo_point.longitude_in_micro_degrees
+                        entry["radius"] = row.campaign_criterion.proximity.radius
+                    geo_data.append(entry)
+            except Exception as e:
+                logger.warning("Failed to get proximity criteria", error=str(e))
+
             return geo_data
         except Exception as e:
             logger.error("Failed to get geo targeting", error=str(e))
@@ -332,7 +360,7 @@ class GoogleAdsContextService:
             ga_service = client.get_service("GoogleAdsService")
             query = """
                 SELECT
-                    campaign.id, campaign.name,
+                    campaign.id, campaign.name, campaign.status,
                     campaign_criterion.device.type,
                     campaign_criterion.bid_modifier
                 FROM campaign_criterion
