@@ -68,11 +68,24 @@ class LandingPageGenerator:
         if not settings.ANTHROPIC_API_KEY and not settings.OPENAI_API_KEY:
             return {"error": "AI not configured (no API key)"}
 
-        usps = usps or []
-        offers = offers or []
-        campaign_keywords = campaign_keywords or []
-        campaign_headlines = campaign_headlines or []
-        trust_signals = trust_signals or []
+        def _as_list(val):
+            """Coerce value to list — handles None, dict, and other iterables."""
+            if val is None:
+                return []
+            if isinstance(val, list):
+                return val
+            if isinstance(val, dict):
+                return list(val.values()) if val else []
+            try:
+                return list(val)
+            except (TypeError, ValueError):
+                return []
+
+        usps = _as_list(usps)
+        offers = _as_list(offers)
+        campaign_keywords = _as_list(campaign_keywords)
+        campaign_headlines = _as_list(campaign_headlines)
+        trust_signals = _as_list(trust_signals)
         constraints = constraints or {}
 
         context = {

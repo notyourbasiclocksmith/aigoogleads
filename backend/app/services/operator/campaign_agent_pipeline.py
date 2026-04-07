@@ -605,9 +605,14 @@ class CampaignAgentPipeline:
                 for ad in ag.get("ads", []):
                     hl_by_svc[ag_name] = ad.get("headlines", [])[:5]
 
+            raw_locs = strategy.get("locations") or []
+            if isinstance(raw_locs, dict):
+                raw_locs = list(raw_locs.values()) if raw_locs else []
+            if not isinstance(raw_locs, list):
+                raw_locs = []
             lp_result = await lp_agent.run_for_campaign(
                 services=strategy.get("services", []),
-                locations=strategy.get("locations", []),
+                locations=raw_locs,
                 campaign_keywords=kw_by_svc,
                 campaign_headlines=hl_by_svc,
                 conversation_id=conversation_id,
