@@ -163,7 +163,26 @@ class LLMFallbackService:
                     system=system,
                     messages=[{"role": "user", "content": user_msg}],
                 )
+                # Guard against empty / missing content blocks
+                if not response.content:
+                    logger.warning(
+                        "claude_empty_content",
+                        model=model,
+                        attempt=attempt + 1,
+                        stop_reason=getattr(response, "stop_reason", None),
+                        usage=str(getattr(response, "usage", None)),
+                    )
+                    continue
                 raw = response.content[0].text
+                if not raw or not raw.strip():
+                    logger.warning(
+                        "claude_empty_text",
+                        model=model,
+                        attempt=attempt + 1,
+                        stop_reason=getattr(response, "stop_reason", None),
+                        content_type=type(response.content[0]).__name__,
+                    )
+                    continue
                 return _parse_json(raw)
 
             except (json.JSONDecodeError, IndexError, KeyError) as exc:

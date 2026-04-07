@@ -1457,26 +1457,40 @@ Return this JSON:
 
     def _format_feedback_for_ad_copy(self, feedback: Dict) -> str:
         """Format performance feedback for the Ad Copy agent's prompt."""
-        if not feedback:
+        if not feedback or not isinstance(feedback, dict):
             return ""
 
+        def _ensure_list(val):
+            """Safely coerce feedback values to a list of dicts."""
+            if isinstance(val, list):
+                return val
+            if isinstance(val, dict):
+                return list(val.values()) if val else []
+            return []
+
         lines = []
-        if feedback.get("top_performing_headlines"):
+        top_headlines = _ensure_list(feedback.get("top_performing_headlines"))
+        if top_headlines:
             lines.append("PROVEN HEADLINES FROM PAST CAMPAIGNS (high CTR — use this style):")
-            for h in feedback["top_performing_headlines"][:8]:
-                lines.append(f'  "{h.get("text", "")}" — CTR: {h.get("ctr", 0):.1%}')
+            for h in top_headlines[:8]:
+                if isinstance(h, dict):
+                    lines.append(f'  "{h.get("text", "")}" — CTR: {h.get("ctr", 0):.1%}')
             lines.append("  ↑ Write NEW headlines in a SIMILAR style to these winners.")
 
-        if feedback.get("failed_patterns"):
+        failed = _ensure_list(feedback.get("failed_patterns"))
+        if failed:
             lines.append("\nFAILED HEADLINES (low CTR — avoid this style):")
-            for h in feedback["failed_patterns"][:5]:
-                lines.append(f'  "{h.get("text", "")}" — CTR: {h.get("ctr", 0):.1%}')
+            for h in failed[:5]:
+                if isinstance(h, dict):
+                    lines.append(f'  "{h.get("text", "")}" — CTR: {h.get("ctr", 0):.1%}')
             lines.append("  ↑ Do NOT repeat these patterns.")
 
-        if feedback.get("top_performing_keywords"):
+        top_keywords = _ensure_list(feedback.get("top_performing_keywords"))
+        if top_keywords:
             lines.append("\nKEYWORDS THAT ACTUALLY CONVERT (include these terms in headlines):")
-            for kw in feedback["top_performing_keywords"][:5]:
-                lines.append(f'  "{kw.get("text", "")}" — {kw.get("conversions", 0)} conversions')
+            for kw in top_keywords[:5]:
+                if isinstance(kw, dict):
+                    lines.append(f'  "{kw.get("text", "")}" — {kw.get("conversions", 0)} conversions')
 
         return "\n".join(lines) if lines else ""
 
