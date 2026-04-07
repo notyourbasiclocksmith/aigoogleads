@@ -493,7 +493,7 @@ Return JSON:
             user_msg=prompt,
             max_tokens=2000,
             temperature=0.2,
-            preferred_model="claude-sonnet-4-5-20250514",
+            preferred_model="claude-sonnet-4-20250514",
         )
         if result and result.get("data"):
             return result["data"]

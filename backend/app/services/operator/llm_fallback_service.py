@@ -24,7 +24,6 @@ _FALLBACK_MODEL_MAP: dict[str, str] = {
     "claude-opus-4-6": "gpt-4o",
     "claude-opus-4-20250620": "gpt-4o",
     "claude-sonnet-4-20250514": "gpt-4o-mini",
-    "claude-sonnet-4-5-20250514": "gpt-4o-mini",
 }
 
 # Anthropic status codes that warrant a fallback

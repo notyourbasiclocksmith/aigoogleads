@@ -1075,7 +1075,7 @@ Return this JSON:
 
 IMPORTANT: Every keyword MUST have a "service" field matching exactly one of: {json.dumps(services)}"""
 
-        return await self._call_claude_json(system, user_msg, max_tokens=8192, temperature=0.6)
+        return await self._call_claude_json(system, user_msg, max_tokens=16384, temperature=0.6)
 
     # ── AGENT 3: TARGETING ───────────────────────────────────────
 
@@ -1293,7 +1293,7 @@ For EACH ad group, generate a complete RSA. Return this JSON:
 CRITICAL: Generate ads for ALL {len(services)} services: {json.dumps(services)}
 Each ad group MUST have exactly 15 headlines and 4 descriptions."""
 
-        return await self._call_claude_json(system, user_msg, max_tokens=8192, temperature=0.7)
+        return await self._call_claude_json(system, user_msg, max_tokens=16384, temperature=0.7)
 
     # ── AGENT 6: QA (HARDENED — programmatic + LLM) ────────────────
 
