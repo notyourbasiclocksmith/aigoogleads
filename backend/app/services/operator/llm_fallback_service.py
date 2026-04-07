@@ -41,6 +41,52 @@ def _strip_json_fences(text: str) -> str:
     return text.strip()
 
 
+def _repair_truncated_json(text: str) -> str:
+    """Attempt to repair JSON truncated by max_tokens by closing open brackets."""
+    # Count unclosed braces and brackets
+    open_braces = 0
+    open_brackets = 0
+    in_string = False
+    escape_next = False
+
+    for ch in text:
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == "\\":
+            escape_next = True
+            continue
+        if ch == '"' and not escape_next:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            open_braces += 1
+        elif ch == "}":
+            open_braces -= 1
+        elif ch == "[":
+            open_brackets += 1
+        elif ch == "]":
+            open_brackets -= 1
+
+    # Strip trailing incomplete value (after last comma or colon)
+    stripped = text.rstrip()
+    # Remove trailing comma if present
+    if stripped.endswith(","):
+        stripped = stripped[:-1]
+    # If it ends mid-string, close the string
+    if in_string:
+        stripped += '"'
+    # If it ends mid-key-value, remove the partial entry
+    if stripped.endswith(":"):
+        stripped = stripped[:stripped.rfind(",")]
+    # Close brackets/braces
+    stripped += "]" * max(open_brackets, 0)
+    stripped += "}" * max(open_braces, 0)
+    return stripped
+
+
 def _parse_json(raw: str) -> Any:
     """Parse JSON from raw LLM output, stripping fences and preamble if present."""
     cleaned = _strip_json_fences(raw)
@@ -54,7 +100,12 @@ def _parse_json(raw: str) -> Any:
             try:
                 return json.loads(cleaned[i:])
             except json.JSONDecodeError:
-                continue
+                # Try repairing truncated JSON
+                try:
+                    repaired = _repair_truncated_json(cleaned[i:])
+                    return json.loads(repaired)
+                except json.JSONDecodeError:
+                    continue
     # Nothing worked — raise so caller can handle
     raise json.JSONDecodeError("No valid JSON found in response", raw, 0)
 

@@ -944,7 +944,7 @@ Return this JSON structure:
   "profit_potential": "Estimated ticket size and margin for these services"
 }}"""
 
-        return await self._call_claude_json(system, user_msg, max_tokens=2048, temperature=0.4)
+        return await self._call_claude_json(system, user_msg, max_tokens=4096, temperature=0.4)
 
     # ── AGENT 2: KEYWORD RESEARCH ────────────────────────────────
 
