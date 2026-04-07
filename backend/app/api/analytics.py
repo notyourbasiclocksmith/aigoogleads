@@ -249,13 +249,37 @@ async def get_geo_performance(
             date_range=_date_range_str(days),
             campaign_id=campaign_id or "",
         )
-        # Resolve geo criterion IDs to names using Google Ads API
-        # For now, pass through the criterion IDs — frontend can resolve or we add a lookup
+        # Collect all criterion IDs for batch resolution
+        all_criterion_ids = set()
+        for row in raw:
+            for key in ("city_criterion_id", "metro_criterion_id", "region_criterion_id"):
+                if row.get(key) and row[key] != "0":
+                    all_criterion_ids.add(row[key])
+
+        # Batch resolve criterion IDs to human-readable names
+        name_map = {}
+        if all_criterion_ids:
+            try:
+                name_map = await client.resolve_geo_criterion_ids(list(all_criterion_ids))
+            except Exception as resolve_err:
+                logger.warning("Geo name resolution failed, using IDs", error=str(resolve_err))
+
         result = []
         for row in raw:
             cost = row["cost_micros"] / 1_000_000
+            # Build location name from resolved criterion IDs
+            location_name = (
+                name_map.get(row.get("city_criterion_id", ""))
+                or name_map.get(row.get("metro_criterion_id", ""))
+                or name_map.get(row.get("region_criterion_id", ""))
+                or row.get("city_criterion_id")
+                or row.get("metro_criterion_id")
+                or row.get("region_criterion_id")
+                or "Unknown"
+            )
             result.append({
                 **row,
+                "location_name": location_name,
                 "cost": cost,
                 "ctr": row["clicks"] / row["impressions"] if row["impressions"] > 0 else 0,
                 "cpa": cost / row["conversions"] if row["conversions"] > 0 else 0,

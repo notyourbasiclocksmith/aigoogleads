@@ -1417,7 +1417,7 @@ export default function CampaignDetailPage() {
                               <tr key={i} className="border-b border-slate-50 hover:bg-slate-50/50">
                                 <td className="py-2 pr-4 font-medium flex items-center gap-1.5">
                                   <MapPin className="w-3 h-3 text-slate-400" />
-                                  {loc.city_criterion_id || loc.metro_criterion_id || loc.region_criterion_id || "Unknown"}
+                                  {loc.location_name || loc.city_criterion_id || loc.metro_criterion_id || loc.region_criterion_id || "Unknown"}
                                 </td>
                                 <td className="py-2 pr-4 text-right">{formatNumber(loc.clicks)}</td>
                                 <td className="py-2 pr-4 text-right">{formatNumber(loc.impressions)}</td>

@@ -279,6 +279,121 @@ class GoogleAdsClient:
             results.append(action)
         return results
 
+    async def get_campaign_conversion_goals(self, campaign_resource: str) -> List[Dict]:
+        """Get conversion goals for a specific campaign."""
+        try:
+            client = self._get_client()
+            ga_service = client.get_service("GoogleAdsService")
+            query = f"""
+                SELECT campaign.id,
+                       campaign_conversion_goal.campaign,
+                       campaign_conversion_goal.category,
+                       campaign_conversion_goal.origin
+                FROM campaign_conversion_goal
+                WHERE campaign.resource_name = '{campaign_resource}'
+            """
+            response = await self._run_sync(
+                ga_service.search, customer_id=self.customer_id, query=query
+            )
+            return [{"category": row.campaign_conversion_goal.category.name,
+                      "origin": row.campaign_conversion_goal.origin.name} for row in response]
+        except Exception as e:
+            logger.warning("Failed to get campaign conversion goals", error=str(e))
+            return []
+
+    async def set_campaign_conversion_goals(
+        self, campaign_id: str, conversion_action_ids: List[str]
+    ) -> Dict[str, Any]:
+        """
+        Set campaign-level conversion goals by updating CustomConversionGoal.
+        For Google Ads API v17+, campaign conversion goals are managed via
+        ConversionGoalCampaignConfigService or by setting conversion_actions on the campaign.
+
+        The simplest approach: use CampaignConversionGoal to configure which
+        conversion actions the campaign should optimize for.
+        """
+        if not conversion_action_ids:
+            return {"status": "skipped", "reason": "no conversion actions provided"}
+
+        try:
+            await self._ensure_token()
+            client = self._get_client()
+            ga_service = client.get_service("GoogleAdsService")
+            campaign_resource = f"customers/{self.customer_id}/campaigns/{campaign_id}"
+
+            # Update campaign to use CAMPAIGN-level conversion goal setting
+            campaign_op = client.get_type("CampaignOperation")
+            campaign = campaign_op.update
+            campaign.resource_name = campaign_resource
+
+            # Set conversion goal campaign config
+            # This tells Google to only count the specified conversion actions
+            config_service = client.get_service("CampaignConversionGoalService")
+
+            operations = []
+            for ca_id in conversion_action_ids:
+                op = client.get_type("CampaignConversionGoalOperation")
+                goal = op.update
+                goal.campaign = campaign_resource
+                goal.category = client.enums.ConversionActionCategoryEnum.DEFAULT
+                goal.origin = client.enums.ConversionOriginEnum.WEBSITE
+
+                field_mask = client.get_type("FieldMask")
+                field_mask.paths.append("biddable")
+                op.update_mask.CopyFrom(field_mask)
+                goal.biddable = True
+                operations.append(op)
+
+            if operations:
+                await self._run_sync(
+                    config_service.mutate_campaign_conversion_goals,
+                    customer_id=self.customer_id,
+                    operations=operations,
+                )
+
+            logger.info("Campaign conversion goals set",
+                campaign_id=campaign_id,
+                conversion_actions=len(conversion_action_ids))
+            return {"status": "success", "conversion_actions": len(conversion_action_ids)}
+        except Exception as e:
+            logger.warning("Failed to set campaign conversion goals",
+                campaign_id=campaign_id, error=str(e))
+            return {"status": "error", "error": str(e)}
+
+    async def select_best_conversion_actions(self) -> List[Dict]:
+        """
+        Select the best conversion actions for a new campaign.
+        Priority: LEAD > PHONE_CALL > PURCHASE > SIGNUP > OTHER
+        Only returns ENABLED actions that are included_in_conversions.
+        """
+        try:
+            all_actions = await self.get_conversion_actions()
+
+            # Filter to enabled, included-in-conversions actions
+            active = [
+                a for a in all_actions
+                if a.get("status") == "ENABLED"
+                and a.get("include_in_conversions", False)
+            ]
+
+            if not active:
+                # Fall back to any enabled action
+                active = [a for a in all_actions if a.get("status") == "ENABLED"]
+
+            # Priority ordering
+            priority = {"LEAD": 1, "PHONE_CALL_LEAD": 2, "PHONE_CALL": 3,
+                        "SUBMIT_LEAD_FORM": 4, "PURCHASE": 5, "SIGNUP": 6,
+                        "BOOK_APPOINTMENT": 7, "REQUEST_QUOTE": 8,
+                        "GET_DIRECTIONS": 9, "CONTACT": 10, "DEFAULT": 99}
+
+            active.sort(key=lambda a: priority.get(a.get("category", "DEFAULT"), 50))
+
+            # Return top 3 most relevant
+            return active[:3]
+        except Exception as e:
+            logger.warning("Failed to select conversion actions", error=str(e))
+            return []
+
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
     async def get_auction_insights(self, campaign_id: str) -> List[Dict[str, Any]]:
         try:
@@ -2393,6 +2508,39 @@ class GoogleAdsClient:
             # ── Post-deploy: Apply targeting settings ────────────────
             await self._apply_targeting_settings(campaign_id, spec, results)
 
+            # ── Post-deploy: Assign conversion actions ───────────────
+            try:
+                conv_action_ids = spec.get("conversion_action_ids", [])
+                if not conv_action_ids:
+                    # Auto-select best conversion actions
+                    best_actions = await self.select_best_conversion_actions()
+                    conv_action_ids = [a["action_id"] for a in best_actions]
+                if conv_action_ids:
+                    conv_result = await self.set_campaign_conversion_goals(
+                        campaign_id, conv_action_ids
+                    )
+                    results["conversion_goals"] = conv_result
+                    logger.info("Conversion goals assigned",
+                        campaign_id=campaign_id,
+                        actions=len(conv_action_ids))
+            except Exception as conv_err:
+                logger.warning("Conversion goal assignment failed",
+                    error=str(conv_err))
+
+            # ── Post-deploy: Link GBP location asset ─────────────────
+            gbp_place_id = spec.get("gbp_place_id", "")
+            gbp_account_id = spec.get("gbp_account_id", "")
+            if gbp_place_id:
+                try:
+                    location_result = await self.link_gbp_location_asset(
+                        campaign_id, gbp_account_id, gbp_place_id
+                    )
+                    results["location_asset"] = location_result
+                    if location_result.get("status") == "success":
+                        logger.info("GBP location linked", campaign_id=campaign_id)
+                except Exception as loc_err:
+                    logger.warning("GBP location linking failed", error=str(loc_err))
+
             results["status"] = "success" if not results["errors"] else "partial"
             results["total_operations"] = len(operations)
             results["summary"] = {
@@ -2707,6 +2855,80 @@ class GoogleAdsClient:
         except Exception as e:
             logger.warning("Image asset linking failed", error=str(e))
 
+    # ── LOCATION ASSETS (GBP) ────────────────────────────────
+
+    async def link_gbp_location_asset(
+        self, campaign_id: str, gbp_account_id: str, gbp_location_id: str
+    ) -> Dict[str, Any]:
+        """
+        Link a Google Business Profile location as a location asset on the campaign.
+        This enables location extensions showing business address, hours, directions.
+
+        Requires the GBP account to be linked to the Google Ads account first.
+        """
+        try:
+            await self._ensure_token()
+            client = self._get_client()
+
+            # Create location asset from GBP
+            asset_service = client.get_service("AssetService")
+            asset_op = client.get_type("AssetOperation")
+            asset = asset_op.create
+            asset.location_asset.place_id = gbp_location_id  # Google Places ID
+
+            try:
+                asset_response = await self._run_sync(
+                    asset_service.mutate_assets,
+                    customer_id=self.customer_id,
+                    operations=[asset_op],
+                )
+                asset_resource = asset_response.results[0].resource_name
+            except Exception as asset_err:
+                # Location asset might already exist — try to find it
+                ga_service = client.get_service("GoogleAdsService")
+                query = """
+                    SELECT asset.id, asset.resource_name, asset.type
+                    FROM asset
+                    WHERE asset.type = 'LOCATION'
+                    LIMIT 1
+                """
+                try:
+                    response = await self._run_sync(
+                        ga_service.search, customer_id=self.customer_id, query=query
+                    )
+                    for row in response:
+                        asset_resource = row.asset.resource_name
+                        break
+                    else:
+                        return {"status": "error", "error": f"Could not create or find location asset: {str(asset_err)}"}
+                except Exception:
+                    return {"status": "error", "error": str(asset_err)}
+
+            # Link location asset to campaign
+            ca_service = client.get_service("CampaignAssetService")
+            campaign_resource = f"customers/{self.customer_id}/campaigns/{campaign_id}"
+
+            link_op = client.get_type("CampaignAssetOperation")
+            link = link_op.create
+            link.campaign = campaign_resource
+            link.asset = asset_resource
+            link.field_type = client.enums.AssetFieldTypeEnum.LOCATION
+
+            await self._run_sync(
+                ca_service.mutate_campaign_assets,
+                customer_id=self.customer_id,
+                operations=[link_op],
+                partial_failure=True,
+            )
+
+            logger.info("GBP location asset linked to campaign",
+                campaign_id=campaign_id, place_id=gbp_location_id)
+            return {"status": "success", "asset_resource": asset_resource}
+        except Exception as e:
+            logger.warning("GBP location asset linking failed",
+                campaign_id=campaign_id, error=str(e))
+            return {"status": "error", "error": str(e)}
+
     # ── GEO RESOLUTION HELPERS ────────────────────────────────
 
     async def _resolve_geo_locations(self, location_names: list) -> list:
@@ -2742,6 +2964,70 @@ class GoogleAdsClient:
         except Exception as e:
             logger.warning("Geo location resolution failed", error=str(e))
             return []
+
+    async def resolve_geo_criterion_ids(self, criterion_ids: List[str]) -> Dict[str, str]:
+        """
+        Resolve geo target criterion IDs to human-readable names.
+        Uses geo_target_constant GAQL query for batch lookup.
+        Returns: {criterion_id: canonical_name}
+        """
+        if not criterion_ids:
+            return {}
+
+        try:
+            await self._ensure_token()
+            client = self._get_client()
+            ga_service = client.get_service("GoogleAdsService")
+
+            # Deduplicate and filter empty
+            unique_ids = list(set(cid for cid in criterion_ids if cid and cid != "0"))
+            if not unique_ids:
+                return {}
+
+            # Query geo_target_constant (this is an account-less query)
+            # Build ID filter — batch up to 100 at a time
+            result_map = {}
+            for batch_start in range(0, len(unique_ids), 100):
+                batch = unique_ids[batch_start:batch_start + 100]
+                # Extract numeric IDs from resource names if needed
+                numeric_ids = []
+                for cid in batch:
+                    # Handle both "geoTargetConstants/12345" and plain "12345"
+                    if "/" in cid:
+                        numeric_ids.append(cid.split("/")[-1])
+                    else:
+                        numeric_ids.append(cid)
+
+                id_list = ", ".join(numeric_ids)
+                query = f"""
+                    SELECT geo_target_constant.id,
+                           geo_target_constant.name,
+                           geo_target_constant.canonical_name,
+                           geo_target_constant.target_type,
+                           geo_target_constant.country_code
+                    FROM geo_target_constant
+                    WHERE geo_target_constant.id IN ({id_list})
+                """
+                try:
+                    response = await self._run_sync(
+                        ga_service.search, customer_id=self.customer_id, query=query
+                    )
+                    for row in response:
+                        gtc = row.geo_target_constant
+                        cid_str = str(gtc.id)
+                        # Also map the resource name format
+                        result_map[cid_str] = gtc.canonical_name or gtc.name
+                        result_map[f"geoTargetConstants/{cid_str}"] = gtc.canonical_name or gtc.name
+                except Exception as batch_err:
+                    logger.warning("Geo criterion batch resolution failed",
+                        batch_size=len(batch), error=str(batch_err))
+
+            logger.info("Geo criterion IDs resolved",
+                requested=len(unique_ids), resolved=len(result_map) // 2)
+            return result_map
+        except Exception as e:
+            logger.warning("Geo criterion resolution failed", error=str(e))
+            return {}
 
     def _geocode_location(self, location_name: str) -> dict:
         """Geocode a location name to lat/lng using a lookup table of major US metros."""

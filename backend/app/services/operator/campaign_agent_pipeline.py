@@ -509,6 +509,58 @@ class CampaignAgentPipeline:
         else:
             await self._emit_progress("Call Tracking", "done", "Skipped — CallFlux not configured")
 
+        # ── Image Generation + Landing Pages (parallel) ──────────
+        # Generate campaign images in parallel with landing page creation
+        async def _generate_campaign_images() -> List[Dict]:
+            """Generate hero images for the campaign using the image generator."""
+            try:
+                from app.integrations.image_generator.client import ImageGeneratorClient
+                img_client = ImageGeneratorClient()
+                if not img_client.is_configured:
+                    return []
+
+                await self._emit_progress("Image Generation", "running",
+                    "Generating campaign images...")
+
+                biz = context.get("business", {})
+                services = strategy.get("services", [])[:3]  # Top 3 services
+                image_results = []
+
+                for svc in services:
+                    try:
+                        result = await img_client.generate_ad_image(
+                            business_name=biz.get("name", ""),
+                            business_type=biz.get("type", ""),
+                            service=svc,
+                            city=biz.get("city", ""),
+                            state=biz.get("state", ""),
+                            size="1200x628",
+                            engine="google",
+                        )
+                        if result.get("success") or result.get("imageUrl"):
+                            image_results.append({
+                                "service": svc,
+                                "url": result.get("imageUrl", ""),
+                                "filename": result.get("filename", ""),
+                                "status": "success",
+                            })
+                    except Exception as img_err:
+                        logger.warning("Image generation failed for service",
+                            service=svc, error=str(img_err)[:200])
+                        image_results.append({
+                            "service": svc,
+                            "status": "failed",
+                            "error": str(img_err)[:100],
+                        })
+
+                success_count = sum(1 for r in image_results if r.get("status") == "success")
+                await self._emit_progress("Image Generation", "done",
+                    f"{success_count}/{len(services)} images generated")
+                return image_results
+            except Exception as e:
+                logger.warning("Image generation skipped", error=str(e)[:200])
+                return []
+
         # ── Landing Page Agent: Check/create landing pages per service ──
         try:
             from app.services.operator.landing_page_agent import LandingPageAgent
@@ -560,6 +612,24 @@ class CampaignAgentPipeline:
             logger.warning("Landing page agent failed — continuing without", error=str(e))
             self._agent_timings.append({"agent": "Landing Pages", "duration_ms": 0, "status": "error"})
             await self._emit_progress("Landing Pages", "done", "Skipped (will use existing URLs)")
+
+        # ── Image Generation (runs while QA prepares) ──
+        image_results = []
+        try:
+            image_results = await _generate_campaign_images()
+            if image_results:
+                spec["_image_results"] = image_results
+                # Add image URLs to PMax asset groups if applicable
+                if spec.get("asset_groups"):
+                    success_images = [r for r in image_results if r.get("status") == "success" and r.get("url")]
+                    for i, ag in enumerate(spec["asset_groups"]):
+                        if i < len(success_images):
+                            ag.setdefault("images", []).append({
+                                "url": success_images[i]["url"],
+                                "field_type": "MARKETING_IMAGE",
+                            })
+        except Exception as img_err:
+            logger.warning("Image generation phase failed", error=str(img_err)[:200])
 
         # ── Agent 6: QA Review ──
         await self._emit_progress("Quality Assurance", "running", "Auditing compliance, keyword-ad relevance, character limits, and campaign structure...")
@@ -1511,6 +1581,9 @@ Return this JSON:
             "structured_snippets": extensions.get("structured_snippets", {}),
             "call_extension": extensions.get("call_extension", {}),
             "promotion_extensions": extensions.get("promotion_extensions", []),
+            # GBP location data for location extensions
+            "gbp_place_id": self._last_context.get("business", {}).get("gbp_place_id", ""),
+            "gbp_account_id": self._last_context.get("business", {}).get("gbp_account_id", ""),
             # Campaign-level negative keywords (cross-cutting)
             "campaign_negative_keywords": self._build_campaign_negatives(keywords),
             # Store metadata for display
@@ -1737,12 +1810,35 @@ Return this JSON:
                 campaign_id=result.get("campaign_id"),
                 forward_to=biz_phone)
 
+            # Step 3: Create DNI pool for website call tracking with GCLID attribution
+            dni_pool = None
+            try:
+                campaign_name = spec.get("campaign", {}).get("name", "Campaign")
+                pool_name = f"DNI - {campaign_name}"
+                dni_result = await callflux_client.create_dni_pool(
+                    access_token=access_token,
+                    pool_name=pool_name,
+                    purpose="GOOGLE_ADS",
+                )
+                if dni_result.get("pool_id"):
+                    dni_pool = dni_result
+                    logger.info("CallFlux DNI pool created",
+                        pool_id=dni_result["pool_id"],
+                        pool_name=pool_name)
+                else:
+                    logger.warning("DNI pool creation returned no pool_id",
+                        result=dni_result)
+            except Exception as dni_err:
+                logger.warning("DNI pool creation failed (non-critical)",
+                    error=str(dni_err))
+
             return {
                 "tracking_number": result.get("tracking_number", ""),
                 "callflux_campaign_id": result.get("campaign_id"),
                 "phone_number_id": result.get("phone_number_id"),
                 "forward_to": biz_phone,
                 "status": result.get("status", "active"),
+                "dni_pool": dni_pool,
             }
 
         except Exception as e:
