@@ -1,4 +1,4 @@
-import MarketingPage from "./marketing/page";
+import MarketingContent from "./marketing/marketing-content";
 import AuthRedirect from "./auth-redirect";
 
 /**
@@ -10,9 +10,9 @@ export { metadata } from "./marketing/page";
 
 export default function Home() {
   return (
-    <>
+    <div className="marketing-page" style={{ scrollBehavior: "smooth" }}>
       <AuthRedirect />
-      <MarketingPage />
-    </>
+      <MarketingContent />
+    </div>
   );
 }
