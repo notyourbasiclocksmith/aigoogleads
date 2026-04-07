@@ -42,9 +42,21 @@ def _strip_json_fences(text: str) -> str:
 
 
 def _parse_json(raw: str) -> Any:
-    """Parse JSON from raw LLM output, stripping fences if present."""
+    """Parse JSON from raw LLM output, stripping fences and preamble if present."""
     cleaned = _strip_json_fences(raw)
-    return json.loads(cleaned)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+    # Fallback: find the first { or [ and try to parse from there
+    for i, ch in enumerate(cleaned):
+        if ch in "{[":
+            try:
+                return json.loads(cleaned[i:])
+            except json.JSONDecodeError:
+                continue
+    # Nothing worked — raise so caller can handle
+    raise json.JSONDecodeError("No valid JSON found in response", raw, 0)
 
 
 class LLMFallbackService:
@@ -188,11 +200,16 @@ class LLMFallbackService:
             except (json.JSONDecodeError, IndexError, KeyError) as exc:
                 # JSON parse / extraction error — retry once on same model
                 last_error = exc
+                # Log first 500 chars of raw response for debugging
+                raw_preview = raw[:500] if raw else "(empty)"
                 logger.warning(
                     "claude_json_parse_error",
                     model=model,
                     attempt=attempt + 1,
                     error=str(exc),
+                    raw_preview=raw_preview,
+                    raw_length=len(raw) if raw else 0,
+                    stop_reason=getattr(response, "stop_reason", None),
                 )
                 continue
 
