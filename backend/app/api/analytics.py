@@ -17,7 +17,7 @@ from typing import Optional
 
 from app.core.database import get_db
 from app.core.deps import require_tenant, CurrentUser
-from app.models.ads_account import IntegrationGoogleAds
+from app.models.integration_google_ads import IntegrationGoogleAds
 from app.models.tenant import Tenant
 from app.integrations.google_ads.client import GoogleAdsClient
 from app.integrations.callflux.client import callflux_client
