@@ -1568,9 +1568,15 @@ Return this JSON:
             display_path = svc_copy.get("display_path", [])
 
             # Build headline/description dicts with pinning if available
-            pinning = svc_copy.get("pinning", {})
-            headline_pins = pinning.get("headline_pins", {})
-            description_pins = pinning.get("description_pins", {})
+            pinning = svc_copy.get("pinning") or {}
+            if not isinstance(pinning, dict):
+                pinning = {}
+            headline_pins = pinning.get("headline_pins") or {}
+            if not isinstance(headline_pins, dict):
+                headline_pins = {}
+            description_pins = pinning.get("description_pins") or {}
+            if not isinstance(description_pins, dict):
+                description_pins = {}
 
             pinned_headlines = []
             for i, h in enumerate(headlines):
@@ -1618,6 +1624,13 @@ Return this JSON:
         campaign_type = strategy.get("campaign_type", "SEARCH")
         is_pmax = campaign_type == "PERFORMANCE_MAX"
 
+        # Resolve campaign-level final_url from strategy or business context
+        campaign_final_url = (
+            strategy.get("website", "")
+            or (self._last_context or {}).get("business", {}).get("website", "")
+            or ""
+        )
+
         spec = {
             "campaign": {
                 "name": strategy.get("campaign_name", "AI Campaign"),
@@ -1626,6 +1639,7 @@ Return this JSON:
                 "target_cpa_micros": strategy.get("target_cpa_micros", 0),
                 "channel_type": campaign_type,
                 "network": "SEARCH" if not is_pmax else "ALL",
+                "final_url": campaign_final_url,
             },
             "ad_groups": ad_groups if not is_pmax else [],
             "sitelinks": extensions.get("sitelinks", []),
@@ -1634,8 +1648,8 @@ Return this JSON:
             "call_extension": extensions.get("call_extension", {}),
             "promotion_extensions": extensions.get("promotion_extensions", []),
             # GBP location data for location extensions
-            "gbp_place_id": self._last_context.get("business", {}).get("gbp_place_id", ""),
-            "gbp_account_id": self._last_context.get("business", {}).get("gbp_account_id", ""),
+            "gbp_place_id": (self._last_context or {}).get("business", {}).get("gbp_place_id", ""),
+            "gbp_account_id": (self._last_context or {}).get("business", {}).get("gbp_account_id", ""),
             # Campaign-level negative keywords (cross-cutting)
             "campaign_negative_keywords": self._build_campaign_negatives(keywords),
             # Store metadata for display

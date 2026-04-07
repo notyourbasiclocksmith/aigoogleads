@@ -581,6 +581,13 @@ class GoogleAdsOperatorService:
                 account_context=account_context,
                 claude_intent=intent,
             )
+            # Validate pipeline spec has minimum required structure
+            has_ad_groups = len(pipeline_spec.get("ad_groups", [])) > 0
+            has_asset_groups = len(pipeline_spec.get("asset_groups", [])) > 0
+            has_campaign = bool(pipeline_spec.get("campaign", {}).get("name"))
+            if not has_campaign or (not has_ad_groups and not has_asset_groups):
+                logger.error("Pipeline produced invalid spec — missing campaign or ad groups",
+                    has_campaign=has_campaign, ad_groups=has_ad_groups, asset_groups=has_asset_groups)
             # Replace the thin Claude payload with the pipeline-generated spec
             for action in claude_response.get("recommended_actions", []):
                 if action.get("action_type") == "deploy_full_campaign":

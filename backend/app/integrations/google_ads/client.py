@@ -2344,6 +2344,10 @@ class GoogleAdsClient:
                     headlines = ad_spec.get("headlines", [])
                     descriptions = ad_spec.get("descriptions", [])
                     if len(headlines) < 3 or len(descriptions) < 2:
+                        logger.warning("Skipping ad with insufficient content",
+                            ad_group=ag_spec.get("name", "?"),
+                            headlines=len(headlines), descriptions=len(descriptions),
+                            required_headlines=3, required_descriptions=2)
                         continue  # Skip invalid ads
 
                     ad_op = client.get_type("MutateOperation")
