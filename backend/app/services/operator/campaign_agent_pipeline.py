@@ -195,7 +195,7 @@ def _programmatic_qa(spec: Dict[str, Any]) -> List[Dict[str, Any]]:
         issues.append({"severity": "warning", "field": "campaign.budget_micros", "message": f"Budget ${budget_daily}/day seems very high for local business", "check": "budget"})
 
     # ── Keyword overlap with existing campaigns ──
-    existing_keywords = spec.get("_existing_campaign_keywords", set())
+    existing_keywords = set(spec.get("_existing_campaign_keywords", []))
     if existing_keywords:
         for ag_idx, ag in enumerate(spec.get("ad_groups", [])):
             for kw in ag.get("keywords", []):
@@ -400,6 +400,11 @@ class CampaignAgentPipeline:
             await self._emit_progress("Strategist", "error", "Failed to generate strategy")
             await self._finalize_log(exec_log, "failed", error="Strategist agent failed")
             return self._fallback_spec(user_prompt, context)
+        # Normalize: gpt-4o fallback may return services as dict instead of list
+        if isinstance(strategy.get("services"), dict):
+            strategy["services"] = list(strategy["services"].keys())
+        if not isinstance(strategy.get("services"), list):
+            strategy["services"] = []
         await self._emit_progress("Strategist", "done",
             f"{strategy.get('campaign_type', 'SEARCH')} campaign \u2022 ${strategy.get('budget_daily', 50)}/day \u2022 {len(strategy.get('services', []))} ad groups")
 
@@ -489,7 +494,7 @@ class CampaignAgentPipeline:
                 f"{ag_count} PMax asset groups built with {theme_count} search themes")
 
         # Inject existing keywords for overlap detection in QA
-        spec["_existing_campaign_keywords"] = context.get("existing_keywords", set())
+        spec["_existing_campaign_keywords"] = list(context.get("existing_keywords", set()))
 
         # ── CallFlux: Auto-create tracking number BEFORE landing pages ──
         # (so tracking number can be injected into landing page CTAs)
@@ -1462,6 +1467,9 @@ Return this JSON:
     ) -> Dict[str, Any]:
         """Map all agent outputs into the deploy_full_campaign spec format."""
         services = strategy.get("services", [])
+        # Safety: gpt-4o fallback sometimes returns services as a dict
+        if isinstance(services, dict):
+            services = list(services.keys())
 
         # Group keywords by service
         kw_by_service: Dict[str, List] = {}

@@ -303,8 +303,8 @@ class GoogleAdsContextService:
                     campaign_criterion.proximity.radius
                 FROM campaign_criterion
                 WHERE campaign.status != 'REMOVED'
-                    AND campaign_criterion.type = 'LOCATION'
-                    OR campaign_criterion.type = 'PROXIMITY'
+                    AND (campaign_criterion.type = 'LOCATION'
+                    OR campaign_criterion.type = 'PROXIMITY')
             """
             response = ga_service.search(customer_id=self.client.customer_id, query=query)
             geo_data = []

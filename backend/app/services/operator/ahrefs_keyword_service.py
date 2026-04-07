@@ -91,8 +91,8 @@ class AhrefsKeywordService:
             logger.info("Ahrefs API key not configured — returning empty enrichment")
             return self._empty_result()
 
-        # Normalize country to uppercase (Ahrefs requires ISO 3166-1 alpha-2)
-        country = country.upper()
+        # Normalize country to lowercase (Ahrefs API v3 requires lowercase ISO codes)
+        country = country.lower()
 
         results: Dict[str, Any] = {
             "seed_keywords": [],
@@ -335,34 +335,30 @@ class AhrefsKeywordService:
     ) -> Dict[str, List[Dict]]:
         """
         Get monthly volume history for the top seed keywords.
+        NOTE: Ahrefs volume-history uses singular "keyword" param and accepts
+        only ONE keyword per request. We loop over the top keywords.
         Returns dict mapping keyword -> list of {date, volume} entries.
         """
         if not keywords:
             return {}
 
-        keyword_str = ",".join(keywords[:10])  # Max 10 keywords
-
-        data = await self._api_call(
-            "/keywords-explorer/volume-history",
-            params={
-                "select": "keyword,volume",
-                "keywords": keyword_str,
-                "country": country,
-            },
-        )
-
-        if not data or not isinstance(data, dict) or "volumes" not in data:
-            return {}
-
         volume_map: Dict[str, List[Dict]] = {}
-        for entry in data["volumes"]:
-            kw = entry.get("keyword", "")
-            if kw not in volume_map:
-                volume_map[kw] = []
-            volume_map[kw].append({
-                "date": entry.get("date", ""),
-                "volume": entry.get("volume") or 0,
-            })
+
+        # volume-history only accepts a single keyword per call
+        for kw_text in keywords[:5]:  # Cap at 5 to limit API calls
+            data = await self._api_call(
+                "/keywords-explorer/volume-history",
+                params={
+                    "keyword": kw_text,  # singular — Ahrefs API requirement
+                    "country": country,
+                },
+            )
+
+            if data and isinstance(data, dict) and "volumes" in data:
+                volume_map[kw_text] = [
+                    {"date": entry.get("date", ""), "volume": entry.get("volume") or 0}
+                    for entry in data["volumes"]
+                ]
 
         return volume_map
 
