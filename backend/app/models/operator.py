@@ -22,7 +22,7 @@ class OperatorConversation(Base):
 
     id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     tenant_id = Column(UUID(as_uuid=False), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
-    customer_id = Column(String(20), nullable=False)
+    customer_id = Column(String(50), nullable=False)  # Google Ads CID or meta_{tenant_uuid}
     created_by = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     title = Column(String(200), nullable=True)
     mode = Column(String(30), nullable=True, default="auto")  # auto | google_ads | meta_ads | gbp | image
@@ -74,7 +74,7 @@ class ActionExecutionLog(Base):
     id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     proposed_action_id = Column(UUID(as_uuid=False), ForeignKey("proposed_actions.id", ondelete="CASCADE"), nullable=False, index=True)
     tenant_id = Column(UUID(as_uuid=False), nullable=False)
-    customer_id = Column(String(20), nullable=False)
+    customer_id = Column(String(50), nullable=False)
     request_payload = Column(JSONB, nullable=True)
     response_payload = Column(JSONB, nullable=True)
     before_state = Column(JSONB, nullable=True)

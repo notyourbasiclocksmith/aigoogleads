@@ -6,7 +6,7 @@ import structlog
 from app.core.config import settings
 from app.api import auth, tenants, onboarding, dashboard, ads_accounts, ads_audit, ads_prompt, ads_data, campaigns, creative, competitors, optimizations, experiments, reports, admin_settings, lsa, bridge, gbp, meta, brain
 from app.api import workspace, brain_analytics, brain_gbp, brain_meta, brain_image
-from app.api import operator, operator_meta, operator_unified
+from app.api import operator, operator_meta, operator_unified, leads, analytics
 from app.api.v2 import mcc, conversions, change_mgmt, connectors, policy, billing, notifications, evaluation, operator as operator_v2, growth, strategist
 
 logger = structlog.get_logger()
@@ -86,6 +86,8 @@ app.include_router(meta.router, prefix="/api/meta", tags=["Meta Ads (Facebook/In
 app.include_router(operator.router, prefix="/api/operator", tags=["Claude Operator"])
 app.include_router(operator_meta.router, prefix="/api/operator/meta", tags=["Claude Meta Operator"])
 app.include_router(operator_unified.router, prefix="/api/operator/unified", tags=["Unified Auto Operator"])
+app.include_router(leads.router, prefix="/api", tags=["Leads"])
+app.include_router(analytics.router, prefix="/api/analytics", tags=["Analytics & Tracking"])
 
 # Brain API (S2S for Jarvis)
 app.include_router(brain.router, prefix="/api/v1/brain", tags=["Brain API"])

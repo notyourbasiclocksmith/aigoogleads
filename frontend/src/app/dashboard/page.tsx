@@ -98,6 +98,7 @@ export default function DashboardPage() {
   const [onboarding, setOnboarding] = useState<any>(null);
   const [comparison, setComparison] = useState<any>(null);
   const [leadsToday, setLeadsToday] = useState<any>(null);
+  const [callTracking, setCallTracking] = useState<any>(null);
 
   useEffect(() => {
     loadData();
@@ -106,7 +107,7 @@ export default function DashboardPage() {
   async function loadData() {
     setLoading(true);
     try {
-      const [kpiData, healthData, alertData, campData, trendData, summaryData, recsData, onboardData, compData, leadsData] = await Promise.all([
+      const [kpiData, healthData, alertData, campData, trendData, summaryData, recsData, onboardData, compData, leadsData, callData] = await Promise.all([
         api.get(`/api/dashboard/kpis?days=${days}`).catch(() => null),
         api.get(`/api/dashboard/health-check?days=${days}`).catch(() => null),
         api.get("/api/dashboard/alerts").catch(() => []),
@@ -117,6 +118,7 @@ export default function DashboardPage() {
         api.get("/api/dashboard/onboarding-status").catch(() => null),
         api.get(`/api/dashboard/kpis-comparison?days=${days}`).catch(() => null),
         api.get("/api/dashboard/leads-today").catch(() => null),
+        api.get(`/api/analytics/calls?days=${days}`).catch(() => null),
       ]);
       setKpis(kpiData);
       setHealth(healthData);
@@ -128,6 +130,7 @@ export default function DashboardPage() {
       setOnboarding(onboardData);
       setComparison(compData);
       setLeadsToday(leadsData);
+      setCallTracking(callData);
     } catch (e) {
       console.error(e);
     } finally {
@@ -145,7 +148,7 @@ export default function DashboardPage() {
     }));
   }, [trends]);
 
-  // ── Fix My Ads: triggers operator scan on first connected account ──────
+  // ── Deep Optimizer: triggers operator scan on first connected account ──
   const handleFixMyAds = useCallback(async () => {
     setScanning(true);
     setScanStatus("Starting scan...");
@@ -493,8 +496,8 @@ export default function DashboardPage() {
                     <Brain className="w-5 h-5 text-blue-600" />
                   </div>
                   <div>
-                    <h2 className="text-[15px] font-semibold text-slate-900 tracking-tight">Fix My Ads</h2>
-                    <p className="text-[12px] text-slate-400">AI-powered account audit</p>
+                    <h2 className="text-[15px] font-semibold text-slate-900 tracking-tight">Deep Optimizer</h2>
+                    <p className="text-[12px] text-slate-400">AI-powered deep account scan</p>
                   </div>
                 </div>
                 <p className="text-[13px] text-slate-500 leading-relaxed mb-4">
@@ -524,7 +527,7 @@ export default function DashboardPage() {
                   {scanning ? (
                     <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Scanning...</>
                   ) : (
-                    <><Zap className="w-4 h-4 mr-2" /> Fix My Ads</>
+                    <><Zap className="w-4 h-4 mr-2" /> Deep Optimize</>
                   )}
                 </Button>
               </CardContent>
@@ -830,6 +833,40 @@ export default function DashboardPage() {
         </div>
 
         {/* ── CAMPAIGN TABLE ──────────────────────────────────────── */}
+        {/* Call Tracking Widget */}
+        {callTracking?.status === "ok" && callTracking?.summary?.total_calls > 0 && (
+          <Card className="border-0 overflow-hidden">
+            <CardHeader className="pb-0">
+              <CardTitle className="text-[15px] tracking-tight flex items-center gap-2">
+                <PhoneCall className="w-4 h-4 text-emerald-500" /> Call Tracking
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="text-center p-3 bg-emerald-50 rounded-xl">
+                  <p className="text-[11px] text-emerald-500 mb-1">Total Calls</p>
+                  <p className="text-2xl font-bold text-emerald-700">{callTracking.summary.total_calls}</p>
+                </div>
+                <div className="text-center p-3 bg-green-50 rounded-xl">
+                  <p className="text-[11px] text-green-500 mb-1">Answered</p>
+                  <p className="text-2xl font-bold text-green-700">{callTracking.summary.answered}</p>
+                  <p className="text-[10px] text-green-400">{formatPercent(callTracking.summary.answer_rate)} rate</p>
+                </div>
+                <div className="text-center p-3 bg-red-50 rounded-xl">
+                  <p className="text-[11px] text-red-500 mb-1">Missed</p>
+                  <p className="text-2xl font-bold text-red-700">{callTracking.summary.missed}</p>
+                </div>
+                <div className="text-center p-3 bg-blue-50 rounded-xl">
+                  <p className="text-[11px] text-blue-500 mb-1">Avg Duration</p>
+                  <p className="text-2xl font-bold text-blue-700">
+                    {Math.floor((callTracking.summary.avg_duration_seconds || 0) / 60)}:{String((callTracking.summary.avg_duration_seconds || 0) % 60).padStart(2, "0")}
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         <Card className="border-0 overflow-hidden">
           <CardHeader className="flex flex-row items-center justify-between pb-0">
             <CardTitle className="text-[15px] tracking-tight">Campaign Summary</CardTitle>

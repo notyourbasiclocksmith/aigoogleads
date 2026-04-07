@@ -60,7 +60,7 @@ class LandingPageEvent(Base):
     __tablename__ = "landing_page_events"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
-    landing_page_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("landing_pages.id", ondelete="CASCADE"), index=True)
+    landing_page_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("landing_pages.id", ondelete="CASCADE"), nullable=True, index=True)
     variant_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=True)
     event_type: Mapped[str] = mapped_column(String(30), nullable=False)  # visit, call_click, form_submit, cta_click, scroll_depth
     gclid: Mapped[str] = mapped_column(String(255), nullable=True)

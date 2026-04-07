@@ -30,9 +30,11 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.models.operator import OperatorMessage
 from app.models.business_profile import BusinessProfile
+from app.models.tenant import Tenant
 from app.models.pipeline_execution_log import PipelineExecutionLog
 from app.services.operator.ahrefs_keyword_service import AhrefsKeywordService
 from app.services.operator.llm_fallback_service import LLMFallbackService
+from app.integrations.callflux.client import callflux_client
 
 logger = structlog.get_logger()
 
@@ -192,6 +194,95 @@ def _programmatic_qa(spec: Dict[str, Any]) -> List[Dict[str, Any]]:
     elif budget_daily > 5000:
         issues.append({"severity": "warning", "field": "campaign.budget_micros", "message": f"Budget ${budget_daily}/day seems very high for local business", "check": "budget"})
 
+    # ── Keyword overlap with existing campaigns ──
+    existing_keywords = spec.get("_existing_campaign_keywords", set())
+    if existing_keywords:
+        for ag_idx, ag in enumerate(spec.get("ad_groups", [])):
+            for kw in ag.get("keywords", []):
+                text = kw.get("text", "").lower() if isinstance(kw, dict) else str(kw).lower()
+                if text in existing_keywords:
+                    issues.append({
+                        "severity": "warning",
+                        "field": f"ad_groups[{ag_idx}].keywords",
+                        "message": f"Keyword '{text}' already exists in another active campaign — may cause self-competition",
+                        "check": "existing_overlap",
+                    })
+
+    # ── Minimum keywords per ad group ──
+    for ag_idx, ag in enumerate(spec.get("ad_groups", [])):
+        kw_count = len(ag.get("keywords", []))
+        if 0 < kw_count < 5:
+            issues.append({
+                "severity": "warning",
+                "field": f"ad_groups[{ag_idx}].keywords",
+                "message": f"Only {kw_count} keywords — Google recommends 5-20 per ad group",
+                "check": "min_keywords",
+            })
+
+    # ── Missing display_path ──
+    for ag_idx, ag in enumerate(spec.get("ad_groups", [])):
+        for ad_idx, ad in enumerate(ag.get("ads", [])):
+            if not ad.get("display_path"):
+                issues.append({
+                    "severity": "warning",
+                    "field": f"ad_groups[{ag_idx}].ads[{ad_idx}].display_path",
+                    "message": "Missing display path — ads look more professional with URL paths",
+                    "check": "missing_display_path",
+                })
+
+    # ── Budget vs Target CPA feasibility ──
+    target_cpa_micros = spec.get("campaign", {}).get("target_cpa_micros", 0)
+    if target_cpa_micros > 0 and budget_daily > 0:
+        target_cpa = target_cpa_micros / 1_000_000
+        daily_conversions = budget_daily / target_cpa if target_cpa > 0 else 0
+        if daily_conversions < 1.0:
+            issues.append({
+                "severity": "warning",
+                "field": "campaign.budget_micros",
+                "message": (
+                    f"Budget ${budget_daily:.0f}/day with target CPA ${target_cpa:.0f} = "
+                    f"only {daily_conversions:.1f} conversions/day. "
+                    f"Google recommends budget >= 2x target CPA (${target_cpa * 2:.0f}/day) "
+                    f"for smart bidding to learn effectively."
+                ),
+                "check": "budget_cpa_feasibility",
+            })
+
+    # ── Headline diversity (near-duplicate detection) ──
+    for ag_idx, ag in enumerate(spec.get("ad_groups", [])):
+        for ad_idx, ad in enumerate(ag.get("ads", [])):
+            headlines = ad.get("headlines", [])
+            # Check for headlines starting with the same 2 words
+            first_words = []
+            for h in headlines:
+                text = h if isinstance(h, str) else h.get("text", "") if isinstance(h, dict) else str(h)
+                words = text.lower().split()[:2]
+                prefix = " ".join(words)
+                first_words.append(prefix)
+
+            from collections import Counter as _Counter
+            prefix_counts = _Counter(first_words)
+            for prefix, count in prefix_counts.items():
+                if count >= 4 and prefix:
+                    issues.append({
+                        "severity": "warning",
+                        "field": f"ad_groups[{ag_idx}].ads[{ad_idx}].headlines",
+                        "message": f"{count} headlines start with '{prefix}...' — lacks variety, will reduce ad effectiveness",
+                        "check": "headline_diversity",
+                    })
+
+    # ── Structured snippet value limits ──
+    snippets = spec.get("structured_snippets", {})
+    for v_idx, v in enumerate(snippets.get("values", [])):
+        if len(str(v)) > 25:
+            issues.append({
+                "severity": "critical",
+                "field": f"structured_snippets.values[{v_idx}]",
+                "message": f"Snippet value '{str(v)[:30]}...' is {len(str(v))} chars (max 25)",
+                "fix": str(v)[:25],
+                "check": "char_limit",
+            })
+
     return issues
 
 
@@ -260,6 +351,8 @@ class CampaignAgentPipeline:
         # Per-agent timing for execution log
         self._agent_timings: List[Dict] = []
         self._pipeline_start: float = 0
+        self._last_context: Dict[str, Any] = {}
+        self._intent_hints: Dict[str, Any] = {}
 
     # ── ORCHESTRATOR ─────────────────────────────────────────────
 
@@ -296,6 +389,7 @@ class CampaignAgentPipeline:
 
         # Gather all context the agents will need
         context = await self._gather_context(account_context)
+        self._last_context = context  # Store for PMax asset group builder
 
         # ── Agent 1: Strategist (everything depends on this) ──
         await self._emit_progress("Strategist", "running", "Analyzing your business, competitors, and existing campaigns to design the optimal campaign architecture...")
@@ -378,6 +472,7 @@ class CampaignAgentPipeline:
             f"{ag_count} ad groups with full RSA copy" if ag_count > 0 else "Failed to generate ad copy — campaign may deploy without ads")
 
         # ── Assemble the full spec ──
+        is_pmax = strategy.get("campaign_type", "SEARCH") == "PERFORMANCE_MAX"
         spec = self._assemble_spec(
             strategy or {},
             keywords or {},
@@ -385,6 +480,34 @@ class CampaignAgentPipeline:
             targeting or {},
             extensions or {},
         )
+
+        # For PMax: emit asset group progress
+        if is_pmax and spec.get("asset_groups"):
+            ag_count = len(spec["asset_groups"])
+            theme_count = sum(len(ag.get("search_themes", [])) for ag in spec["asset_groups"])
+            await self._emit_progress("Asset Groups", "done",
+                f"{ag_count} PMax asset groups built with {theme_count} search themes")
+
+        # Inject existing keywords for overlap detection in QA
+        spec["_existing_campaign_keywords"] = context.get("existing_keywords", set())
+
+        # ── CallFlux: Auto-create tracking number BEFORE landing pages ──
+        # (so tracking number can be injected into landing page CTAs)
+        tracking_num = ""
+        tracking_result = await self._setup_callflux_tracking(spec, context)
+        if tracking_result and tracking_result.get("tracking_number"):
+            tracking_num = tracking_result["tracking_number"]
+            spec["call_extension"] = {"phone": tracking_num, "country": "US"}
+            spec["_pipeline_metadata"]["callflux"] = tracking_result
+            await self._emit_progress("Call Tracking", "done",
+                f"Tracking number {tracking_num} assigned "
+                f"(forwards to {tracking_result.get('forward_to', 'business phone')}, "
+                f"records calls for AI analysis)")
+        elif tracking_result and tracking_result.get("error"):
+            await self._emit_progress("Call Tracking", "done",
+                f"Skipped — {tracking_result['error'][:100]}")
+        else:
+            await self._emit_progress("Call Tracking", "done", "Skipped — CallFlux not configured")
 
         # ── Landing Page Agent: Check/create landing pages per service ──
         try:
@@ -410,6 +533,7 @@ class CampaignAgentPipeline:
                 campaign_headlines=hl_by_svc,
                 conversation_id=conversation_id,
                 business_context=context.get("business", {}),
+                tracking_phone=tracking_num,  # Inject tracking number into CTAs
             )
             lp_ms = int((time.time() - t0) * 1000)
             self._agent_timings.append({"agent": "Landing Pages", "duration_ms": lp_ms, "status": "done"})
@@ -454,6 +578,20 @@ class CampaignAgentPipeline:
                 f"Keyword-headline match: {kw_match}% \u2022 Auto-fixed")
         else:
             await self._emit_progress("Quality Assurance", "done", "Review complete")
+
+        # ── Build rich campaign summary for user ──
+        campaign_summary = self._build_campaign_summary(spec, qa_result)
+        spec["_campaign_summary"] = campaign_summary
+
+        # Emit the full summary as a progress message so user sees it in chat
+        await self._emit_progress(
+            "Campaign Summary", "done",
+            campaign_summary.get("text", "Campaign ready for review."),
+            extra={
+                "type": "campaign_summary",
+                **campaign_summary,
+            },
+        )
 
         # ── Finalize execution log ──
         output_summary = {
@@ -556,30 +694,41 @@ class CampaignAgentPipeline:
         except Exception as e:
             logger.warning("Could not load performance feedback", error=str(e))
 
+        # Extract existing campaign keywords for overlap detection
+        existing_keywords = set()
+        for kw_data in account_context.get("keyword_performance", []):
+            text = kw_data.get("text", "").lower().strip()
+            if text and kw_data.get("status") == "ENABLED":
+                existing_keywords.add(text)
+
         return {
             "business": biz,
             "account": account_context,
             "competitors": competitor_summary,
             "feedback": feedback_context,
+            "existing_keywords": existing_keywords,
         }
 
     # ── PROGRESS MESSAGES ────────────────────────────────────────
 
-    async def _emit_progress(self, agent_name: str, status: str, detail: str):
+    async def _emit_progress(self, agent_name: str, status: str, detail: str, extra: Dict = None):
         """Insert a progress message into the conversation."""
         if not self.conversation_id:
             return
+        payload = {
+            "type": "pipeline_progress",
+            "agent": agent_name,
+            "status": status,
+            "detail": detail,
+        }
+        if extra:
+            payload.update(extra)
         msg = OperatorMessage(
             id=str(uuid.uuid4()),
             conversation_id=self.conversation_id,
             role="assistant",
             content=f"{agent_name}: {detail}",
-            structured_payload={
-                "type": "pipeline_progress",
-                "agent": agent_name,
-                "status": status,
-                "detail": detail,
-            },
+            structured_payload=payload,
         )
         self.db.add(msg)
         try:
@@ -677,7 +826,7 @@ COMPETITIVE LANDSCAPE:
 Return this JSON structure:
 {{
   "campaign_name": "A.X | [Service Theme] | [Location]",
-  "campaign_type": "SEARCH" or "CALL",
+  "campaign_type": "SEARCH" or "CALL" or "PERFORMANCE_MAX",
   "objective": "calls" or "leads",
   "services": ["Service 1", "Service 2", "Service 3"],
   "locations": ["City 1", "City 2"],
@@ -902,6 +1051,10 @@ RULES:
 
 - Call extension: include the business phone number.
 
+- Promotion extensions: If the business has offers/discounts/deals, create 1-2 promotions.
+  promotion_target max 20 chars. Include percent_off (integer) or money_off_micros (dollars * 1000000).
+  Include final_url linking to the offer page. Only create if there's a real offer.
+
 COUNT EVERY CHARACTER. Google rejects assets that exceed limits.
 
 Respond with ONLY valid JSON."""
@@ -932,8 +1085,13 @@ Return this JSON:
   "call_extension": {{
     "phone": "{biz.get('phone', '')}",
     "country_code": "US"
-  }}
-}}"""
+  }},
+  "promotion_extensions": [
+    {{"promotion_target": "Service (max 20)", "percent_off": 15, "final_url": "https://...", "start_date": "", "end_date": ""}}
+  ]
+}}
+
+Only include promotion_extensions if the business has real offers. Empty array [] if no offers."""
 
         return await self._call_claude_json(system, user_msg, max_tokens=2048, temperature=0.5)
 
@@ -993,6 +1151,9 @@ NEVER USE: "Best", "#1", "Top Rated" (without proof), "Quality Service", "Great 
 ALWAYS USE: Specific numbers, credentials, real trust signals, the actual service name.
 
 Competitor gaps to exploit: {json.dumps(competitors.get('opportunity_gaps', []))}
+Competitor dominant themes to AVOID (overused): {json.dumps(competitors.get('overused_angles', competitors.get('dominant_themes', []))[:5])}
+
+{self._format_competitor_ad_context(competitors)}
 
 {self._format_feedback_for_ad_copy(context.get('feedback', {}))}
 Respond with ONLY valid JSON."""
@@ -1040,6 +1201,14 @@ Each ad group MUST have exactly 15 headlines and 4 descriptions."""
         """
         # ── Phase 1: Programmatic checks (instant, free, 100% accurate) ──
         programmatic_issues = _programmatic_qa(spec)
+
+        # ── Phase 1b: URL reachability checks (async HTTP HEAD) ──
+        try:
+            url_issues = await self._check_final_url_reachability(spec)
+            programmatic_issues.extend(url_issues)
+        except Exception as e:
+            logger.warning("URL reachability check failed", error=str(e))
+
         critical_count = sum(1 for i in programmatic_issues if i["severity"] == "critical")
         warning_count = len(programmatic_issues) - critical_count
 
@@ -1274,14 +1443,47 @@ Return this JSON:
                 continue
 
             final_url = svc_copy.get("final_url", strategy.get("website", ""))
+            display_path = svc_copy.get("display_path", [])
+
+            # Build headline/description dicts with pinning if available
+            pinning = svc_copy.get("pinning", {})
+            headline_pins = pinning.get("headline_pins", {})
+            description_pins = pinning.get("description_pins", {})
+
+            pinned_headlines = []
+            for i, h in enumerate(headlines):
+                text = h if isinstance(h, str) else h.get("text", "") if isinstance(h, dict) else str(h)
+                h_dict = {"text": text}
+                # Check if this headline has a pin assignment
+                pin_key = str(i)  # Pinning map uses string indices or headline text
+                pin_pos = headline_pins.get(pin_key) or headline_pins.get(text, "")
+                if pin_pos:
+                    h_dict["pinned_position"] = pin_pos
+                elif isinstance(h, dict) and h.get("pinned_position"):
+                    h_dict["pinned_position"] = h["pinned_position"]
+                pinned_headlines.append(h_dict)
+
+            pinned_descriptions = []
+            for i, d in enumerate(descriptions):
+                text = d if isinstance(d, str) else d.get("text", "") if isinstance(d, dict) else str(d)
+                d_dict = {"text": text}
+                pin_key = str(i)
+                pin_pos = description_pins.get(pin_key) or description_pins.get(text, "")
+                if pin_pos:
+                    d_dict["pinned_position"] = pin_pos
+                elif isinstance(d, dict) and d.get("pinned_position"):
+                    d_dict["pinned_position"] = d["pinned_position"]
+                pinned_descriptions.append(d_dict)
+
             ad_group = {
                 "name": f"{svc} \u2014 {strategy.get('locations', ['DFW'])[0] if strategy.get('locations') else 'All Areas'}",
                 "keywords": svc_keywords,
                 "ads": [{
-                    "headlines": headlines,
-                    "descriptions": descriptions,
+                    "headlines": pinned_headlines,
+                    "descriptions": pinned_descriptions,
                     "final_url": final_url,
                     "final_urls": [final_url] if final_url else [],
+                    "display_path": display_path,
                 }],
                 "negative_keywords": negatives,
             }
@@ -1291,27 +1493,43 @@ Return this JSON:
         geo = targeting.get("geo", {})
         device_bids = targeting.get("device_bids", {})
 
-        return {
+        campaign_type = strategy.get("campaign_type", "SEARCH")
+        is_pmax = campaign_type == "PERFORMANCE_MAX"
+
+        spec = {
             "campaign": {
                 "name": strategy.get("campaign_name", "AI Campaign"),
                 "budget_micros": strategy.get("budget_micros", 50_000_000),
                 "bidding_strategy": strategy.get("bidding_strategy", "MAXIMIZE_CONVERSIONS"),
                 "target_cpa_micros": strategy.get("target_cpa_micros", 0),
-                "channel_type": strategy.get("campaign_type", "SEARCH"),
-                "network": "SEARCH",
+                "channel_type": campaign_type,
+                "network": "SEARCH" if not is_pmax else "ALL",
             },
-            "ad_groups": ad_groups,
+            "ad_groups": ad_groups if not is_pmax else [],
             "sitelinks": extensions.get("sitelinks", []),
             "callouts": extensions.get("callouts", []),
             "structured_snippets": extensions.get("structured_snippets", {}),
+            "call_extension": extensions.get("call_extension", {}),
+            "promotion_extensions": extensions.get("promotion_extensions", []),
+            # Campaign-level negative keywords (cross-cutting)
+            "campaign_negative_keywords": self._build_campaign_negatives(keywords),
             # Store metadata for display
             "_pipeline_metadata": {
                 "strategy": strategy,
                 "targeting": targeting,
+                "extensions": extensions,
                 "keyword_stats": keywords.get("tiers", {}),
                 "qa_score": None,  # Filled by QA agent
             },
         }
+
+        # For PMax: build asset groups instead of ad groups
+        if is_pmax:
+            spec["asset_groups"] = self._build_pmax_asset_groups(
+                strategy, keywords, ad_copy, self._last_context or {},
+            )
+
+        return spec
 
     # ── QA FIX APPLICATION ───────────────────────────────────────
 
@@ -1368,7 +1586,678 @@ Return this JSON:
 
         return spec
 
+    # ── CAMPAIGN SUMMARY BUILDER ────────────────────────────────
+
+    # ── CALLFLUX INTEGRATION ────────────────────────────────────
+
+    async def _setup_callflux_tracking(self, spec: Dict, context: Dict) -> Optional[Dict]:
+        """
+        Auto-create a CallFlux campaign + tracking number for this campaign.
+
+        Flow:
+        1. Load tenant from DB
+        2. If no callflux_tenant_id → register with CallFlux (auto-creates account)
+        3. Create a CallFlux campaign (mirrors Google Ads campaign)
+        4. Purchase a tracking number from Twilio via CallFlux
+        5. Store credentials back on the Tenant model
+        6. Return tracking number for use in call extensions & landing pages
+        """
+        if not callflux_client.is_configured:
+            logger.info("CallFlux not configured — skipping call tracking setup")
+            return None
+
+        try:
+            await self._emit_progress("Call Tracking", "running",
+                "Setting up call tracking number via CallFlux...")
+
+            # Load tenant
+            tenant_result = await self.db.execute(
+                select(Tenant).where(Tenant.id == self.tenant_id)
+            )
+            tenant = tenant_result.scalar_one_or_none()
+            if not tenant:
+                return {"error": "Tenant not found"}
+
+            # Get business phone (forward-to number)
+            # Priority: user-confirmed phone from intent > business profile phone
+            biz_phone = self._intent_hints.get("forward_phone") or context.get("business", {}).get("phone", "")
+            if not biz_phone:
+                return {"error": "No business phone number configured — cannot set up call forwarding"}
+
+            # Step 1: Ensure tenant is registered with CallFlux
+            access_token = tenant.callflux_access_token or ""
+            if not tenant.callflux_tenant_id:
+                # Auto-register this tenant with CallFlux
+                biz_name = context.get("business", {}).get("name", tenant.name or "Business")
+                email = tenant.callflux_email or f"tenant-{self.tenant_id[:8]}@aigoogleads.internal"
+
+                logger.info("Registering new CallFlux tenant", tenant_id=self.tenant_id, email=email)
+                reg_result = await callflux_client.register_tenant(
+                    tenant_name=biz_name,
+                    email=email,
+                )
+                if reg_result.get("error"):
+                    return {"error": f"CallFlux registration failed: {reg_result['error']}"}
+
+                # Store CallFlux credentials on tenant
+                tenant.callflux_tenant_id = str(reg_result.get("tenant_id", ""))
+                tenant.callflux_access_token = reg_result.get("access_token", "")
+                tenant.callflux_refresh_token = reg_result.get("refresh_token", "")
+                tenant.callflux_email = email
+                if reg_result.get("password"):
+                    # Store password encrypted (using Fernet from settings)
+                    try:
+                        from cryptography.fernet import Fernet
+                        f = Fernet(settings.ENCRYPTION_KEY.encode() if isinstance(settings.ENCRYPTION_KEY, str) else settings.ENCRYPTION_KEY)
+                        tenant.callflux_password_encrypted = f.encrypt(
+                            reg_result["password"].encode()
+                        ).decode()
+                    except Exception as enc_err:
+                        logger.warning("Could not encrypt CallFlux password", error=str(enc_err))
+                        tenant.callflux_password_encrypted = ""
+
+                access_token = reg_result.get("access_token", "")
+                try:
+                    await self.db.flush()
+                except Exception:
+                    pass
+
+                logger.info("CallFlux tenant registered",
+                    callflux_tenant_id=tenant.callflux_tenant_id)
+
+            # If we have a token but it might be expired, try refresh
+            if not access_token and tenant.callflux_refresh_token:
+                refresh_result = await callflux_client.refresh_token(tenant.callflux_refresh_token)
+                if refresh_result.get("access_token"):
+                    access_token = refresh_result["access_token"]
+                    tenant.callflux_access_token = access_token
+                    try:
+                        await self.db.flush()
+                    except Exception:
+                        pass
+
+            if not access_token:
+                # Try login with stored credentials
+                if tenant.callflux_email and tenant.callflux_password_encrypted:
+                    try:
+                        from cryptography.fernet import Fernet
+                        f = Fernet(settings.ENCRYPTION_KEY.encode() if isinstance(settings.ENCRYPTION_KEY, str) else settings.ENCRYPTION_KEY)
+                        password = f.decrypt(tenant.callflux_password_encrypted.encode()).decode()
+                        login_result = await callflux_client.login(tenant.callflux_email, password)
+                        if login_result.get("access_token"):
+                            access_token = login_result["access_token"]
+                            tenant.callflux_access_token = access_token
+                            if login_result.get("refresh_token"):
+                                tenant.callflux_refresh_token = login_result["refresh_token"]
+                            try:
+                                await self.db.flush()
+                            except Exception:
+                                pass
+                    except Exception as login_err:
+                        logger.warning("CallFlux re-login failed", error=str(login_err))
+
+            if not access_token:
+                return {"error": "Could not authenticate with CallFlux"}
+
+            # Step 2: Create campaign + purchase tracking number
+            campaign_name = spec.get("campaign", {}).get("name", "Campaign")
+            area_code = context.get("business", {}).get("phone", "")[:3] if biz_phone else ""
+            # Extract area code from phone number (skip +1 country code)
+            if biz_phone.startswith("+1") and len(biz_phone) >= 5:
+                area_code = biz_phone[2:5]
+            elif biz_phone.startswith("1") and len(biz_phone) >= 4:
+                area_code = biz_phone[1:4]
+            elif len(biz_phone) >= 3 and not biz_phone.startswith("+"):
+                # Strip non-digits
+                digits = "".join(c for c in biz_phone if c.isdigit())
+                if digits.startswith("1") and len(digits) >= 4:
+                    area_code = digits[1:4]
+                elif len(digits) >= 3:
+                    area_code = digits[:3]
+
+            # Build whisper message so business owner knows which campaign the call is from
+            whisper_msg = f"Google Ads call for {campaign_name}"
+
+            result = await callflux_client.setup_campaign_tracking(
+                access_token=access_token,
+                campaign_name=campaign_name,
+                forward_to_number=biz_phone,
+                area_code=area_code,
+                record_calls=True,
+                whisper_message=whisper_msg,
+            )
+
+            if result.get("error") or result.get("tracking_error"):
+                error = result.get("error") or result.get("tracking_error")
+                logger.warning("CallFlux tracking setup failed", error=error)
+                return {"error": error}
+
+            logger.info("CallFlux tracking number provisioned",
+                tracking_number=result.get("tracking_number"),
+                campaign_id=result.get("campaign_id"),
+                forward_to=biz_phone)
+
+            return {
+                "tracking_number": result.get("tracking_number", ""),
+                "callflux_campaign_id": result.get("campaign_id"),
+                "phone_number_id": result.get("phone_number_id"),
+                "forward_to": biz_phone,
+                "status": result.get("status", "active"),
+            }
+
+        except Exception as e:
+            logger.error("CallFlux tracking setup error", error=str(e))
+            return {"error": str(e)}
+
+    def _build_campaign_summary(self, spec: Dict, qa_result: Optional[Dict]) -> Dict:
+        """
+        Build a rich, human-readable campaign summary for the user to review
+        before approving. Includes all critical settings, what to expect,
+        and estimated performance.
+        """
+        campaign = spec.get("campaign", {})
+        ad_groups = spec.get("ad_groups", [])
+        meta = spec.get("_pipeline_metadata", {})
+        strategy = meta.get("strategy", {})
+        targeting = meta.get("targeting", {})
+        kw_stats = meta.get("keyword_stats", {})
+        extensions = meta.get("extensions", {})
+
+        # ── Campaign basics
+        name = campaign.get("name", "Campaign")
+        budget_daily = campaign.get("budget_micros", 0) / 1_000_000
+        budget_monthly = budget_daily * 30.4
+        campaign_type = campaign.get("channel_type", "SEARCH")
+        bidding = campaign.get("bidding_strategy", "MAXIMIZE_CONVERSIONS")
+        target_cpa = campaign.get("target_cpa_micros", 0) / 1_000_000 if campaign.get("target_cpa_micros") else None
+
+        # ── Ad group stats
+        total_keywords = sum(len(ag.get("keywords", [])) for ag in ad_groups)
+        total_negatives = sum(len(ag.get("negative_keywords", [])) for ag in ad_groups)
+        total_headlines = sum(
+            len(ad.get("headlines", []))
+            for ag in ad_groups
+            for ad in ag.get("ads", [])
+        )
+        total_descriptions = sum(
+            len(ad.get("descriptions", []))
+            for ag in ad_groups
+            for ad in ag.get("ads", [])
+        )
+
+        # ── Keyword tiers
+        tier_summary = []
+        for tier_name in ["emergency", "high", "medium", "local", "service"]:
+            count = kw_stats.get(tier_name, 0)
+            if count > 0:
+                tier_summary.append(f"{tier_name.capitalize()}: {count}")
+
+        # ── Targeting
+        geo = targeting.get("geo", {})
+        geo_desc = ""
+        if geo.get("type") == "radius":
+            geo_desc = f"{geo.get('radius_miles', 40)}-mile radius"
+        elif geo.get("type") == "cities":
+            cities = geo.get("locations", [])
+            geo_desc = f"{len(cities)} cities: {', '.join(cities[:3])}" + ("..." if len(cities) > 3 else "")
+
+        device = targeting.get("device_bids", {})
+        mobile_adj = device.get("mobile_bid_adj", 0)
+        tablet_adj = device.get("tablet_bid_adj", 0)
+
+        schedule = targeting.get("schedule", {})
+        schedule_desc = "24/7" if schedule.get("all_day") else ""
+        peaks = schedule.get("peak_adjustments", [])
+        if peaks:
+            peak_strs = []
+            for p in peaks[:2]:
+                days = p.get("days", [])
+                hours = p.get("hours", "")
+                adj = p.get("bid_adj", 0)
+                peak_strs.append(f"{','.join(d[:3] for d in days[:3])} {hours} (+{adj}%)")
+            schedule_desc = " | ".join(peak_strs)
+
+        # ── Extensions
+        sitelink_count = len(spec.get("sitelinks", []))
+        callout_count = len(spec.get("callouts", []))
+        has_snippets = bool(spec.get("structured_snippets", {}).get("values"))
+        has_call_ext = bool(spec.get("call_extension", {}).get("phone"))
+        call_phone = spec.get("call_extension", {}).get("phone", "")
+        callflux_data = meta.get("callflux", {})
+        tracking_number = callflux_data.get("tracking_number", "")
+        forward_to = callflux_data.get("forward_to", "")
+
+        # ── QA
+        qa_score = qa_result.get("score", 0) if qa_result else None
+        qa_grade = qa_result.get("grade", "?") if qa_result else "?"
+        kw_match = qa_result.get("avg_keyword_match", 0) if qa_result else 0
+
+        # ── Landing pages
+        lp_data = meta.get("landing_pages", [])
+        lp_generated = sum(1 for p in lp_data if p.get("status") == "generated")
+        lp_existing = sum(1 for p in lp_data if p.get("status") == "existing")
+
+        # ── Build ad group details
+        ag_details = []
+        for ag in ad_groups:
+            kws = ag.get("keywords", [])
+            ads = ag.get("ads", [])
+            headlines_count = len(ads[0].get("headlines", [])) if ads else 0
+            descs_count = len(ads[0].get("descriptions", [])) if ads else 0
+
+            # Top 5 keywords
+            top_kws = [
+                (kw.get("text", kw) if isinstance(kw, dict) else str(kw))
+                for kw in kws[:5]
+            ]
+
+            # Top 3 headlines
+            top_headlines = []
+            if ads:
+                for h in ads[0].get("headlines", [])[:3]:
+                    top_headlines.append(h if isinstance(h, str) else h.get("text", "") if isinstance(h, dict) else str(h))
+
+            ag_details.append({
+                "name": ag.get("name", "Ad Group"),
+                "keywords": len(kws),
+                "headlines": headlines_count,
+                "descriptions": descs_count,
+                "top_keywords": top_kws,
+                "top_headlines": top_headlines,
+                "final_url": ads[0].get("final_url", "") if ads else "",
+            })
+
+        # ── Estimate performance (rough)
+        # Average local service CPC: $3-12, conversion rate: 5-15%
+        est_clicks_day = int(budget_daily / 6)  # ~$6 avg CPC for local services
+        est_clicks_month = int(est_clicks_day * 30.4)
+        est_conversions_month = max(1, int(est_clicks_month * 0.08))  # ~8% CVR
+        est_cpa = budget_monthly / est_conversions_month if est_conversions_month > 0 else 0
+
+        # ── Build text summary
+        lines = [
+            f"📋 **{name}**",
+            f"",
+            f"**Campaign Settings**",
+            f"• Type: Google {campaign_type} Campaign",
+            f"• Budget: ${budget_daily:.0f}/day (${budget_monthly:.0f}/month)",
+            f"• Bidding: {bidding.replace('_', ' ').title()}",
+        ]
+        if target_cpa:
+            lines.append(f"• Target CPA: ${target_cpa:.2f}")
+        lines.append(f"• Status: Created PAUSED (you enable when ready)")
+        lines.append(f"")
+
+        # PMax asset groups or standard ad groups
+        pmax_asset_groups = spec.get("asset_groups", [])
+        if pmax_asset_groups:
+            lines.append(f"**Asset Groups ({len(pmax_asset_groups)}) — Performance Max**")
+            for pag in pmax_asset_groups:
+                h_count = len(pag.get("headlines", []))
+                lh_count = len(pag.get("long_headlines", []))
+                d_count = len(pag.get("descriptions", []))
+                st_count = len(pag.get("search_themes", []))
+                lines.append(f"• {pag.get('name', 'Asset Group')}: "
+                    f"{h_count} headlines, {lh_count} long headlines, {d_count} descriptions, "
+                    f"{st_count} search themes")
+                if pag.get("final_url"):
+                    lines.append(f"  Landing page: {pag['final_url']}")
+                if pag.get("search_themes"):
+                    lines.append(f"  Search themes: {', '.join(pag['search_themes'][:3])}...")
+            lines.append(f"")
+        else:
+            lines.append(f"**Ad Groups ({len(ad_groups)})**")
+            for ag in ag_details:
+                lines.append(f"• {ag['name']}: {ag['keywords']} keywords, {ag['headlines']} headlines, {ag['descriptions']} descriptions")
+                if ag.get("top_keywords"):
+                    lines.append(f"  Top keywords: {', '.join(ag['top_keywords'][:3])}")
+                if ag.get("final_url"):
+                    lines.append(f"  Landing page: {ag['final_url']}")
+        lines.append(f"")
+
+        lines.append(f"**Keywords ({total_keywords} total, {total_negatives} negatives)**")
+        if tier_summary:
+            lines.append(f"• Tiers: {' | '.join(tier_summary)}")
+        lines.append(f"")
+
+        lines.append(f"**Ad Copy**")
+        lines.append(f"• {total_headlines} headlines (max 30 chars each)")
+        lines.append(f"• {total_descriptions} descriptions (max 90 chars each)")
+        lines.append(f"• Keyword-headline match: {kw_match}%")
+        lines.append(f"")
+
+        lines.append(f"**Targeting**")
+        if geo_desc:
+            lines.append(f"• Location: {geo_desc}")
+        lines.append(f"• Mobile bid: {mobile_adj:+d}%")
+        if tablet_adj:
+            lines.append(f"• Tablet bid: {tablet_adj:+d}%")
+        if schedule_desc:
+            lines.append(f"• Schedule: {schedule_desc}")
+        lines.append(f"")
+
+        lines.append(f"**Extensions**")
+        lines.append(f"• Sitelinks: {sitelink_count}")
+        lines.append(f"• Callouts: {callout_count}")
+        if has_snippets:
+            lines.append(f"• Structured snippets: ✓")
+        if has_call_ext:
+            lines.append(f"• Call extension: {call_phone}")
+        lines.append(f"")
+
+        if tracking_number:
+            lines.append(f"**Call Tracking (CallFlux)**")
+            lines.append(f"• Tracking number: {tracking_number}")
+            lines.append(f"• Forwards to: {forward_to}")
+            lines.append(f"• Call recording: Enabled (AI transcription + lead scoring)")
+            lines.append(f"• GCLID tracking: Enabled (offline conversion attribution)")
+            lines.append(f"")
+
+        if lp_generated or lp_existing:
+            lines.append(f"**Landing Pages**")
+            if lp_existing:
+                lines.append(f"• {lp_existing} existing pages linked")
+            if lp_generated:
+                lines.append(f"• {lp_generated} new AI pages generated")
+            lines.append(f"")
+
+        lines.append(f"**Quality Score: {qa_score}/100 ({qa_grade})**")
+        lines.append(f"")
+
+        lines.append(f"**What to Expect (estimated)**")
+        lines.append(f"• ~{est_clicks_day}-{est_clicks_day * 2} clicks/day")
+        lines.append(f"• ~{est_clicks_month}-{est_clicks_month * 2} clicks/month")
+        lines.append(f"• ~{est_conversions_month}-{est_conversions_month * 2} conversions/month")
+        lines.append(f"• Est. CPA: ${est_cpa:.0f}-${est_cpa * 1.5:.0f}")
+        lines.append(f"• Campaign starts PAUSED — enable it when you're ready")
+        lines.append(f"• Google's learning period: 1-2 weeks to optimize bidding")
+        lines.append(f"• First results: expect meaningful data after 7-14 days")
+
+        text = "\n".join(lines)
+
+        return {
+            "text": text,
+            "campaign_name": name,
+            "campaign_type": campaign_type,
+            "budget_daily": budget_daily,
+            "budget_monthly": budget_monthly,
+            "bidding_strategy": bidding,
+            "target_cpa": target_cpa,
+            "ad_groups": ag_details,
+            "total_keywords": total_keywords,
+            "total_negatives": total_negatives,
+            "total_headlines": total_headlines,
+            "total_descriptions": total_descriptions,
+            "keyword_tiers": kw_stats,
+            "geo": geo_desc,
+            "mobile_bid_adj": mobile_adj,
+            "schedule": schedule_desc,
+            "sitelinks": sitelink_count,
+            "callouts": callout_count,
+            "has_snippets": has_snippets,
+            "call_extension": call_phone,
+            "tracking_number": tracking_number,
+            "forward_to": forward_to,
+            "landing_pages_generated": lp_generated,
+            "landing_pages_existing": lp_existing,
+            "qa_score": qa_score,
+            "qa_grade": qa_grade,
+            "keyword_headline_match": kw_match,
+            "asset_groups": spec.get("asset_groups", []),
+            "campaign_negatives": len(spec.get("campaign_negative_keywords", [])),
+            "est_clicks_month": f"{est_clicks_month}-{est_clicks_month * 2}",
+            "est_conversions_month": f"{est_conversions_month}-{est_conversions_month * 2}",
+            "est_cpa": f"${est_cpa:.0f}-${est_cpa * 1.5:.0f}",
+        }
+
     # ── FALLBACK ─────────────────────────────────────────────────
+
+    def _format_competitor_ad_context(self, competitors: Dict) -> str:
+        """
+        Format competitor ad copy data so the Ad Copy agent can see what
+        competitors are running and deliberately differentiate.
+        """
+        if not competitors:
+            return ""
+
+        lines = []
+
+        # Top competitor domains with impression share
+        top_comps = competitors.get("top_competitors", [])
+        if top_comps:
+            lines.append("COMPETITOR LANDSCAPE:")
+            for c in top_comps[:5]:
+                domain = c.get("domain", "?")
+                imp_share = c.get("avg_impression_share", 0)
+                outranking = c.get("avg_outranking_share", 0)
+                lines.append(
+                    f"  {domain} — {imp_share:.0%} impression share, "
+                    f"outranks you {outranking:.0%} of the time"
+                )
+
+        # Messaging heatmap — what themes competitors use most
+        heatmap = competitors.get("messaging_heatmap", {})
+        themes = heatmap.get("themes", [])
+        if themes:
+            lines.append("\nCOMPETITOR MESSAGING THEMES (frequency):")
+            for t in themes[:8]:
+                theme = t.get("theme", "") if isinstance(t, dict) else str(t)
+                freq = t.get("frequency", 0) if isinstance(t, dict) else 0
+                lines.append(f"  \"{theme}\" — used by {freq} competitors")
+            lines.append("  → Do NOT copy these themes. Differentiate.")
+
+        # Differentiation suggestions from the competitor intel engine
+        diff = competitors.get("differentiation_strategy", [])
+        if diff:
+            lines.append("\nDIFFERENTIATION OPPORTUNITIES:")
+            for d in diff[:3]:
+                lines.append(f"  • {d}")
+
+        return "\n".join(lines) if lines else ""
+
+    def _build_campaign_negatives(self, keywords: Dict) -> List[str]:
+        """
+        Build campaign-level negative keywords — cross-cutting terms that should
+        be blocked for ALL ad groups. These prevent wasteful clicks from
+        job seekers, DIY-ers, students, etc.
+        """
+        # Universal negatives for local service businesses
+        universal_negatives = [
+            "free", "diy", "how to", "tutorial", "course", "training",
+            "jobs", "careers", "hiring", "salary", "intern",
+            "complaints", "lawsuit", "scam", "fraud", "bbb complaint",
+            "used", "parts only", "wholesale", "tools",
+            "youtube", "video", "reddit", "quora", "wiki",
+        ]
+
+        # Add agent-generated negatives (deduplicated)
+        agent_negatives = set()
+        for neg in keywords.get("negatives", []):
+            text = neg.get("text", "").lower().strip() if isinstance(neg, dict) else str(neg).lower().strip()
+            if text:
+                agent_negatives.add(text)
+
+        # Merge: universal + agent-generated, remove any that conflict with positive keywords
+        all_positives = set()
+        for kw in keywords.get("keywords", []):
+            text = kw.get("text", "").lower().strip() if isinstance(kw, dict) else str(kw).lower().strip()
+            all_positives.add(text)
+
+        campaign_negatives = []
+        for neg in universal_negatives:
+            # Don't add if any positive keyword contains this term
+            if not any(neg in pos for pos in all_positives):
+                campaign_negatives.append(neg)
+
+        for neg in agent_negatives:
+            if neg not in campaign_negatives and not any(neg in pos for pos in all_positives):
+                campaign_negatives.append(neg)
+
+        return campaign_negatives
+
+    async def _check_final_url_reachability(self, spec: Dict) -> List[Dict]:
+        """
+        HTTP HEAD check on all final URLs in the spec.
+        Returns list of issues for unreachable URLs.
+        """
+        import httpx
+        issues = []
+        checked_urls = set()
+
+        urls_to_check = []
+        for ag in spec.get("ad_groups", []):
+            for ad in ag.get("ads", []):
+                for url in ad.get("final_urls", []):
+                    if url and url not in checked_urls:
+                        checked_urls.add(url)
+                        urls_to_check.append((ag.get("name", ""), url))
+        for sl in spec.get("sitelinks", []):
+            url = sl.get("final_url", "")
+            if url and url not in checked_urls:
+                checked_urls.add(url)
+                urls_to_check.append(("sitelink", url))
+
+        async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
+            for source, url in urls_to_check[:15]:  # Cap at 15 to avoid delays
+                try:
+                    resp = await client.head(url)
+                    if resp.status_code >= 400:
+                        issues.append({
+                            "severity": "critical",
+                            "field": f"final_url ({source})",
+                            "message": f"URL {url} returned HTTP {resp.status_code} — ad will be disapproved",
+                            "check": "url_reachability",
+                        })
+                except Exception:
+                    issues.append({
+                        "severity": "warning",
+                        "field": f"final_url ({source})",
+                        "message": f"URL {url} is unreachable — verify before enabling campaign",
+                        "check": "url_reachability",
+                    })
+
+        return issues
+
+    def _build_pmax_asset_groups(
+        self, strategy: Dict, keywords: Dict, ad_copy: Dict, context: Dict
+    ) -> List[Dict]:
+        """
+        Build PMax asset group specs from pipeline agent outputs.
+
+        PMax Asset Group requirements (Google Ads API):
+        - headlines: up to 5, max 30 chars each (min 3)
+        - long_headlines: up to 5, max 90 chars each (min 1)
+        - descriptions: up to 5, max 90 chars each (min 2, one ≤60 chars)
+        - business_name: max 25 chars (required)
+        - final_url: required
+        - search_themes: up to 10 per asset group (audience signals)
+        - images: at least 1 landscape (1.91:1) and 1 square (1:1)
+        """
+        biz = context.get("business", {})
+        services = strategy.get("services", [])
+        locations = strategy.get("locations", [])
+
+        # Group keywords by service for search themes
+        kw_by_service = {}
+        for kw in keywords.get("keywords", []):
+            svc = kw.get("service", "")
+            kw_by_service.setdefault(svc, []).append(kw)
+
+        # Map ad copy by service
+        copy_by_service = {}
+        for ag in ad_copy.get("ad_groups", []):
+            copy_by_service[ag.get("service", "")] = ag
+
+        asset_groups = []
+        for svc in services:
+            svc_kws = kw_by_service.get(svc, [])
+            svc_copy = copy_by_service.get(svc, {})
+
+            # Headlines: take top 5 from the ad copy agent (max 30 chars)
+            raw_headlines = svc_copy.get("headlines", [])
+            headlines = []
+            for h in raw_headlines[:5]:
+                text = h if isinstance(h, str) else h.get("text", "") if isinstance(h, dict) else str(h)
+                if text.strip():
+                    headlines.append(text.strip()[:30])
+            # Ensure minimum 3 headlines
+            while len(headlines) < 3:
+                location = locations[0] if locations else ""
+                fallbacks = [
+                    f"{svc[:30]}",
+                    f"{svc} in {location}"[:30] if location else f"Expert {svc}"[:30],
+                    f"Call Now for {svc}"[:30],
+                ]
+                for fb in fallbacks:
+                    if fb not in headlines and len(headlines) < 3:
+                        headlines.append(fb)
+
+            # Long headlines: descriptions repurposed or generated (max 90 chars)
+            raw_descs = svc_copy.get("descriptions", [])
+            long_headlines = []
+            for d in raw_descs[:3]:
+                text = d if isinstance(d, str) else d.get("text", "") if isinstance(d, dict) else str(d)
+                if text.strip():
+                    long_headlines.append(text.strip()[:90])
+            # Build additional long headlines from service + location + USP
+            usps = biz.get("usps", [])
+            if len(long_headlines) < 1:
+                long_headlines.append(f"Professional {svc} Services — Call Today"[:90])
+            if len(long_headlines) < 2 and usps:
+                long_headlines.append(f"{svc} — {usps[0]}"[:90])
+
+            # Descriptions: up to 5, max 90 chars (need one ≤60 chars)
+            descriptions = []
+            for d in raw_descs[:5]:
+                text = d if isinstance(d, str) else d.get("text", "") if isinstance(d, dict) else str(d)
+                if text.strip():
+                    descriptions.append(text.strip()[:90])
+            while len(descriptions) < 2:
+                fallback_descs = [
+                    f"Expert {svc} from {biz.get('name', 'us')}. Call for a free estimate!"[:90],
+                    f"Trusted {svc} in {locations[0] if locations else 'your area'}. Licensed & insured."[:90],
+                ]
+                for fd in fallback_descs:
+                    if len(descriptions) < 2:
+                        descriptions.append(fd)
+            # Ensure at least one description ≤60 chars (Google requirement)
+            has_short = any(len(d) <= 60 for d in descriptions)
+            if not has_short and descriptions:
+                short_desc = descriptions[0][:60]
+                descriptions.append(short_desc)
+
+            # Business name
+            business_name = biz.get("name", "")[:25] or svc[:25]
+
+            # Final URL
+            final_url = svc_copy.get("final_url", biz.get("website", ""))
+
+            # Search themes: top keywords as audience signals (up to 10)
+            search_themes = []
+            # Prioritize high-intent keywords
+            sorted_kws = sorted(svc_kws, key=lambda k: (
+                {"emergency": 4, "high": 3, "medium": 2, "local": 1}.get(k.get("tier", ""), 0)
+            ), reverse=True)
+            for kw in sorted_kws[:10]:
+                text = kw.get("text", "")
+                if text and text not in search_themes:
+                    search_themes.append(text)
+
+            asset_group = {
+                "name": f"{svc} — {locations[0] if locations else 'All Areas'}",
+                "service": svc,
+                "final_url": final_url,
+                "headlines": headlines[:5],
+                "long_headlines": long_headlines[:5],
+                "descriptions": descriptions[:5],
+                "business_name": business_name,
+                "search_themes": search_themes[:10],
+                # Image assets will be populated by image generation step
+                "images": [],
+            }
+            asset_groups.append(asset_group)
+
+        return asset_groups
 
     def _fallback_spec(self, user_prompt: str, context: Dict) -> Dict:
         """Minimal fallback spec if the pipeline fails entirely."""

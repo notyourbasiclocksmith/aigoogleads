@@ -34,6 +34,11 @@ class GoogleAdsContextService:
             logger.warning("Failed to get conversion actions", error=str(e))
             conversion_actions = []
 
+        # Extensions, geo targeting, device bid modifiers
+        extensions_data = await self._get_existing_extensions(date_range)
+        geo_data = await self._get_geo_targeting()
+        device_data = await self._get_device_bid_modifiers()
+
         # Compute heuristics
         heuristics = self._compute_heuristics(perf, keyword_data, search_terms, ad_data)
 
@@ -46,6 +51,9 @@ class GoogleAdsContextService:
             "search_terms": search_terms[:100],  # Top 100 by cost
             "ad_performance": ad_data,
             "conversion_actions": conversion_actions,
+            "existing_extensions": extensions_data,
+            "geo_targeting": geo_data,
+            "device_bid_modifiers": device_data,
             "heuristics": heuristics,
         }
         logger.info("Context built", campaigns=len(campaigns), keywords=len(keyword_data), search_terms=len(search_terms))
@@ -241,6 +249,108 @@ class GoogleAdsContextService:
             return ads
         except Exception as e:
             logger.error("Failed to get ad performance", error=str(e))
+            return []
+
+    async def _get_existing_extensions(self, date_range: str) -> List[Dict[str, Any]]:
+        """Get sitelink, callout, and call assets linked to campaigns."""
+        try:
+            client = self.client._get_client()
+            ga_service = client.get_service("GoogleAdsService")
+            query = """
+                SELECT
+                    campaign.id, campaign.name,
+                    asset.id, asset.name, asset.type,
+                    asset.sitelink_asset.link_text, asset.sitelink_asset.description1,
+                    asset.callout_asset.callout_text,
+                    asset.call_asset.phone_number
+                FROM campaign_asset
+                WHERE campaign.status != 'REMOVED'
+            """
+            response = ga_service.search(customer_id=self.client.customer_id, query=query)
+            extensions = []
+            for row in response:
+                ext = {
+                    "campaign_id": str(row.campaign.id),
+                    "campaign_name": row.campaign.name,
+                    "asset_id": str(row.asset.id),
+                    "asset_name": row.asset.name,
+                    "asset_type": row.asset.type.name,
+                }
+                if row.asset.type.name == "SITELINK":
+                    ext["link_text"] = row.asset.sitelink_asset.link_text
+                    ext["description1"] = row.asset.sitelink_asset.description1
+                elif row.asset.type.name == "CALLOUT":
+                    ext["callout_text"] = row.asset.callout_asset.callout_text
+                elif row.asset.type.name == "CALL":
+                    ext["phone_number"] = row.asset.call_asset.phone_number
+                extensions.append(ext)
+            return extensions
+        except Exception as e:
+            logger.error("Failed to get existing extensions", error=str(e))
+            return []
+
+    async def _get_geo_targeting(self) -> List[Dict[str, Any]]:
+        """Get location and proximity targeting for campaigns."""
+        try:
+            client = self.client._get_client()
+            ga_service = client.get_service("GoogleAdsService")
+            query = """
+                SELECT
+                    campaign.id, campaign.name,
+                    campaign_criterion.location.geo_target_constant,
+                    campaign_criterion.proximity.geo_point.latitude_in_micro_degrees,
+                    campaign_criterion.proximity.geo_point.longitude_in_micro_degrees,
+                    campaign_criterion.proximity.radius
+                FROM campaign_criterion
+                WHERE campaign.status != 'REMOVED'
+                    AND campaign_criterion.type = 'LOCATION'
+                    OR campaign_criterion.type = 'PROXIMITY'
+            """
+            response = ga_service.search(customer_id=self.client.customer_id, query=query)
+            geo_data = []
+            for row in response:
+                entry = {
+                    "campaign_id": str(row.campaign.id),
+                    "campaign_name": row.campaign.name,
+                }
+                if row.campaign_criterion.location.geo_target_constant:
+                    entry["geo_target_constant"] = row.campaign_criterion.location.geo_target_constant
+                if row.campaign_criterion.proximity.geo_point.latitude_in_micro_degrees:
+                    entry["latitude_micro"] = row.campaign_criterion.proximity.geo_point.latitude_in_micro_degrees
+                    entry["longitude_micro"] = row.campaign_criterion.proximity.geo_point.longitude_in_micro_degrees
+                    entry["radius"] = row.campaign_criterion.proximity.radius
+                geo_data.append(entry)
+            return geo_data
+        except Exception as e:
+            logger.error("Failed to get geo targeting", error=str(e))
+            return []
+
+    async def _get_device_bid_modifiers(self) -> List[Dict[str, Any]]:
+        """Get device-level bid modifiers for campaigns."""
+        try:
+            client = self.client._get_client()
+            ga_service = client.get_service("GoogleAdsService")
+            query = """
+                SELECT
+                    campaign.id, campaign.name,
+                    campaign_criterion.device.type,
+                    campaign_criterion.bid_modifier
+                FROM campaign_criterion
+                WHERE campaign.status != 'REMOVED'
+                    AND campaign_criterion.type = 'DEVICE'
+            """
+            response = ga_service.search(customer_id=self.client.customer_id, query=query)
+            devices = []
+            for row in response:
+                devices.append({
+                    "campaign_id": str(row.campaign.id),
+                    "campaign_name": row.campaign.name,
+                    "device_type": row.campaign_criterion.device.type.name,
+                    "bid_modifier": row.campaign_criterion.bid_modifier,
+                })
+            return devices
+        except Exception as e:
+            logger.error("Failed to get device bid modifiers", error=str(e))
             return []
 
     def _compute_heuristics(

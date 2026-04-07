@@ -1,11 +1,17 @@
 """
-Recommendation Engine — hybrid rules + heuristics + LLM reasoning.
+Recommendation Engine — hybrid rules + heuristics + Claude Opus reasoning.
 Converts raw AccountSnapshot into actionable recommendations.
+
+Pass 1: Deterministic rules (threshold-based, zero AI)
+Pass 2: Heuristics (statistical patterns, zero AI)
+Pass 3: Strategic (opportunity detection, zero AI)
+Pass 4: Claude Opus agentic reasoning (cross-signal pattern discovery,
+         business context enrichment, hidden pattern detection)
 """
 import json
 import structlog
 from typing import List, Dict, Any, Optional
-from openai import AsyncOpenAI
+import anthropic
 
 from app.core.config import settings
 from app.services.operator.schemas import (
@@ -939,14 +945,77 @@ def _heuristic_roas_bidding_strategy(snapshot: AccountSnapshot) -> List[Recommen
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PASS 4: AI REASONING — GPT enrichment + pattern discovery
+# PASS 4: CLAUDE OPUS AGENTIC REASONING — pattern discovery + enrichment
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def _call_openai_json(system: str, user_prompt: str, temperature: float = 0.4, max_tokens: int = 2500) -> Optional[Dict]:
-    """Call OpenAI and parse JSON response. Returns None on any failure."""
-    if not settings.OPENAI_API_KEY:
+async def _call_claude_json(
+    system: str,
+    user_prompt: str,
+    temperature: float = 0.4,
+    max_tokens: int = 4096,
+) -> Optional[Dict]:
+    """Call Claude Opus and parse JSON response. Returns None on any failure."""
+    api_key = settings.ANTHROPIC_API_KEY
+    if not api_key:
+        # Fall back to OpenAI if Anthropic key not configured
+        return await _call_openai_fallback(system, user_prompt, temperature, max_tokens)
+
+    try:
+        client = anthropic.AsyncAnthropic(api_key=api_key)
+        resp = await client.messages.create(
+            model="claude-opus-4-20250514",
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+
+        # Extract text content
+        content = ""
+        for block in resp.content:
+            if hasattr(block, "text"):
+                content += block.text
+
+        if not content:
+            return None
+
+        # Claude doesn't have a native JSON mode — extract JSON from response
+        # Try direct parse first, then look for JSON block
+        content = content.strip()
+        if content.startswith("{"):
+            return json.loads(content)
+
+        # Look for ```json ... ``` blocks
+        import re
+        json_match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", content)
+        if json_match:
+            return json.loads(json_match.group(1))
+
+        # Last resort: find first { to last }
+        start = content.find("{")
+        end = content.rfind("}")
+        if start != -1 and end > start:
+            return json.loads(content[start:end + 1])
+
+        logger.warning("Claude response contained no parseable JSON", content_preview=content[:200])
+        return None
+
+    except json.JSONDecodeError as e:
+        logger.error("Claude JSON parse failed in recommendation_engine", error=str(e))
+        return None
+    except Exception as e:
+        logger.error("Claude call failed in recommendation_engine", error=str(e))
+        return None
+
+
+async def _call_openai_fallback(
+    system: str, user_prompt: str, temperature: float = 0.4, max_tokens: int = 2500
+) -> Optional[Dict]:
+    """Fallback to OpenAI if Anthropic key not configured."""
+    if not getattr(settings, "OPENAI_API_KEY", ""):
         return None
     try:
+        from openai import AsyncOpenAI
         client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
         resp = await client.chat.completions.create(
             model=getattr(settings, "OPENAI_MODEL", "gpt-4o-mini"),
@@ -963,7 +1032,7 @@ async def _call_openai_json(system: str, user_prompt: str, temperature: float = 
             return None
         return json.loads(content)
     except Exception as e:
-        logger.error("OpenAI call failed in recommendation_engine", error=str(e))
+        logger.error("OpenAI fallback failed in recommendation_engine", error=str(e))
         return None
 
 
@@ -972,13 +1041,14 @@ async def _ai_reasoning_pass(
     existing_recs: List[RecommendationOutput],
 ) -> List[RecommendationOutput]:
     """
-    GPT analyzes the account snapshot + existing recommendations to:
+    Claude Opus analyzes the account snapshot + existing recommendations to:
     1. Explain WHY each recommendation matters in business terms
-    2. Find cross-signal patterns that rules missed
+    2. Find cross-signal patterns that deterministic rules missed
     3. Suggest strategic recommendations rules can't generate
+    4. Provide a narrative "story" of the account's health
     Returns additional AI-generated recommendations.
     """
-    if not settings.OPENAI_API_KEY:
+    if not settings.ANTHROPIC_API_KEY and not getattr(settings, "OPENAI_API_KEY", ""):
         return []
 
     # Build compact snapshot summary for the prompt
@@ -1030,18 +1100,21 @@ async def _ai_reasoning_pass(
         for a in weak_ads[:8]
     ]
 
-    system = """You are a senior Google Ads strategist with 15+ years managing $100M+ in search spend
-for local service businesses. You analyze account data and existing rule-based recommendations
-to find patterns that automated rules miss.
+    system = """You are the Deep Optimizer — an elite Google Ads strategist agent with 20+ years
+managing $500M+ in search spend for local service businesses. You are the final analysis layer
+in a multi-pass recommendation engine. Passes 1-3 already ran deterministic rules and heuristics.
 
-You think like a human PPC expert: you look for STORIES in the data, not just threshold violations.
-For example:
-- "This account is spending 40% of budget on keywords that don't convert — the targeting is too broad"
-- "The emergency campaign converts at 3x the rate of the general campaign but has 1/5 the budget"
-- "CTR is strong but CPA is high — the landing page is probably the issue, not the ads"
-- "There are 12 converting search terms not covered by exact match — easy wins being left on the table"
+Your job is to think like a HUMAN EXPERT and find what automated rules miss:
+- Cross-signal patterns (e.g. "high CTR + high CPA = landing page problem, not ad problem")
+- Budget allocation stories (e.g. "emergency campaigns convert 3x better but get 1/5 the budget")
+- Competitive positioning gaps (e.g. "no exact match on highest-converting search terms")
+- Seasonal/timing opportunities the data hints at
+- Structural problems (too many ad groups, theme pollution, cannibalization)
 
-You respond ONLY with valid JSON."""
+You think in NARRATIVES, not just thresholds. Every insight must explain the business impact
+in plain English that a local business owner would understand.
+
+CRITICAL: Respond ONLY with valid JSON. No markdown, no explanation outside the JSON."""
 
     user_msg = f"""Analyze this Google Ads account and find opportunities the automated rules may have missed.
 
@@ -1094,7 +1167,7 @@ Look for patterns rules can't catch. Return JSON:
   "hidden_patterns": ["Pattern 1 rules missed", "Pattern 2 rules missed"]
 }}"""
 
-    result = await _call_openai_json(system, user_msg, temperature=0.4, max_tokens=2500)
+    result = await _call_claude_json(system, user_msg, temperature=0.4, max_tokens=4096)
     if not result:
         logger.warning("AI reasoning pass failed — skipping")
         return []

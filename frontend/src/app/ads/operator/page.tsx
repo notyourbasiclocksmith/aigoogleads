@@ -533,55 +533,234 @@ function AuditProgressCard({ messages: auditMsgs }: { messages: Message[] }) {
 // ── Pipeline Progress Card ──────────────────────────────────
 
 const PIPELINE_AGENTS = [
-  "Strategist", "Keyword Research", "Targeting", "Extensions", "Ad Copy", "Quality Assurance",
+  "Strategist", "Keyword Research", "Targeting", "Extensions", "Ad Copy",
+  "Asset Groups", "Call Tracking", "Landing Pages", "Quality Assurance", "Campaign Summary",
 ];
 
 function PipelineProgressCard({ messages: pipelineMsgs }: { messages: Message[] }) {
   // Collect latest status per agent from pipeline progress messages
   const agentStatus: Record<string, { status: string; detail: string }> = {};
+  let campaignSummary: any = null;
   for (const m of pipelineMsgs) {
     const sp = m.structured_payload as any;
     if (sp?.type === "pipeline_progress" && sp.agent) {
       agentStatus[sp.agent] = { status: sp.status, detail: sp.detail };
+    }
+    if (sp?.type === "campaign_summary") {
+      campaignSummary = sp;
     }
   }
 
   if (Object.keys(agentStatus).length === 0) return null;
 
   return (
-    <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-4 mt-3">
-      <div className="flex items-center gap-2 mb-3">
-        <Sparkles className="w-4 h-4 text-violet-400" />
-        <span className="text-xs font-semibold text-violet-300 uppercase tracking-wider">Campaign Builder Pipeline</span>
+    <div className="space-y-3 mt-3">
+      <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Sparkles className="w-4 h-4 text-violet-400" />
+          <span className="text-xs font-semibold text-violet-300 uppercase tracking-wider">Campaign Builder Pipeline</span>
+        </div>
+        <div className="space-y-2">
+          {PIPELINE_AGENTS.map((agent) => {
+            const st = agentStatus[agent];
+            if (!st) return (
+              <div key={agent} className="flex items-center gap-2.5 text-xs text-white/20">
+                <div className="w-4 h-4 rounded-full border border-white/10 flex-shrink-0" />
+                <span>{agent}</span>
+              </div>
+            );
+            return (
+              <div key={agent} className="flex items-start gap-2.5 text-xs">
+                {st.status === "running" ? (
+                  <Loader2 className="w-4 h-4 animate-spin text-blue-400 flex-shrink-0 mt-0.5" />
+                ) : st.status === "error" ? (
+                  <XCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+                ) : (
+                  <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
+                )}
+                <div>
+                  <span className={st.status === "running" ? "text-white/70 font-medium" : st.status === "error" ? "text-red-400" : "text-white/50"}>
+                    {agent}
+                  </span>
+                  <p className="text-white/30 text-[10px] leading-tight mt-0.5">{st.detail}</p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
-      <div className="space-y-2">
-        {PIPELINE_AGENTS.map((agent) => {
-          const st = agentStatus[agent];
-          if (!st) return (
-            <div key={agent} className="flex items-center gap-2.5 text-xs text-white/20">
-              <div className="w-4 h-4 rounded-full border border-white/10 flex-shrink-0" />
-              <span>{agent}</span>
-            </div>
-          );
-          return (
-            <div key={agent} className="flex items-start gap-2.5 text-xs">
-              {st.status === "running" ? (
-                <Loader2 className="w-4 h-4 animate-spin text-blue-400 flex-shrink-0 mt-0.5" />
-              ) : st.status === "error" ? (
-                <XCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
-              ) : (
-                <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
-              )}
-              <div>
-                <span className={st.status === "running" ? "text-white/70 font-medium" : st.status === "error" ? "text-red-400" : "text-white/50"}>
-                  {agent}
-                </span>
-                <p className="text-white/30 text-[10px] leading-tight mt-0.5">{st.detail}</p>
+      {campaignSummary && <CampaignSummaryCard summary={campaignSummary} />}
+    </div>
+  );
+}
+
+function CampaignSummaryCard({ summary }: { summary: any }) {
+  const [expanded, setExpanded] = useState(true);
+  const s = summary;
+  if (!s?.campaign_name) return null;
+
+  const StatBox = ({ label, value, sub }: { label: string; value: string | number; sub?: string }) => (
+    <div className="bg-white/[0.04] rounded-lg px-3 py-2">
+      <p className="text-[10px] text-white/40 uppercase tracking-wide">{label}</p>
+      <p className="text-sm font-semibold text-white/90 mt-0.5">{value}</p>
+      {sub && <p className="text-[10px] text-white/30 mt-0.5">{sub}</p>}
+    </div>
+  );
+
+  return (
+    <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 overflow-hidden">
+      <button onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/[0.02] transition-colors">
+        <div className="flex items-center gap-2">
+          <CheckCircle className="w-4 h-4 text-emerald-400" />
+          <span className="text-xs font-bold text-emerald-300">{s.campaign_name}</span>
+          {s.qa_score && (
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
+              s.qa_score >= 80 ? "bg-emerald-500/20 text-emerald-300" :
+              s.qa_score >= 60 ? "bg-yellow-500/20 text-yellow-300" :
+              "bg-red-500/20 text-red-300"
+            }`}>QA {s.qa_score}/100 ({s.qa_grade})</span>
+          )}
+        </div>
+        <ChevronDown className={`w-3.5 h-3.5 text-white/30 transition-transform ${expanded ? "rotate-180" : ""}`} />
+      </button>
+
+      {expanded && (
+        <div className="px-4 pb-4 space-y-3">
+          {/* Campaign Settings */}
+          <div className="grid grid-cols-3 gap-2">
+            <StatBox label="Budget" value={`$${s.budget_daily?.toFixed(0) || 0}/day`} sub={`$${s.budget_monthly?.toFixed(0) || 0}/mo`} />
+            <StatBox label="Type" value={s.campaign_type || "SEARCH"} sub={s.bidding_strategy?.replace(/_/g, " ")} />
+            <StatBox label="Status" value="PAUSED" sub="Enable when ready" />
+          </div>
+
+          {/* Keywords & Copy */}
+          <div className="grid grid-cols-4 gap-2">
+            <StatBox label="Keywords" value={s.total_keywords || 0} sub={`${s.total_negatives || 0} negatives`} />
+            <StatBox label="Headlines" value={s.total_headlines || 0} sub="Per RSA ad" />
+            <StatBox label="Descriptions" value={s.total_descriptions || 0} sub="Per RSA ad" />
+            <StatBox label="KW Match" value={`${s.keyword_headline_match || 0}%`} sub="Ad relevance" />
+          </div>
+
+          {/* Ad Groups (Search/Call campaigns) */}
+          {s.ad_groups?.length > 0 && (
+            <div>
+              <p className="text-[10px] text-white/40 uppercase tracking-wide mb-1.5">Ad Groups ({s.ad_groups.length})</p>
+              <div className="space-y-1.5">
+                {s.ad_groups.map((ag: any, i: number) => (
+                  <div key={i} className="bg-white/[0.03] rounded-lg px-3 py-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-white/70">{ag.name}</span>
+                      <span className="text-[10px] text-white/30">{ag.keywords} kws • {ag.headlines} h • {ag.descriptions} d</span>
+                    </div>
+                    {ag.top_keywords?.length > 0 && (
+                      <div className="flex gap-1 mt-1 flex-wrap">
+                        {ag.top_keywords.slice(0, 4).map((kw: string, j: number) => (
+                          <span key={j} className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-300/70">{kw}</span>
+                        ))}
+                      </div>
+                    )}
+                    {ag.final_url && (
+                      <p className="text-[9px] text-white/20 mt-1 truncate">→ {ag.final_url}</p>
+                    )}
+                  </div>
+                ))}
               </div>
             </div>
-          );
-        })}
-      </div>
+          )}
+
+          {/* PMax Asset Groups */}
+          {s.campaign_type === "PERFORMANCE_MAX" && s.asset_groups?.length > 0 && (
+            <div>
+              <p className="text-[10px] text-white/40 uppercase tracking-wide mb-1.5">
+                <span className="text-violet-400">⚡</span> Asset Groups ({s.asset_groups.length}) — Performance Max
+              </p>
+              <div className="space-y-1.5">
+                {s.asset_groups.map((ag: any, i: number) => (
+                  <div key={i} className="bg-gradient-to-r from-violet-500/5 to-blue-500/5 border border-violet-500/10 rounded-lg px-3 py-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-white/70">{ag.name}</span>
+                      <span className="text-[10px] text-white/30">
+                        {ag.headlines?.length || 0}h • {ag.long_headlines?.length || 0}lh • {ag.descriptions?.length || 0}d
+                      </span>
+                    </div>
+                    {ag.search_themes?.length > 0 && (
+                      <div className="flex gap-1 mt-1 flex-wrap">
+                        {ag.search_themes.slice(0, 4).map((theme: string, j: number) => (
+                          <span key={j} className="text-[9px] px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-300/70">{theme}</span>
+                        ))}
+                        {ag.search_themes.length > 4 && (
+                          <span className="text-[9px] text-white/20">+{ag.search_themes.length - 4} more</span>
+                        )}
+                      </div>
+                    )}
+                    {ag.final_url && (
+                      <p className="text-[9px] text-white/20 mt-1 truncate">→ {ag.final_url}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <p className="text-[9px] text-white/20 mt-1.5">PMax shows ads across Search, Display, YouTube, Maps, Gmail, and Discover</p>
+            </div>
+          )}
+
+          {/* Targeting & Extensions */}
+          <div className="grid grid-cols-2 gap-2">
+            <div className="bg-white/[0.04] rounded-lg px-3 py-2">
+              <p className="text-[10px] text-white/40 uppercase tracking-wide mb-1">Targeting</p>
+              {s.geo && <p className="text-[10px] text-white/60">📍 {s.geo}</p>}
+              {s.mobile_bid_adj !== undefined && <p className="text-[10px] text-white/60">📱 Mobile: {s.mobile_bid_adj > 0 ? "+" : ""}{s.mobile_bid_adj}%</p>}
+              {s.schedule && <p className="text-[10px] text-white/60">⏰ {s.schedule}</p>}
+            </div>
+            <div className="bg-white/[0.04] rounded-lg px-3 py-2">
+              <p className="text-[10px] text-white/40 uppercase tracking-wide mb-1">Extensions</p>
+              <p className="text-[10px] text-white/60">🔗 {s.sitelinks || 0} sitelinks</p>
+              <p className="text-[10px] text-white/60">💬 {s.callouts || 0} callouts</p>
+              {s.has_snippets && <p className="text-[10px] text-white/60">📋 Structured snippets</p>}
+              {s.call_extension && <p className="text-[10px] text-white/60">📞 {s.call_extension}</p>}
+            </div>
+          </div>
+
+          {/* Call Tracking */}
+          {s.tracking_number && (
+            <div className="bg-gradient-to-r from-green-500/10 to-emerald-500/10 border border-green-500/10 rounded-lg px-3 py-2">
+              <p className="text-[10px] text-white/40 uppercase tracking-wide mb-1">Call Tracking (CallFlux)</p>
+              <p className="text-xs font-semibold text-green-400">{s.tracking_number}</p>
+              <p className="text-[9px] text-white/30 mt-0.5">Forwards to: {s.forward_to}</p>
+              <p className="text-[9px] text-white/30">Recording + AI transcription + GCLID attribution</p>
+            </div>
+          )}
+
+          {/* Landing Pages */}
+          {(s.landing_pages_generated > 0 || s.landing_pages_existing > 0) && (
+            <div className="bg-white/[0.04] rounded-lg px-3 py-2">
+              <p className="text-[10px] text-white/40 uppercase tracking-wide mb-1">Landing Pages</p>
+              {s.landing_pages_existing > 0 && <p className="text-[10px] text-white/60">✅ {s.landing_pages_existing} existing pages linked</p>}
+              {s.landing_pages_generated > 0 && <p className="text-[10px] text-white/60">🆕 {s.landing_pages_generated} AI pages generated</p>}
+            </div>
+          )}
+
+          {/* Estimates */}
+          <div className="bg-gradient-to-r from-violet-500/10 to-blue-500/10 border border-violet-500/10 rounded-lg px-3 py-2">
+            <p className="text-[10px] text-white/40 uppercase tracking-wide mb-1">What to Expect (estimated)</p>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <p className="text-xs font-semibold text-white/80">{s.est_clicks_month || "?"}</p>
+                <p className="text-[9px] text-white/30">clicks/month</p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-white/80">{s.est_conversions_month || "?"}</p>
+                <p className="text-[9px] text-white/30">conversions/month</p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-white/80">{s.est_cpa || "?"}</p>
+                <p className="text-[9px] text-white/30">est. CPA</p>
+              </div>
+            </div>
+            <p className="text-[9px] text-white/20 mt-2">Campaign starts PAUSED • Google learning period: 1-2 weeks • Meaningful data after 7-14 days</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

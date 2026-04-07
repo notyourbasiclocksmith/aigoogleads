@@ -15,8 +15,11 @@ import {
   Globe, Calendar, Link, Search, Monitor, Users,
   BarChart3, Pencil, Check, X, ChevronDown, ChevronRight,
   ArrowUpDown, MoreHorizontal, Image as ImageIcon,
+  Phone, Clock, MapPin, Smartphone, Tablet, MonitorSmartphone,
+  PhoneCall, PhoneOff, Activity,
 } from "lucide-react";
 import { HelpTip } from "@/components/ui/help-tip";
+import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 
 export default function CampaignDetailPage() {
   const params = useParams();
@@ -57,6 +60,20 @@ export default function CampaignDetailPage() {
   const [imagesLoading, setImagesLoading] = useState(false);
   const [selectedImage, setSelectedImage] = useState<any>(null);
 
+  // Tab system
+  const [activeTab, setActiveTab] = useState<"overview" | "tracking" | "search-terms" | "calls" | "insights">("overview");
+
+  // Tracking data (loaded on-demand per tab)
+  const [trackingData, setTrackingData] = useState<any>(null);
+  const [trackingLoading, setTrackingLoading] = useState(false);
+  const [searchTerms, setSearchTerms] = useState<any[]>([]);
+  const [searchTermsLoading, setSearchTermsLoading] = useState(false);
+  const [callData, setCallData] = useState<any>(null);
+  const [callsLoading, setCallsLoading] = useState(false);
+  const [insightsData, setInsightsData] = useState<any>(null);
+  const [insightsLoading, setInsightsLoading] = useState(false);
+  const [trackingDays, setTrackingDays] = useState(30);
+
   useEffect(() => {
     api.get(`/api/campaigns/${campaignId}`)
       .then((data) => {
@@ -76,6 +93,45 @@ export default function CampaignDetailPage() {
       .catch(() => {})
       .finally(() => setImagesLoading(false));
   }, [campaignId]);
+
+  // Fetch tab-specific data on demand
+  useEffect(() => {
+    if (!campaign?.campaign_id) return;
+    const gId = campaign.campaign_id;
+
+    if (activeTab === "tracking" && !trackingData && !trackingLoading) {
+      setTrackingLoading(true);
+      api.get(`/api/analytics/campaign/${gId}?days=${trackingDays}`)
+        .then(setTrackingData)
+        .catch(() => {})
+        .finally(() => setTrackingLoading(false));
+    }
+    if (activeTab === "search-terms" && searchTerms.length === 0 && !searchTermsLoading) {
+      setSearchTermsLoading(true);
+      api.get(`/api/ads/search-terms?days=${trackingDays}&campaign_id=${gId}&limit=100`)
+        .then((data) => setSearchTerms(Array.isArray(data) ? data : data.items || []))
+        .catch(() => {})
+        .finally(() => setSearchTermsLoading(false));
+    }
+    if (activeTab === "calls" && !callData && !callsLoading) {
+      setCallsLoading(true);
+      api.get(`/api/analytics/calls?days=${trackingDays}`)
+        .then(setCallData)
+        .catch(() => {})
+        .finally(() => setCallsLoading(false));
+    }
+    if (activeTab === "insights" && !insightsData && !insightsLoading) {
+      setInsightsLoading(true);
+      Promise.all([
+        api.get(`/api/analytics/device?days=${trackingDays}&campaign_id=${gId}`).catch(() => null),
+        api.get(`/api/analytics/hourly?days=${trackingDays}&campaign_id=${gId}`).catch(() => null),
+        api.get(`/api/analytics/day-of-week?days=${trackingDays}&campaign_id=${gId}`).catch(() => null),
+        api.get(`/api/analytics/geo?days=${trackingDays}&campaign_id=${gId}`).catch(() => null),
+      ]).then(([device, hourly, dow, geo]) => {
+        setInsightsData({ device, hourly, dow, geo });
+      }).finally(() => setInsightsLoading(false));
+    }
+  }, [activeTab, campaign, trackingDays]);
 
   function populateEditFields(c: any) {
     setEditName(c.name || "");
@@ -297,6 +353,32 @@ export default function CampaignDetailPage() {
             {saveMsg}
           </div>
         )}
+
+        {/* Tab Navigation */}
+        <div className="flex items-center gap-1 border-b border-slate-200 overflow-x-auto">
+          {([
+            { id: "overview", label: "Overview", icon: <BarChart3 className="w-3.5 h-3.5" /> },
+            { id: "tracking", label: "Tracking", icon: <Activity className="w-3.5 h-3.5" /> },
+            { id: "search-terms", label: "Search Terms", icon: <Search className="w-3.5 h-3.5" /> },
+            { id: "calls", label: "Calls", icon: <Phone className="w-3.5 h-3.5" /> },
+            { id: "insights", label: "Insights", icon: <TrendingUp className="w-3.5 h-3.5" /> },
+          ] as const).map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex items-center gap-1.5 px-4 py-2.5 text-[13px] font-medium border-b-2 transition-colors whitespace-nowrap ${
+                activeTab === tab.id
+                  ? "border-blue-600 text-blue-600"
+                  : "border-transparent text-slate-400 hover:text-slate-600"
+              }`}
+            >
+              {tab.icon} {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {/* ═══ OVERVIEW TAB ═══ */}
+        {activeTab === "overview" && (<>
 
         {/* Performance Stats (30d) */}
         <Card className="border-0">
@@ -913,6 +995,450 @@ export default function CampaignDetailPage() {
             </CardContent>
           </Card>
         )}
+        </>)}
+
+        {/* ═══ TRACKING TAB ═══ */}
+        {activeTab === "tracking" && (
+          <div className="space-y-6">
+            {trackingLoading ? (
+              <div className="flex items-center justify-center py-20">
+                <Loader2 className="w-6 h-6 animate-spin text-blue-500" />
+                <span className="ml-2 text-sm text-slate-400">Loading tracking data...</span>
+              </div>
+            ) : trackingData ? (
+              <>
+                {/* KPI Summary Cards */}
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                  {[
+                    { label: "Clicks", value: formatNumber(trackingData.totals?.clicks || 0), color: "bg-green-50 text-green-700" },
+                    { label: "Cost", value: formatCurrency(trackingData.totals?.cost || 0), color: "bg-orange-50 text-orange-700" },
+                    { label: "Conversions", value: String((trackingData.totals?.conversions || 0).toFixed(1)), color: "bg-purple-50 text-purple-700" },
+                    { label: "CPA", value: formatCurrency(trackingData.totals?.cpa || 0), color: "bg-red-50 text-red-700" },
+                    { label: "ROAS", value: `${(trackingData.totals?.roas || 0).toFixed(2)}x`, color: "bg-blue-50 text-blue-700" },
+                  ].map((m) => (
+                    <div key={m.label} className={`rounded-xl p-4 ${m.color}`}>
+                      <p className="text-[11px] uppercase tracking-wider opacity-60">{m.label}</p>
+                      <p className="text-xl font-bold mt-1">{m.value}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Daily Trend Chart */}
+                <Card className="border-0">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-[15px]">Daily Performance</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <ResponsiveContainer width="100%" height={280}>
+                      <AreaChart data={trackingData.trends || []}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                        <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={(d: string) => d.slice(5)} />
+                        <YAxis tick={{ fontSize: 10 }} />
+                        <Tooltip formatter={(v: number) => v.toFixed(2)} />
+                        <Area type="monotone" dataKey="clicks" stroke="#22c55e" fill="#22c55e" fillOpacity={0.1} />
+                        <Area type="monotone" dataKey="conversions" stroke="#8b5cf6" fill="#8b5cf6" fillOpacity={0.1} />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </CardContent>
+                </Card>
+
+                {/* Device Breakdown */}
+                {trackingData.devices?.length > 0 && (
+                  <Card className="border-0">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-[15px] flex items-center gap-2">
+                        <MonitorSmartphone className="w-4 h-4" /> Device Performance
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        {trackingData.devices.map((d: any) => (
+                          <div key={d.device} className="p-4 rounded-xl bg-slate-50 border">
+                            <div className="flex items-center gap-2 mb-3">
+                              {d.device === "MOBILE" ? <Smartphone className="w-5 h-5 text-blue-500" /> :
+                               d.device === "TABLET" ? <Tablet className="w-5 h-5 text-purple-500" /> :
+                               <Monitor className="w-5 h-5 text-slate-500" />}
+                              <span className="font-semibold text-sm">{d.device}</span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2 text-xs">
+                              <div><span className="text-slate-400">Clicks</span><p className="font-semibold">{formatNumber(d.clicks)}</p></div>
+                              <div><span className="text-slate-400">Cost</span><p className="font-semibold">{formatCurrency(d.cost)}</p></div>
+                              <div><span className="text-slate-400">Conv</span><p className="font-semibold">{(d.conversions || 0).toFixed(1)}</p></div>
+                              <div><span className="text-slate-400">CTR</span><p className="font-semibold">{formatPercent(d.ctr)}</p></div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Hourly Heatmap */}
+                {trackingData.hourly?.length > 0 && (
+                  <Card className="border-0">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-[15px] flex items-center gap-2">
+                        <Clock className="w-4 h-4" /> Performance by Hour
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <ResponsiveContainer width="100%" height={200}>
+                        <BarChart data={trackingData.hourly}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                          <XAxis dataKey="hour" tick={{ fontSize: 9 }} tickFormatter={(h: number) => `${h}:00`} />
+                          <YAxis tick={{ fontSize: 10 }} />
+                          <Tooltip formatter={(v: number) => v.toFixed(0)} labelFormatter={(h: number) => `${h}:00 - ${h}:59`} />
+                          <Bar dataKey="clicks" fill="#3b82f6" radius={[2, 2, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </CardContent>
+                  </Card>
+                )}
+              </>
+            ) : (
+              <div className="text-center py-20 text-slate-400 text-sm">
+                No tracking data available. Make sure the campaign has a Google Ads ID.
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ═══ SEARCH TERMS TAB ═══ */}
+        {activeTab === "search-terms" && (
+          <div className="space-y-4">
+            <Card className="border-0">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-[15px] flex items-center gap-2">
+                  <Search className="w-4 h-4" /> Search Terms (Last {trackingDays} Days)
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {searchTermsLoading ? (
+                  <div className="flex items-center justify-center py-10">
+                    <Loader2 className="w-5 h-5 animate-spin text-blue-500" />
+                  </div>
+                ) : searchTerms.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b text-left text-xs text-slate-400 uppercase">
+                          <th className="pb-2 pr-4">Search Term</th>
+                          <th className="pb-2 pr-4 text-right">Clicks</th>
+                          <th className="pb-2 pr-4 text-right">Impr</th>
+                          <th className="pb-2 pr-4 text-right">CTR</th>
+                          <th className="pb-2 pr-4 text-right">Cost</th>
+                          <th className="pb-2 pr-4 text-right">Conv</th>
+                          <th className="pb-2 text-right">CPA</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {searchTerms.slice(0, 50).map((st: any, i: number) => (
+                          <tr key={i} className="border-b border-slate-50 hover:bg-slate-50/50">
+                            <td className="py-2 pr-4 font-medium max-w-[300px] truncate">{st.search_term}</td>
+                            <td className="py-2 pr-4 text-right">{formatNumber(st.clicks)}</td>
+                            <td className="py-2 pr-4 text-right">{formatNumber(st.impressions)}</td>
+                            <td className="py-2 pr-4 text-right">{formatPercent(st.ctr)}</td>
+                            <td className="py-2 pr-4 text-right">{formatCurrency(st.cost)}</td>
+                            <td className="py-2 pr-4 text-right">{(st.conversions || 0).toFixed(1)}</td>
+                            <td className="py-2 text-right">
+                              {st.conversions > 0 ? formatCurrency(st.cpa) : (
+                                <span className="text-red-400 text-xs">—</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {searchTerms.length > 50 && (
+                      <p className="text-xs text-slate-400 mt-3 text-center">
+                        Showing 50 of {searchTerms.length} search terms
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-400 text-center py-10">No search terms found for this period.</p>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
+        {/* ═══ CALLS TAB ═══ */}
+        {activeTab === "calls" && (
+          <div className="space-y-6">
+            {callsLoading ? (
+              <div className="flex items-center justify-center py-20">
+                <Loader2 className="w-6 h-6 animate-spin text-blue-500" />
+                <span className="ml-2 text-sm text-slate-400">Loading call data...</span>
+              </div>
+            ) : callData?.status === "ok" ? (
+              <>
+                {/* Call KPIs */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="rounded-xl p-4 bg-emerald-50">
+                    <div className="flex items-center gap-2 text-emerald-600">
+                      <PhoneCall className="w-4 h-4" />
+                      <span className="text-[11px] uppercase tracking-wider">Total Calls</span>
+                    </div>
+                    <p className="text-2xl font-bold text-emerald-700 mt-1">{callData.summary?.total_calls || 0}</p>
+                  </div>
+                  <div className="rounded-xl p-4 bg-green-50">
+                    <div className="flex items-center gap-2 text-green-600">
+                      <Phone className="w-4 h-4" />
+                      <span className="text-[11px] uppercase tracking-wider">Answered</span>
+                    </div>
+                    <p className="text-2xl font-bold text-green-700 mt-1">{callData.summary?.answered || 0}</p>
+                    <p className="text-xs text-green-500 mt-0.5">
+                      {formatPercent(callData.summary?.answer_rate || 0)} answer rate
+                    </p>
+                  </div>
+                  <div className="rounded-xl p-4 bg-red-50">
+                    <div className="flex items-center gap-2 text-red-600">
+                      <PhoneOff className="w-4 h-4" />
+                      <span className="text-[11px] uppercase tracking-wider">Missed</span>
+                    </div>
+                    <p className="text-2xl font-bold text-red-700 mt-1">{callData.summary?.missed || 0}</p>
+                  </div>
+                  <div className="rounded-xl p-4 bg-blue-50">
+                    <div className="flex items-center gap-2 text-blue-600">
+                      <Clock className="w-4 h-4" />
+                      <span className="text-[11px] uppercase tracking-wider">Avg Duration</span>
+                    </div>
+                    <p className="text-2xl font-bold text-blue-700 mt-1">
+                      {Math.floor((callData.summary?.avg_duration_seconds || 0) / 60)}:{String((callData.summary?.avg_duration_seconds || 0) % 60).padStart(2, "0")}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Calls by Hour */}
+                {callData.summary?.calls_by_hour && (
+                  <Card className="border-0">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-[15px]">Calls by Hour</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <ResponsiveContainer width="100%" height={180}>
+                        <BarChart data={callData.summary.calls_by_hour.map((count: number, hour: number) => ({ hour, calls: count }))}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                          <XAxis dataKey="hour" tick={{ fontSize: 9 }} tickFormatter={(h: number) => `${h}h`} />
+                          <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
+                          <Tooltip labelFormatter={(h: number) => `${h}:00 - ${h}:59`} />
+                          <Bar dataKey="calls" fill="#10b981" radius={[2, 2, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Call Log Table */}
+                {callData.calls?.length > 0 && (
+                  <Card className="border-0">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-[15px]">Recent Calls</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b text-left text-xs text-slate-400 uppercase">
+                              <th className="pb-2 pr-4">Date/Time</th>
+                              <th className="pb-2 pr-4">Caller</th>
+                              <th className="pb-2 pr-4">Status</th>
+                              <th className="pb-2 pr-4 text-right">Duration</th>
+                              <th className="pb-2">Source</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {callData.calls.slice(0, 30).map((call: any, i: number) => (
+                              <tr key={i} className="border-b border-slate-50 hover:bg-slate-50/50">
+                                <td className="py-2 pr-4 text-xs">{call.date} {call.time || ""}</td>
+                                <td className="py-2 pr-4">{call.caller_number || "Unknown"}</td>
+                                <td className="py-2 pr-4">
+                                  <Badge variant={call.status === "answered" ? "success" : "destructive"} className="text-[10px]">
+                                    {call.status}
+                                  </Badge>
+                                </td>
+                                <td className="py-2 pr-4 text-right text-xs">
+                                  {call.duration_seconds ? `${Math.floor(call.duration_seconds / 60)}:${String(call.duration_seconds % 60).padStart(2, "0")}` : "—"}
+                                </td>
+                                <td className="py-2 text-xs text-slate-400">{call.campaign_name || call.source || "—"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+              </>
+            ) : callData?.status === "not_configured" || callData?.status === "not_registered" ? (
+              <div className="text-center py-20">
+                <Phone className="w-10 h-10 text-slate-300 mx-auto mb-3" />
+                <p className="text-sm text-slate-400">Call tracking not configured.</p>
+                <p className="text-xs text-slate-300 mt-1">Create a campaign via Claude Operator to auto-provision call tracking.</p>
+              </div>
+            ) : (
+              <div className="text-center py-20 text-slate-400 text-sm">No call data available.</div>
+            )}
+          </div>
+        )}
+
+        {/* ═══ INSIGHTS TAB ═══ */}
+        {activeTab === "insights" && (
+          <div className="space-y-6">
+            {insightsLoading ? (
+              <div className="flex items-center justify-center py-20">
+                <Loader2 className="w-6 h-6 animate-spin text-blue-500" />
+                <span className="ml-2 text-sm text-slate-400">Loading insights...</span>
+              </div>
+            ) : insightsData ? (
+              <>
+                {/* Device Breakdown */}
+                {insightsData.device?.devices?.length > 0 && (
+                  <Card className="border-0">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-[15px] flex items-center gap-2">
+                        <MonitorSmartphone className="w-4 h-4" /> Device Performance
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b text-left text-xs text-slate-400 uppercase">
+                              <th className="pb-2 pr-4">Device</th>
+                              <th className="pb-2 pr-4 text-right">Clicks</th>
+                              <th className="pb-2 pr-4 text-right">Impr</th>
+                              <th className="pb-2 pr-4 text-right">CTR</th>
+                              <th className="pb-2 pr-4 text-right">Cost</th>
+                              <th className="pb-2 pr-4 text-right">Conv</th>
+                              <th className="pb-2 pr-4 text-right">CPA</th>
+                              <th className="pb-2 text-right">ROAS</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {insightsData.device.devices.map((d: any) => (
+                              <tr key={d.device} className="border-b border-slate-50 hover:bg-slate-50/50">
+                                <td className="py-2.5 pr-4 font-medium flex items-center gap-2">
+                                  {d.device === "MOBILE" ? <Smartphone className="w-4 h-4 text-blue-500" /> :
+                                   d.device === "TABLET" ? <Tablet className="w-4 h-4 text-purple-500" /> :
+                                   <Monitor className="w-4 h-4 text-slate-500" />}
+                                  {d.device}
+                                </td>
+                                <td className="py-2.5 pr-4 text-right">{formatNumber(d.clicks)}</td>
+                                <td className="py-2.5 pr-4 text-right">{formatNumber(d.impressions)}</td>
+                                <td className="py-2.5 pr-4 text-right">{formatPercent(d.ctr)}</td>
+                                <td className="py-2.5 pr-4 text-right">{formatCurrency(d.cost)}</td>
+                                <td className="py-2.5 pr-4 text-right">{(d.conversions || 0).toFixed(1)}</td>
+                                <td className="py-2.5 pr-4 text-right">{d.conversions > 0 ? formatCurrency(d.cpa) : "—"}</td>
+                                <td className="py-2.5 text-right">{d.roas > 0 ? `${d.roas.toFixed(2)}x` : "—"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Hour of Day Heatmap */}
+                {insightsData.hourly?.hours?.length > 0 && (
+                  <Card className="border-0">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-[15px] flex items-center gap-2">
+                        <Clock className="w-4 h-4" /> Hourly Performance
+                      </CardTitle>
+                      <p className="text-xs text-slate-400">Clicks by hour — identify peak and off-peak times</p>
+                    </CardHeader>
+                    <CardContent>
+                      <ResponsiveContainer width="100%" height={200}>
+                        <BarChart data={insightsData.hourly.hours}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                          <XAxis dataKey="hour" tick={{ fontSize: 9 }} tickFormatter={(h: number) => `${h}h`} />
+                          <YAxis tick={{ fontSize: 10 }} />
+                          <Tooltip
+                            formatter={(v: number, name: string) => [name === "cost" ? `$${v.toFixed(2)}` : v.toFixed(0), name]}
+                            labelFormatter={(h: number) => `${h}:00 - ${h}:59`}
+                          />
+                          <Bar dataKey="clicks" fill="#3b82f6" radius={[2, 2, 0, 0]} name="Clicks" />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Day of Week */}
+                {insightsData.dow?.days?.length > 0 && (
+                  <Card className="border-0">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-[15px] flex items-center gap-2">
+                        <Calendar className="w-4 h-4" /> Day of Week Performance
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <ResponsiveContainer width="100%" height={200}>
+                        <BarChart data={insightsData.dow.days}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                          <XAxis dataKey="day" tick={{ fontSize: 9 }} tickFormatter={(d: string) => d.slice(0, 3)} />
+                          <YAxis tick={{ fontSize: 10 }} />
+                          <Tooltip formatter={(v: number, name: string) => [name === "cost" ? `$${v.toFixed(2)}` : v.toFixed(0), name]} />
+                          <Bar dataKey="clicks" fill="#8b5cf6" radius={[2, 2, 0, 0]} name="Clicks" />
+                          <Bar dataKey="conversions" fill="#10b981" radius={[2, 2, 0, 0]} name="Conversions" />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Geo Performance */}
+                {insightsData.geo?.locations?.length > 0 && (
+                  <Card className="border-0">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-[15px] flex items-center gap-2">
+                        <MapPin className="w-4 h-4" /> Geographic Performance
+                      </CardTitle>
+                      <p className="text-xs text-slate-400">Top locations by clicks</p>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b text-left text-xs text-slate-400 uppercase">
+                              <th className="pb-2 pr-4">Location</th>
+                              <th className="pb-2 pr-4 text-right">Clicks</th>
+                              <th className="pb-2 pr-4 text-right">Impr</th>
+                              <th className="pb-2 pr-4 text-right">Cost</th>
+                              <th className="pb-2 pr-4 text-right">Conv</th>
+                              <th className="pb-2 text-right">CPA</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {insightsData.geo.locations.slice(0, 20).map((loc: any, i: number) => (
+                              <tr key={i} className="border-b border-slate-50 hover:bg-slate-50/50">
+                                <td className="py-2 pr-4 font-medium flex items-center gap-1.5">
+                                  <MapPin className="w-3 h-3 text-slate-400" />
+                                  {loc.city_criterion_id || loc.metro_criterion_id || loc.region_criterion_id || "Unknown"}
+                                </td>
+                                <td className="py-2 pr-4 text-right">{formatNumber(loc.clicks)}</td>
+                                <td className="py-2 pr-4 text-right">{formatNumber(loc.impressions)}</td>
+                                <td className="py-2 pr-4 text-right">{formatCurrency(loc.cost)}</td>
+                                <td className="py-2 pr-4 text-right">{(loc.conversions || 0).toFixed(1)}</td>
+                                <td className="py-2 text-right">{loc.conversions > 0 ? formatCurrency(loc.cpa) : "—"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+              </>
+            ) : (
+              <div className="text-center py-20 text-slate-400 text-sm">No insights data available.</div>
+            )}
+          </div>
+        )}
+
       </div>
     </AppLayout>
   );

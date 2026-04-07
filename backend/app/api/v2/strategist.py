@@ -364,6 +364,8 @@ class GenerateLandingPageRequest(BaseModel):
     location: str = ""
     campaign_keywords: List[str] = []
     campaign_headlines: List[str] = []
+    image_engine: str = "google"  # google (default), dalle, flux, stability
+    image_model: str = ""  # sub-model override (e.g. gemini-2.5-flash-image, flux-pro)
 
 
 @router.post("/landing-pages/generate")
@@ -467,6 +469,8 @@ async def generate_landing_page(
         campaign_headlines=auto_headlines,
         trust_signals=trust_signals,
         description=description,
+        image_engine=req.image_engine,
+        image_model=req.image_model,
     )
     return result
 
@@ -600,6 +604,8 @@ async def ai_edit_landing_page(
 class GenerateHeroImageRequest(BaseModel):
     variant_id: str
     prompt: Optional[str] = None  # Custom prompt, or auto-generate from content
+    engine: str = "google"  # google (default), dalle, flux, stability
+    engine_model: str = ""  # sub-model override
 
 
 @router.post("/landing-pages/{page_id}/generate-image")
@@ -656,12 +662,20 @@ async def generate_landing_page_image(
         "keywords": f"{lp.service}, {lp.location}, professional",
     }
 
+    # Build engine-specific kwargs
+    engine_kwargs = {}
+    if req.engine_model:
+        model_key = {"google": "google_model", "flux": "flux_model", "stability": "stability_model"}.get(req.engine)
+        if model_key:
+            engine_kwargs[model_key] = req.engine_model
+
     result = await img_client.generate_single(
         prompt=prompt,
-        engine="dalle",
+        engine=req.engine,
         style="photorealistic",
         size="1792x1024",
         metadata=metadata,
+        **engine_kwargs,
     )
 
     if not result.get("success"):
@@ -743,6 +757,8 @@ class GenerateFromPromptRequest(BaseModel):
     prompt: str
     service: str = ""
     location: str = ""
+    image_engine: str = "google"
+    image_model: str = ""
 
 
 @router.post("/landing-pages/generate-from-prompt")
@@ -773,6 +789,8 @@ async def generate_lp_from_prompt(
         website=profile.website_url if profile else "",
         usps=[u if isinstance(u, str) else u.get("text", "") for u in (profile.usp_json or [])] if profile else [],
         offers=[o if isinstance(o, str) else o.get("text", "") for o in (profile.offers_json or [])] if profile else [],
+        image_engine=req.image_engine,
+        image_model=req.image_model,
     )
     return result
 

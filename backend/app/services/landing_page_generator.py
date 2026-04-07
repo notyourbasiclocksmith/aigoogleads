@@ -4,11 +4,12 @@ landing pages with 3 variants (Emergency, Savings, Expert).
 
 Pipeline agents:
   1. Landing Page Strategist — offer angle, tone, CTA strategy
-  2. Conversion Copywriter — headlines, body, CTAs
-  3. Trust Enhancer — reviews, badges, guarantees
-  4. CRO Auditor — conversion optimization pass
-  5. Variant Generator — 3 distinct variants
+  2. Variant Generator — 3 complete variants with copy, trust, CRO
+  3. Image Generator — hero images via SEOpix/DALL-E
+  4. QA Reviewer — validates keyword match, CTAs, trust signals, phone
+     Auto-fixes issues if quality score < 70 (one correction round)
 """
+import asyncio
 import json
 import uuid
 import time
@@ -22,6 +23,11 @@ from app.models.landing_page import LandingPage, LandingPageVariant
 from app.services.operator.llm_fallback_service import LLMFallbackService
 
 logger = structlog.get_logger()
+
+# Minimum QA score to pass without auto-fix
+QA_PASS_THRESHOLD = 70
+# Maximum correction rounds
+MAX_FIX_ROUNDS = 1
 
 
 class LandingPageGenerator:
@@ -52,6 +58,8 @@ class LandingPageGenerator:
         trust_signals: List[str] = None,
         description: str = "",
         constraints: Dict[str, Any] = None,
+        image_engine: str = "google",
+        image_model: str = "",
     ) -> Dict[str, Any]:
         """
         Full pipeline: strategy → copy → trust → CRO audit → 3 variants → save.
@@ -92,10 +100,14 @@ class LandingPageGenerator:
         if not variants or not isinstance(variants, list) or len(variants) == 0:
             return {"error": "AI failed to generate landing page variants"}
 
-        # Agent 3: Generate hero images for each variant
+        # Agent 3: QA Reviewer — validates and auto-fixes each variant
+        variants = await self._agent_qa_reviewer(variants, context, strategy)
+
+        # Agent 4: Generate hero images for each variant
         variants = await self._generate_variant_images(
             variants, service=service, business_name=business_name,
             industry=industry, location=location,
+            engine=image_engine, engine_model=image_model,
         )
 
         # Save to DB
@@ -145,8 +157,11 @@ class LandingPageGenerator:
                     "key": vr.variant_key,
                     "name": vr.variant_name,
                     "content": vr.content_json,
+                    "qa_score": variants[i].get("qa_score") if i < len(variants) else None,
+                    "qa_issues": variants[i].get("qa_issues", []) if i < len(variants) else [],
+                    "qa_fixed": variants[i].get("qa_fixed", False) if i < len(variants) else False,
                 }
-                for vr in variant_records
+                for i, vr in enumerate(variant_records)
             ],
         }
 
@@ -308,6 +323,227 @@ Use the real business name, phone, and details throughout."""
             ],
         }
 
+    # ── Agent 3: QA Reviewer ────────────────────────────────────────
+
+    async def _agent_qa_reviewer(
+        self,
+        variants: List[Dict],
+        context: Dict,
+        strategy: Dict,
+    ) -> List[Dict]:
+        """
+        QA Reviewer agent — Claude Opus validates each variant against
+        Google Ads landing page best practices BEFORE showing to user.
+
+        Checks:
+        1. Keyword-headline match (H1 must contain campaign keywords)
+        2. Phone number presence (hero CTA + footer CTA minimum)
+        3. Business name in headline
+        4. Location mention in hero
+        5. Trust signals match real data (not fabricated)
+        6. CTA clarity and above-fold placement
+        7. No placeholder text (lorem ipsum, [PLACEHOLDER], etc.)
+        8. Review authenticity (realistic, mentions service)
+
+        If score < 70, auto-fixes the variant with one correction round.
+        """
+        reviewed_variants = []
+
+        # Review all variants concurrently
+        review_tasks = [
+            self._review_single_variant(v, context, strategy)
+            for v in variants
+        ]
+        reviews = await asyncio.gather(*review_tasks, return_exceptions=True)
+
+        for i, (variant, review) in enumerate(zip(variants, reviews)):
+            if isinstance(review, Exception):
+                logger.warning("QA review failed for variant", variant=variant.get("name"), error=str(review))
+                variant["qa_score"] = None
+                variant["qa_issues"] = []
+                reviewed_variants.append(variant)
+                continue
+
+            score = review.get("score", 100)
+            issues = review.get("issues", [])
+            variant["qa_score"] = score
+            variant["qa_issues"] = issues
+
+            logger.info(
+                "QA review complete",
+                variant=variant.get("name"),
+                score=score,
+                issue_count=len(issues),
+            )
+
+            # Auto-fix if below threshold
+            if score < QA_PASS_THRESHOLD and issues:
+                logger.info(
+                    "QA score below threshold — running auto-fix",
+                    variant=variant.get("name"),
+                    score=score,
+                    threshold=QA_PASS_THRESHOLD,
+                )
+                fixed_variant = await self._auto_fix_variant(
+                    variant, issues, context, strategy
+                )
+                if fixed_variant:
+                    # Re-review after fix
+                    re_review = await self._review_single_variant(
+                        fixed_variant, context, strategy
+                    )
+                    if not isinstance(re_review, Exception):
+                        fixed_variant["qa_score"] = re_review.get("score", score)
+                        fixed_variant["qa_issues"] = re_review.get("issues", [])
+                        logger.info(
+                            "QA re-review after fix",
+                            variant=fixed_variant.get("name"),
+                            old_score=score,
+                            new_score=fixed_variant["qa_score"],
+                        )
+                    reviewed_variants.append(fixed_variant)
+                    continue
+
+            reviewed_variants.append(variant)
+
+        return reviewed_variants
+
+    async def _review_single_variant(
+        self,
+        variant: Dict,
+        context: Dict,
+        strategy: Dict,
+    ) -> Dict:
+        """Review a single variant and return score + issues."""
+        system = """You are a Google Ads landing page QA specialist.
+You validate landing pages against strict conversion and Quality Score criteria.
+You are ruthlessly precise — you catch every issue that would hurt Quality Score or conversion rate.
+
+Respond ONLY with valid JSON."""
+
+        content = variant.get("content", {})
+        content_str = json.dumps(content, indent=1)
+        if len(content_str) > 8000:
+            content_str = content_str[:8000] + "\n...(truncated)"
+
+        prompt = f"""Review this landing page variant for Google Ads Quality Score and conversion readiness.
+
+── VARIANT ──
+Name: {variant.get('name', 'Unknown')}
+Angle: {variant.get('angle', 'Unknown')}
+Content:
+{content_str}
+
+── CAMPAIGN CONTEXT (what must be reflected) ──
+Business Name: {context.get('business_name', 'N/A')}
+Phone: {context.get('phone', 'N/A')}
+Service: {context.get('service', 'N/A')}
+Location: {context.get('location', 'N/A')}
+Campaign Keywords: {json.dumps(context.get('campaign_keywords', [])[:10])}
+Campaign Headlines: {json.dumps(context.get('campaign_headlines', [])[:5])}
+Trust Signals (REAL — must match): {json.dumps(context.get('trust_signals', [])[:8])}
+
+── QA CHECKLIST (score each 0-10) ──
+1. KEYWORD_HEADLINE_MATCH: Does H1 contain exact campaign keywords? (weight: 25%)
+2. PHONE_PRESENCE: Is real phone in hero CTA + at least one more place? (weight: 15%)
+3. BUSINESS_NAME: Is the real business name in headline/hero? (weight: 10%)
+4. LOCATION_MENTION: Is the real city/location in hero area? (weight: 10%)
+5. TRUST_ACCURACY: Are trust signals real (from context) not fabricated? (weight: 15%)
+6. CTA_CLARITY: Is the primary CTA clear, compelling, above fold? (weight: 10%)
+7. NO_PLACEHOLDERS: No lorem ipsum, [PLACEHOLDER], "Your Business", generic text? (weight: 10%)
+8. REVIEW_QUALITY: Do reviews feel authentic, mention specific service? (weight: 5%)
+
+Return JSON:
+{{
+  "score": 0-100 (weighted average of checks),
+  "checks": {{
+    "keyword_headline_match": {{"score": 0-10, "detail": "what was found/missing"}},
+    "phone_presence": {{"score": 0-10, "detail": "..."}},
+    "business_name": {{"score": 0-10, "detail": "..."}},
+    "location_mention": {{"score": 0-10, "detail": "..."}},
+    "trust_accuracy": {{"score": 0-10, "detail": "..."}},
+    "cta_clarity": {{"score": 0-10, "detail": "..."}},
+    "no_placeholders": {{"score": 0-10, "detail": "..."}},
+    "review_quality": {{"score": 0-10, "detail": "..."}}
+  }},
+  "issues": [
+    {{"severity": "critical"|"major"|"minor", "check": "keyword_headline_match", "problem": "H1 says 'Professional Service' but should contain 'car locksmith near me'", "fix": "Change H1 to 'Fast Car Locksmith Near Me — Call Now'"}},
+    ...
+  ],
+  "pass": true|false,
+  "summary": "1 sentence overall assessment"
+}}"""
+
+        # Use Sonnet for QA review — fast, cheaper, still catches issues well
+        result = await self.llm.call_json(
+            system=system,
+            user_msg=prompt,
+            max_tokens=2000,
+            temperature=0.2,
+            preferred_model="claude-sonnet-4-5-20250514",
+        )
+        if result and result.get("data"):
+            return result["data"]
+        return {"score": 100, "issues": [], "pass": True, "summary": "Review unavailable"}
+
+    async def _auto_fix_variant(
+        self,
+        variant: Dict,
+        issues: List[Dict],
+        context: Dict,
+        strategy: Dict,
+    ) -> Optional[Dict]:
+        """Auto-fix a variant based on QA issues. Returns the fixed variant or None."""
+        content = variant.get("content", {})
+
+        # Build fix instructions from issues
+        fix_instructions = []
+        for issue in issues:
+            severity = issue.get("severity", "minor")
+            if severity in ("critical", "major"):
+                fix_instructions.append(
+                    f"- [{severity.upper()}] {issue.get('check', '')}: {issue.get('fix', issue.get('problem', ''))}"
+                )
+
+        if not fix_instructions:
+            return None
+
+        system = """You are a Google Ads landing page QA fixer.
+You receive a landing page variant and a list of QA issues that MUST be fixed.
+Apply ALL fixes precisely. Do not change anything that isn't broken.
+Return the COMPLETE updated content JSON.
+Respond ONLY with valid JSON."""
+
+        prompt = f"""Fix these QA issues in the landing page variant.
+
+── BUSINESS CONTEXT (use these REAL details) ──
+Business: {context.get('business_name', 'N/A')}
+Phone: {context.get('phone', 'N/A')}
+Service: {context.get('service', 'N/A')}
+Location: {context.get('location', 'N/A')}
+Keywords: {json.dumps(context.get('campaign_keywords', [])[:10])}
+
+── CURRENT CONTENT ──
+{json.dumps(content, indent=1)[:10000]}
+
+── QA ISSUES TO FIX ──
+{chr(10).join(fix_instructions)}
+
+Apply all fixes. Return the COMPLETE content JSON with fixes applied.
+The hero headline MUST contain the campaign keywords.
+The phone number MUST be {context.get('phone', 'N/A')}.
+The business name MUST be {context.get('business_name', 'N/A')}.
+The location MUST be mentioned: {context.get('location', 'N/A')}."""
+
+        result = await self._call_ai(system, prompt, temperature=0.3, max_tokens=6000)
+        if result:
+            fixed_variant = {**variant, "content": result, "qa_fixed": True}
+            logger.info("Auto-fix applied", variant=variant.get("name"), fixes=len(fix_instructions))
+            return fixed_variant
+        return None
+
+    # ── Agent 4: Image Generation ────────────────────────────────────
+
     async def _generate_variant_images(
         self,
         variants: List[Dict],
@@ -315,14 +551,31 @@ Use the real business name, phone, and details throughout."""
         business_name: str = "",
         industry: str = "",
         location: str = "",
+        engine: str = "google",
+        engine_model: str = "",
     ) -> List[Dict]:
-        """Generate real AI images for each variant's hero section using SEOpix."""
+        """Generate real AI images for each variant's hero section using SEOpix.
+
+        Args:
+            engine: Image engine — 'google' (default, Nano Banana), 'dalle', 'flux', 'stability'
+            engine_model: Sub-model override (e.g. 'gemini-2.5-flash-image', 'flux-pro')
+        """
         from app.integrations.image_generator.client import ImageGeneratorClient
 
         img_client = ImageGeneratorClient()
         if not img_client.is_configured:
             logger.info("Image generator not configured, skipping image generation")
             return variants
+
+        # Build engine-specific kwargs
+        engine_kwargs: Dict[str, str] = {}
+        if engine_model:
+            if engine == "google":
+                engine_kwargs["google_model"] = engine_model
+            elif engine == "flux":
+                engine_kwargs["flux_model"] = engine_model
+            elif engine == "stability":
+                engine_kwargs["stability_model"] = engine_model
 
         for variant in variants:
             content = variant.get("content", {})
@@ -349,10 +602,11 @@ Use the real business name, phone, and details throughout."""
             try:
                 result = await img_client.generate_single(
                     prompt=prompt,
-                    engine="dalle",
+                    engine=engine,
                     style="photorealistic",
                     size="1792x1024",  # Wide hero format
                     metadata=metadata,
+                    **engine_kwargs,
                 )
                 if result.get("success") and result.get("image_url"):
                     hero["hero_image_url"] = result["image_url"]

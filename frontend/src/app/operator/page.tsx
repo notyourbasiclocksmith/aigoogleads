@@ -333,11 +333,11 @@ export default function OperatorPage() {
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
-              <Brain className="w-7 h-7 text-blue-600" />
-              AI Campaign Operator
+              <Brain className="w-7 h-7 text-violet-600" />
+              Deep Optimizer
             </h1>
             <p className="text-sm text-slate-500 mt-1">
-              Deep-scan your Google Ads account and get expert-level recommendations with projected impact
+              AI-powered deep scan of your Google Ads account — expert-level recommendations with projected impact
             </p>
           </div>
         </div>

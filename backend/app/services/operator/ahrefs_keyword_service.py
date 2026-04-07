@@ -112,6 +112,8 @@ class AhrefsKeywordService:
                 self._get_keyword_overview(seed_queries, country),
                 self._get_matching_terms(services, country),
                 self._get_search_suggestions(services, country),
+                self._get_related_terms(services, country),
+                self._get_volume_history(seed_queries[:10], country),
             ]
 
             # Add competitor spying if we have domains
@@ -139,6 +141,19 @@ class AhrefsKeywordService:
                 results["search_suggestions"] = gathered[idx] or []
             idx += 1
 
+            # Related terms
+            related_terms_count = 0
+            if not isinstance(gathered[idx], Exception):
+                related = gathered[idx] or []
+                related_terms_count = len(related)
+                results["expanded_keywords"].extend(related)
+            idx += 1
+
+            # Volume history
+            if not isinstance(gathered[idx], Exception):
+                results["volume_trends"] = gathered[idx] or {}
+            idx += 1
+
             # Competitor keywords
             comp_kws = []
             if competitor_domains:
@@ -156,6 +171,35 @@ class AhrefsKeywordService:
                     results["expanded_keywords"].extend([
                         {**kw, "source": "own_organic"} for kw in organic
                     ])
+
+            # ── DEDUPLICATION ──────────────────────────────────────
+            # Deduplicate by lowercase keyword text across seed, expanded,
+            # and suggestions. Priority: seed > expanded > suggestions.
+            seen: set = set()
+
+            def _dedup(kw_list: List[Dict]) -> List[Dict]:
+                deduped = []
+                for kw in kw_list:
+                    key = kw.get("keyword", "").lower().strip()
+                    if key and key not in seen:
+                        seen.add(key)
+                        deduped.append(kw)
+                return deduped
+
+            results["seed_keywords"] = _dedup(results["seed_keywords"])
+            results["expanded_keywords"] = _dedup(results["expanded_keywords"])
+            results["search_suggestions"] = _dedup(results["search_suggestions"])
+
+            # ── Count seasonal keywords from volume_trends ─────────
+            seasonal_count = 0
+            for kw, history in results["volume_trends"].items():
+                vols = [entry.get("volume") or 0 for entry in history]
+                if vols:
+                    min_vol = min(vols)
+                    max_vol = max(vols)
+                    # >50% variance between min and max monthly volume
+                    if max_vol > 0 and (max_vol - min_vol) / max_vol > 0.50:
+                        seasonal_count += 1
 
             # Build summary stats
             all_kws = (
@@ -175,6 +219,8 @@ class AhrefsKeywordService:
                         if (kw.get("volume") or 0) >= 50 and (kw.get("cpc") or 0) >= 0.50
                     ]),
                     "competitor_keywords_found": len(results["competitor_keywords"]),
+                    "seasonal_keywords": seasonal_count,
+                    "related_terms_found": related_terms_count,
                 }
 
         except Exception as e:
@@ -252,6 +298,73 @@ class AhrefsKeywordService:
                     })
 
         return all_terms
+
+    async def _get_related_terms(
+        self, services: List[str], country: str
+    ) -> List[Dict]:
+        """Get semantically related keyword terms (broader/tangential ideas)."""
+        all_terms = []
+
+        for service in services[:5]:  # Max 5 services
+            data = await self._api_call(
+                "/keywords-explorer/related-terms",
+                params={
+                    "select": "keyword,volume,cpc,difficulty",
+                    "keywords": service,
+                    "country": country,
+                    "limit": 25,
+                    "order_by": "volume:desc",
+                },
+            )
+
+            if data and isinstance(data, dict) and "keywords" in data:
+                for kw in data["keywords"]:
+                    all_terms.append({
+                        "keyword": kw.get("keyword", ""),
+                        "volume": kw.get("volume") or 0,
+                        "cpc": self._cents_to_dollars(kw.get("cpc")),
+                        "difficulty": kw.get("difficulty") or 0,
+                        "parent_service": service,
+                        "source": "ahrefs_related",
+                    })
+
+        return all_terms
+
+    async def _get_volume_history(
+        self, keywords: List[str], country: str
+    ) -> Dict[str, List[Dict]]:
+        """
+        Get monthly volume history for the top seed keywords.
+        Returns dict mapping keyword -> list of {date, volume} entries.
+        """
+        if not keywords:
+            return {}
+
+        keyword_str = ",".join(keywords[:10])  # Max 10 keywords
+
+        data = await self._api_call(
+            "/keywords-explorer/volume-history",
+            params={
+                "select": "keyword,volume",
+                "keywords": keyword_str,
+                "country": country,
+            },
+        )
+
+        if not data or not isinstance(data, dict) or "volumes" not in data:
+            return {}
+
+        volume_map: Dict[str, List[Dict]] = {}
+        for entry in data["volumes"]:
+            kw = entry.get("keyword", "")
+            if kw not in volume_map:
+                volume_map[kw] = []
+            volume_map[kw].append({
+                "date": entry.get("date", ""),
+                "volume": entry.get("volume") or 0,
+            })
+
+        return volume_map
 
     async def _get_search_suggestions(
         self, services: List[str], country: str

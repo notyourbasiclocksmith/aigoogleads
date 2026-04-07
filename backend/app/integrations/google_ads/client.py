@@ -515,6 +515,250 @@ class GoogleAdsClient:
         return results
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
+    # ── SEGMENTED PERFORMANCE QUERIES ──────────────────────────
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
+    async def get_device_performance(
+        self, date_range: str = "LAST_30_DAYS", campaign_id: str = ""
+    ) -> List[Dict[str, Any]]:
+        """Performance breakdown by device (MOBILE, DESKTOP, TABLET)."""
+        await self._ensure_token()
+        client = self._get_client()
+        ga_service = client.get_service("GoogleAdsService")
+        campaign_filter = f"AND campaign.id = {campaign_id}" if campaign_id else ""
+        query = f"""
+            SELECT segments.device,
+                   metrics.impressions, metrics.clicks, metrics.cost_micros,
+                   metrics.conversions, metrics.conversions_value,
+                   metrics.ctr, metrics.average_cpc
+            FROM campaign
+            WHERE segments.date DURING {date_range}
+            {campaign_filter}
+        """
+        response = await self._run_sync(
+            ga_service.search, customer_id=self.customer_id, query=query
+        )
+        results = []
+        for row in response:
+            results.append({
+                "device": row.segments.device.name,
+                "impressions": row.metrics.impressions,
+                "clicks": row.metrics.clicks,
+                "cost_micros": row.metrics.cost_micros,
+                "conversions": row.metrics.conversions,
+                "conv_value": row.metrics.conversions_value,
+                "ctr": row.metrics.ctr,
+                "avg_cpc": row.metrics.average_cpc,
+            })
+        return results
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
+    async def get_hour_of_day_performance(
+        self, date_range: str = "LAST_30_DAYS", campaign_id: str = ""
+    ) -> List[Dict[str, Any]]:
+        """Performance breakdown by hour of day (0-23)."""
+        await self._ensure_token()
+        client = self._get_client()
+        ga_service = client.get_service("GoogleAdsService")
+        campaign_filter = f"AND campaign.id = {campaign_id}" if campaign_id else ""
+        query = f"""
+            SELECT segments.hour,
+                   metrics.impressions, metrics.clicks, metrics.cost_micros,
+                   metrics.conversions, metrics.conversions_value
+            FROM campaign
+            WHERE segments.date DURING {date_range}
+            {campaign_filter}
+        """
+        response = await self._run_sync(
+            ga_service.search, customer_id=self.customer_id, query=query
+        )
+        results = []
+        for row in response:
+            results.append({
+                "hour": row.segments.hour,
+                "impressions": row.metrics.impressions,
+                "clicks": row.metrics.clicks,
+                "cost_micros": row.metrics.cost_micros,
+                "conversions": row.metrics.conversions,
+                "conv_value": row.metrics.conversions_value,
+            })
+        return results
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
+    async def get_day_of_week_performance(
+        self, date_range: str = "LAST_30_DAYS", campaign_id: str = ""
+    ) -> List[Dict[str, Any]]:
+        """Performance breakdown by day of week."""
+        await self._ensure_token()
+        client = self._get_client()
+        ga_service = client.get_service("GoogleAdsService")
+        campaign_filter = f"AND campaign.id = {campaign_id}" if campaign_id else ""
+        query = f"""
+            SELECT segments.day_of_week,
+                   metrics.impressions, metrics.clicks, metrics.cost_micros,
+                   metrics.conversions, metrics.conversions_value
+            FROM campaign
+            WHERE segments.date DURING {date_range}
+            {campaign_filter}
+        """
+        response = await self._run_sync(
+            ga_service.search, customer_id=self.customer_id, query=query
+        )
+        results = []
+        for row in response:
+            results.append({
+                "day_of_week": row.segments.day_of_week.name,
+                "impressions": row.metrics.impressions,
+                "clicks": row.metrics.clicks,
+                "cost_micros": row.metrics.cost_micros,
+                "conversions": row.metrics.conversions,
+                "conv_value": row.metrics.conversions_value,
+            })
+        return results
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
+    async def get_geo_performance(
+        self, date_range: str = "LAST_30_DAYS", campaign_id: str = ""
+    ) -> List[Dict[str, Any]]:
+        """Performance breakdown by geographic location (city/metro)."""
+        await self._ensure_token()
+        client = self._get_client()
+        ga_service = client.get_service("GoogleAdsService")
+        campaign_filter = f"AND campaign.id = {campaign_id}" if campaign_id else ""
+        query = f"""
+            SELECT geographic_view.country_criterion_id,
+                   geographic_view.location_type,
+                   segments.geo_target_city,
+                   segments.geo_target_metro,
+                   segments.geo_target_region,
+                   metrics.impressions, metrics.clicks, metrics.cost_micros,
+                   metrics.conversions, metrics.conversions_value
+            FROM geographic_view
+            WHERE segments.date DURING {date_range}
+            {campaign_filter}
+            ORDER BY metrics.clicks DESC
+            LIMIT 100
+        """
+        response = await self._run_sync(
+            ga_service.search, customer_id=self.customer_id, query=query
+        )
+        results = []
+        for row in response:
+            city_id = ""
+            metro_id = ""
+            region_id = ""
+            try:
+                city_id = str(row.segments.geo_target_city)
+            except Exception:
+                pass
+            try:
+                metro_id = str(row.segments.geo_target_metro)
+            except Exception:
+                pass
+            try:
+                region_id = str(row.segments.geo_target_region)
+            except Exception:
+                pass
+            results.append({
+                "city_criterion_id": city_id,
+                "metro_criterion_id": metro_id,
+                "region_criterion_id": region_id,
+                "location_type": row.geographic_view.location_type.name if hasattr(row.geographic_view, 'location_type') else "",
+                "impressions": row.metrics.impressions,
+                "clicks": row.metrics.clicks,
+                "cost_micros": row.metrics.cost_micros,
+                "conversions": row.metrics.conversions,
+                "conv_value": row.metrics.conversions_value,
+            })
+        return results
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
+    async def get_campaign_performance_detail(
+        self, campaign_id: str, date_range: str = "LAST_30_DAYS"
+    ) -> Dict[str, Any]:
+        """Comprehensive campaign-specific performance with daily trends."""
+        await self._ensure_token()
+        client = self._get_client()
+        ga_service = client.get_service("GoogleAdsService")
+
+        # Daily trends
+        query = f"""
+            SELECT segments.date,
+                   metrics.impressions, metrics.clicks, metrics.cost_micros,
+                   metrics.conversions, metrics.conversions_value,
+                   metrics.ctr, metrics.average_cpc,
+                   metrics.search_impression_share,
+                   metrics.search_top_impression_share,
+                   metrics.search_absolute_top_impression_share
+            FROM campaign
+            WHERE campaign.id = {campaign_id}
+            AND segments.date DURING {date_range}
+            ORDER BY segments.date
+        """
+        response = await self._run_sync(
+            ga_service.search, customer_id=self.customer_id, query=query
+        )
+        from datetime import datetime as dt
+        trends = []
+        totals = {
+            "impressions": 0, "clicks": 0, "cost_micros": 0,
+            "conversions": 0.0, "conv_value": 0.0,
+        }
+        for row in response:
+            date_str = str(row.segments.date)
+            date_obj = dt.strptime(date_str, "%Y-%m-%d").date()
+
+            imp_share = None
+            top_share = None
+            abs_top_share = None
+            try:
+                imp_share = row.metrics.search_impression_share
+            except Exception:
+                pass
+            try:
+                top_share = row.metrics.search_top_impression_share
+            except Exception:
+                pass
+            try:
+                abs_top_share = row.metrics.search_absolute_top_impression_share
+            except Exception:
+                pass
+
+            day = {
+                "date": str(date_obj),
+                "impressions": row.metrics.impressions,
+                "clicks": row.metrics.clicks,
+                "cost_micros": row.metrics.cost_micros,
+                "cost": row.metrics.cost_micros / 1_000_000,
+                "conversions": row.metrics.conversions,
+                "conv_value": row.metrics.conversions_value,
+                "ctr": row.metrics.ctr,
+                "avg_cpc": row.metrics.average_cpc,
+                "impression_share": imp_share,
+                "top_impression_share": top_share,
+                "abs_top_impression_share": abs_top_share,
+            }
+            trends.append(day)
+            totals["impressions"] += row.metrics.impressions
+            totals["clicks"] += row.metrics.clicks
+            totals["cost_micros"] += row.metrics.cost_micros
+            totals["conversions"] += row.metrics.conversions
+            totals["conv_value"] += row.metrics.conversions_value
+
+        cost = totals["cost_micros"] / 1_000_000
+        return {
+            "campaign_id": campaign_id,
+            "trends": trends,
+            "totals": {
+                **totals,
+                "cost": cost,
+                "ctr": totals["clicks"] / totals["impressions"] if totals["impressions"] > 0 else 0,
+                "cpc": cost / totals["clicks"] if totals["clicks"] > 0 else 0,
+                "cpa": cost / totals["conversions"] if totals["conversions"] > 0 else 0,
+                "roas": totals["conv_value"] / cost if cost > 0 else 0,
+            },
+        }
+
     async def get_landing_page_performance(self, date_range: str = "LAST_30_DAYS") -> List[Dict[str, Any]]:
         client = self._get_client()
         ga_service = client.get_service("GoogleAdsService")
@@ -1830,8 +2074,17 @@ class GoogleAdsClient:
 
         # Pre-validation
         ad_group_specs = spec.get("ad_groups", [])
-        if not ad_group_specs:
-            logger.error("deploy_full_campaign called with zero ad groups", spec_keys=list(spec.keys()))
+        asset_group_specs = spec.get("asset_groups", [])
+        channel_type = spec.get("campaign", {}).get("channel_type", "SEARCH").upper()
+        is_pmax_spec = channel_type == "PERFORMANCE_MAX"
+
+        if not ad_group_specs and not asset_group_specs:
+            logger.error("deploy_full_campaign called with no ad groups or asset groups",
+                spec_keys=list(spec.keys()))
+            return {"status": "error", "error": "No ad groups or asset groups in campaign spec — nothing to deploy"}
+        if not ad_group_specs and not is_pmax_spec:
+            logger.error("deploy_full_campaign called with zero ad groups for non-PMax campaign",
+                spec_keys=list(spec.keys()))
             return {"status": "error", "error": "No ad groups in campaign spec — nothing to deploy"}
 
         # Log spec summary
@@ -1890,6 +2143,11 @@ class GoogleAdsClient:
                 channel, client.enums.AdvertisingChannelTypeEnum.SEARCH
             )
 
+            # PMax guard: Performance Max uses asset groups, not ad groups/RSAs
+            is_pmax = channel == "PERFORMANCE_MAX"
+            if is_pmax:
+                logger.info("Performance Max campaign — asset groups will be created post-deploy.")
+
             # Geo targeting: PRESENCE only (critical for local businesses)
             campaign.geo_target_type_setting.positive_geo_target_type = (
                 client.enums.PositiveGeoTargetTypeEnum.PRESENCE
@@ -1919,10 +2177,16 @@ class GoogleAdsClient:
             operations.append(campaign_op)
 
             # 3. Ad groups, keywords, and ads
+            # 3. Ad groups, keywords, and ads (skip for PMax — uses asset groups)
             ag_temp_ids = []  # Track temp IDs for result mapping
             all_neg_kws = []  # Collect negative keywords for batch
 
-            for ag_spec in ad_group_specs:
+            # TODO: For PERFORMANCE_MAX, create asset groups instead of ad groups.
+            # PMax requires: headline assets, description assets, image assets,
+            # long headline, business name, and a listing group (audience signal).
+            # For now, PMax campaigns are created with budget+bidding only.
+
+            for ag_spec in ad_group_specs if not is_pmax else []:
                 ag_temp_id = next_temp_id
                 next_temp_id -= 1
                 ag_temp_ids.append((ag_temp_id, ag_spec.get("name", "")))
@@ -2027,8 +2291,15 @@ class GoogleAdsClient:
                 if neg_kws:
                     all_neg_kws.extend(neg_kws)
 
-            # 4. Negative keywords (campaign-level, reference temp campaign ID)
-            for nk_text in set(all_neg_kws):  # Dedupe
+            # 4. Negative keywords (campaign-level)
+            # Merge ad-group negatives + explicit campaign negatives
+            campaign_negatives = set(all_neg_kws)
+            for cn in spec.get("campaign_negative_keywords", []):
+                text = cn.get("text", cn) if isinstance(cn, dict) else str(cn)
+                if text.strip():
+                    campaign_negatives.add(text.strip())
+
+            for nk_text in campaign_negatives:
                 nk_op = client.get_type("MutateOperation")
                 criterion = nk_op.campaign_criterion_operation.create
                 criterion.campaign = ga_service.campaign_path(self.customer_id, str(CAMPAIGN_TEMP_ID))
@@ -2115,6 +2386,13 @@ class GoogleAdsClient:
             # ── Extensions (second batch — needs real campaign ID) ────
             await self._deploy_extensions_batched(client, campaign_id, spec, results)
 
+            # ── PMax: Create asset groups (third batch — needs real campaign resource) ──
+            if is_pmax and spec.get("asset_groups"):
+                await self._deploy_pmax_asset_groups(campaign_resource, spec, results)
+
+            # ── Post-deploy: Apply targeting settings ────────────────
+            await self._apply_targeting_settings(campaign_id, spec, results)
+
             results["status"] = "success" if not results["errors"] else "partial"
             results["total_operations"] = len(operations)
             results["summary"] = {
@@ -2178,6 +2456,35 @@ class GoogleAdsClient:
             asset_operations.append(asset_op)
             asset_types.append("STRUCTURED_SNIPPET")
 
+        # Promotion extensions
+        for promo in spec.get("promotion_extensions", []):
+            try:
+                asset_op = client.get_type("AssetOperation")
+                promo_asset = asset_op.create.promotion_asset
+                promo_asset.promotion_target = str(promo.get("promotion_target", ""))[:20]
+                promo_asset.language_code = "en"
+                promo_asset.redemption_start_date = promo.get("start_date", "")
+                promo_asset.redemption_end_date = promo.get("end_date", "")
+
+                if promo.get("percent_off"):
+                    promo_asset.percent_off = int(promo["percent_off"])
+                    promo_asset.discount_modifier = (
+                        client.enums.PromotionExtensionDiscountModifierEnum.UP_TO
+                    )
+                elif promo.get("money_off_micros"):
+                    promo_asset.money_amount_off.amount_micros = int(promo["money_off_micros"])
+                    promo_asset.money_amount_off.currency_code = "USD"
+
+                promo_asset.occasion = (
+                    client.enums.PromotionExtensionOccasionEnum.NONE
+                )
+
+                asset_op.create.final_urls.append(promo.get("final_url", ""))
+                asset_operations.append(asset_op)
+                asset_types.append("PROMOTION")
+            except Exception as promo_err:
+                logger.warning("Promotion extension failed to build", error=str(promo_err))
+
         if not asset_operations:
             return
 
@@ -2199,6 +2506,7 @@ class GoogleAdsClient:
             "SITELINK": client.enums.AssetFieldTypeEnum.SITELINK,
             "CALLOUT": client.enums.AssetFieldTypeEnum.CALLOUT,
             "STRUCTURED_SNIPPET": client.enums.AssetFieldTypeEnum.STRUCTURED_SNIPPET,
+            "PROMOTION": client.enums.AssetFieldTypeEnum.PROMOTION,
         }
 
         link_operations = []
@@ -2239,6 +2547,433 @@ class GoogleAdsClient:
         except GoogleAdsException as ex:
             errors = self._extract_google_ads_errors(ex)
             results["errors"].append(f"Extension linking: {errors[0]['message'] if errors else str(ex)}")
+
+    async def _deploy_pmax_asset_groups(
+        self, campaign_resource: str, spec: Dict, results: Dict
+    ) -> None:
+        """
+        Deploy Performance Max asset groups with text assets, listing group
+        filter, and audience signals (search themes).
+
+        Each asset group in spec["asset_groups"] contains:
+        - name, final_url, headlines[], long_headlines[], descriptions[],
+          business_name, search_themes[], images[]
+        """
+        from google.ads.googleads.errors import GoogleAdsException
+
+        asset_groups_deployed = []
+        for ag_spec in spec.get("asset_groups", []):
+            try:
+                # Step 1: Create the asset group
+                ag_result = await self.create_asset_group(
+                    campaign_resource=campaign_resource,
+                    asset_group_data={
+                        "name": ag_spec.get("name", "Asset Group"),
+                        "final_url": ag_spec.get("final_url", ""),
+                    },
+                )
+                if ag_result.get("status") == "error":
+                    results["errors"].append(
+                        f"Asset group '{ag_spec.get('name')}': {ag_result.get('error', 'unknown')}"
+                    )
+                    continue
+
+                ag_resource = ag_result["asset_group_resource"]
+
+                # Step 2: Create and link text assets
+                text_result = await self.create_asset_group_assets(
+                    asset_group_resource=ag_resource,
+                    text_assets={
+                        "headlines": ag_spec.get("headlines", []),
+                        "long_headlines": ag_spec.get("long_headlines", []),
+                        "descriptions": ag_spec.get("descriptions", []),
+                        "business_name": ag_spec.get("business_name", ""),
+                    },
+                )
+                if text_result.get("status") == "error":
+                    results["errors"].append(
+                        f"Asset group assets '{ag_spec.get('name')}': {text_result.get('error', 'unknown')}"
+                    )
+
+                # Step 3: Create listing group filter (required for PMax)
+                await self._create_listing_group_filter(ag_resource)
+
+                # Step 4: Add audience signals (search themes)
+                search_themes = ag_spec.get("search_themes", [])
+                if search_themes:
+                    signal_result = await self.create_asset_group_signal(
+                        asset_group_resource=ag_resource,
+                        signal_data={"search_themes": search_themes},
+                    )
+                    if signal_result.get("status") == "error":
+                        logger.warning("Asset group signals failed",
+                            error=signal_result.get("error"),
+                            asset_group=ag_spec.get("name"))
+
+                # Step 5: Link image assets if available
+                images = ag_spec.get("images", [])
+                if images:
+                    await self._link_image_assets_to_asset_group(ag_resource, images)
+
+                asset_groups_deployed.append({
+                    "name": ag_spec.get("name"),
+                    "resource": ag_resource,
+                    "assets_linked": text_result.get("assets_linked", 0),
+                    "search_themes": len(search_themes),
+                })
+
+            except Exception as e:
+                logger.error("PMax asset group deploy failed",
+                    asset_group=ag_spec.get("name"), error=str(e))
+                results["errors"].append(f"Asset group '{ag_spec.get('name')}': {str(e)}")
+
+        results["asset_groups"] = asset_groups_deployed
+        results["summary"]["asset_groups"] = len(asset_groups_deployed)
+        logger.info("PMax asset groups deployed",
+            count=len(asset_groups_deployed),
+            errors=len(results.get("errors", [])))
+
+    async def _create_listing_group_filter(self, asset_group_resource: str) -> Dict:
+        """
+        Create a default listing group filter for a PMax asset group.
+        This is the 'All products' / 'Everything else' filter that PMax requires.
+        Without it, the asset group won't serve.
+        """
+        try:
+            await self._ensure_token()
+            client = self._get_client()
+            aglgf_service = client.get_service("AssetGroupListingGroupFilterService")
+
+            operation = client.get_type("AssetGroupListingGroupFilterOperation")
+            listing_filter = operation.create
+            listing_filter.asset_group = asset_group_resource
+            listing_filter.type_ = client.enums.ListingGroupFilterTypeEnum.UNIT_INCLUDED
+
+            # SHOPPING vertical is required even for non-shopping PMax (per Google Ads API docs)
+            # This root node means "all listings included"
+            listing_filter.vertical = client.enums.ListingGroupFilterVerticalEnum.SHOPPING
+
+            response = aglgf_service.mutate_asset_group_listing_group_filters(
+                customer_id=self.customer_id, operations=[operation]
+            )
+            return {"status": "created", "resource": response.results[0].resource_name}
+        except Exception as e:
+            # Non-fatal: some campaigns work without explicit listing group
+            logger.warning("Listing group filter creation failed", error=str(e))
+            return {"status": "skipped", "error": str(e)}
+
+    async def _link_image_assets_to_asset_group(
+        self, asset_group_resource: str, images: List[Dict]
+    ) -> None:
+        """
+        Link existing image assets to a PMax asset group.
+        images: [{"asset_resource": "customers/123/assets/456", "field_type": "MARKETING_IMAGE"}]
+        """
+        try:
+            await self._ensure_token()
+            client = self._get_client()
+            aga_service = client.get_service("AssetGroupAssetService")
+
+            field_type_map = {
+                "MARKETING_IMAGE": client.enums.AssetFieldTypeEnum.MARKETING_IMAGE,
+                "SQUARE_MARKETING_IMAGE": client.enums.AssetFieldTypeEnum.SQUARE_MARKETING_IMAGE,
+                "LOGO": client.enums.AssetFieldTypeEnum.LOGO,
+                "LANDSCAPE_LOGO": client.enums.AssetFieldTypeEnum.LANDSCAPE_LOGO,
+                "PORTRAIT_MARKETING_IMAGE": client.enums.AssetFieldTypeEnum.PORTRAIT_MARKETING_IMAGE,
+            }
+
+            operations = []
+            for img in images:
+                asset_resource = img.get("asset_resource", "")
+                field_type = img.get("field_type", "MARKETING_IMAGE")
+                if not asset_resource:
+                    continue
+
+                link_op = client.get_type("AssetGroupAssetOperation")
+                link = link_op.create
+                link.asset = asset_resource
+                link.asset_group = asset_group_resource
+                link.field_type = field_type_map.get(
+                    field_type, client.enums.AssetFieldTypeEnum.MARKETING_IMAGE
+                )
+                operations.append(link_op)
+
+            if operations:
+                aga_service.mutate_asset_group_assets(
+                    customer_id=self.customer_id, operations=operations
+                )
+                logger.info("Image assets linked to asset group",
+                    count=len(operations))
+        except Exception as e:
+            logger.warning("Image asset linking failed", error=str(e))
+
+    # ── GEO RESOLUTION HELPERS ────────────────────────────────
+
+    async def _resolve_geo_locations(self, location_names: list) -> list:
+        """Resolve city/location names to Google Ads geo target criterion IDs."""
+        try:
+            await self._ensure_token()
+            client = self._get_client()
+            gtc_service = client.get_service("GeoTargetConstantService")
+
+            resolved = []
+            for name in location_names[:10]:
+                try:
+                    request = client.get_type("SuggestGeoTargetConstantsRequest")
+                    request.locale = "en"
+                    request.country_code = "US"
+                    request.location_names.names.append(name)
+
+                    response = gtc_service.suggest_geo_target_constants(request=request)
+                    for suggestion in response.geo_target_constant_suggestions:
+                        gtc = suggestion.geo_target_constant
+                        resolved.append({
+                            "name": gtc.name,
+                            "criterion_id": gtc.id,
+                            "target_type": gtc.target_type,
+                            "canonical_name": gtc.canonical_name,
+                            "search_term": name,
+                        })
+                        break  # Take first (best) match
+                except Exception as e:
+                    logger.warning("Geo target resolution failed for location",
+                        location=name, error=str(e))
+            return resolved
+        except Exception as e:
+            logger.warning("Geo location resolution failed", error=str(e))
+            return []
+
+    def _geocode_location(self, location_name: str) -> dict:
+        """Geocode a location name to lat/lng using a lookup table of major US metros."""
+        MAJOR_METROS = {
+            "dallas": (32.7767, -96.7970), "fort worth": (32.7555, -97.3308),
+            "dfw": (32.8998, -97.0403), "houston": (29.7604, -95.3698),
+            "san antonio": (29.4241, -98.4936), "austin": (30.2672, -97.7431),
+            "phoenix": (33.4484, -112.0740), "los angeles": (34.0522, -118.2437),
+            "chicago": (41.8781, -87.6298), "new york": (40.7128, -74.0060),
+            "miami": (25.7617, -80.1918), "atlanta": (33.7490, -84.3880),
+            "denver": (39.7392, -104.9903), "seattle": (47.6062, -122.3321),
+            "portland": (45.5152, -122.6784), "las vegas": (36.1699, -115.1398),
+            "orlando": (28.5383, -81.3792), "tampa": (27.9506, -82.4572),
+            "charlotte": (35.2271, -80.8431), "nashville": (36.1627, -86.7816),
+            "minneapolis": (44.9778, -93.2650), "detroit": (42.3314, -83.0458),
+            "boston": (42.3601, -71.0589), "philadelphia": (39.9526, -75.1652),
+            "san diego": (32.7157, -117.1611), "san francisco": (37.7749, -122.4194),
+            "sacramento": (38.5816, -121.4944), "indianapolis": (39.7684, -86.1581),
+            "columbus": (39.9612, -82.9988), "jacksonville": (30.3322, -81.6557),
+            "memphis": (35.1495, -90.0490), "oklahoma city": (35.4676, -97.5164),
+            "raleigh": (35.7796, -78.6382), "louisville": (38.2527, -85.7585),
+            "baltimore": (39.2904, -76.6122), "milwaukee": (43.0389, -87.9065),
+            "albuquerque": (35.0844, -106.6504), "tucson": (32.2226, -110.9747),
+            "kansas city": (39.0997, -94.5786), "st louis": (38.6270, -90.1994),
+            "pittsburgh": (40.4406, -79.9959), "cincinnati": (39.1031, -84.5120),
+            "cleveland": (41.4993, -81.6944), "new orleans": (29.9511, -90.0715),
+            "arlington": (32.7357, -97.1081), "plano": (33.0198, -96.6989),
+            "irving": (32.8140, -96.9489), "mckinney": (33.1972, -96.6397),
+            "frisco": (33.1507, -96.8236), "garland": (32.9126, -96.6389),
+        }
+
+        name_lower = location_name.lower().strip()
+        for key, (lat, lng) in MAJOR_METROS.items():
+            if key in name_lower:
+                return {"latitude": lat, "longitude": lng, "source": "lookup"}
+        return {}
+
+    async def _apply_targeting_settings(
+        self, campaign_id: str, spec: Dict, results: Dict
+    ) -> None:
+        """
+        Apply targeting settings generated by the pipeline's Targeting Agent.
+        Runs AFTER atomic deploy — these are separate API calls:
+        - Location/proximity targeting (geo)
+        - Device bid modifiers (mobile/tablet/desktop)
+        - Ad scheduling (peak hours with bid adjustments)
+        - Call extension (phone number asset)
+        """
+        targeting = spec.get("_pipeline_metadata", {}).get("targeting", {})
+        if not targeting:
+            return
+
+        targeting_applied = []
+
+        # ── 1. GEO TARGETING ─────────────────────────────────────────
+        geo = targeting.get("geo", {})
+        geo_type = geo.get("type", "radius")
+
+        # ── Resolve missing geo data before applying ──
+        try:
+            if geo_type == "radius" and not geo.get("latitude"):
+                # Try to geocode from location names
+                locations = geo.get("locations", []) or targeting.get("locations", [])
+                if locations:
+                    coords = self._geocode_location(locations[0])
+                    if coords:
+                        geo["latitude"] = coords["latitude"]
+                        geo["longitude"] = coords["longitude"]
+                        logger.info("Geocoded location for radius targeting",
+                            location=locations[0], lat=coords["latitude"], lng=coords["longitude"])
+
+            elif geo_type == "cities" and not geo.get("location_ids"):
+                # Resolve city names to Google Ads criterion IDs
+                locations = geo.get("locations", [])
+                if locations:
+                    resolved = await self._resolve_geo_locations(locations)
+                    if resolved:
+                        geo["location_ids"] = [r["criterion_id"] for r in resolved]
+                        logger.info("Resolved geo locations",
+                            count=len(resolved),
+                            locations=[r["name"] for r in resolved])
+        except Exception as e:
+            logger.warning("Geo resolution failed — will try raw targeting", error=str(e))
+
+        try:
+            if geo_type == "radius" and geo.get("radius_miles"):
+                # Use proximity targeting with business coordinates
+                lat = geo.get("latitude")
+                lng = geo.get("longitude")
+                radius = geo.get("radius_miles", 40)
+
+                if lat and lng:
+                    result = await self.add_proximity_targeting(
+                        campaign_id, lat, lng, radius
+                    )
+                    if result.get("status") != "error":
+                        targeting_applied.append(f"Proximity: {radius}mi radius")
+                    else:
+                        results["errors"].append(f"Geo targeting: {result.get('error', 'unknown')}")
+
+            elif geo_type == "cities" and geo.get("location_ids"):
+                for loc_id in geo["location_ids"]:
+                    result = await self.add_location_targeting(campaign_id, str(loc_id))
+                    if result.get("status") == "error":
+                        results["errors"].append(f"Location {loc_id}: {result.get('error', '')}")
+                targeting_applied.append(f"Cities: {len(geo.get('location_ids', []))} locations")
+
+        except Exception as e:
+            logger.warning("Geo targeting failed — campaign will use default targeting", error=str(e))
+            results["errors"].append(f"Geo targeting: {str(e)[:100]}")
+
+        # ── 2. DEVICE BID MODIFIERS ──────────────────────────────────
+        device_bids = targeting.get("device_bids", {})
+        try:
+            for device_key, bid_field in [
+                ("MOBILE", "mobile_bid_adj"),
+                ("DESKTOP", "desktop_bid_adj"),
+                ("TABLET", "tablet_bid_adj"),
+            ]:
+                adj_pct = device_bids.get(bid_field, 0)
+                if adj_pct != 0:
+                    # Convert percentage to multiplier: +30% → 1.3, -20% → 0.8
+                    multiplier = 1.0 + (adj_pct / 100.0)
+                    multiplier = max(0.1, min(5.0, multiplier))  # Google Ads limits
+                    result = await self.set_device_bid_modifier(
+                        campaign_id, device_key, multiplier
+                    )
+                    if result.get("status") != "error":
+                        targeting_applied.append(f"{device_key}: {adj_pct:+d}%")
+                    else:
+                        results["errors"].append(f"Device bid {device_key}: {result.get('error', '')}")
+        except Exception as e:
+            logger.warning("Device bid modifiers failed", error=str(e))
+
+        # ── 3. AD SCHEDULING ─────────────────────────────────────────
+        schedule = targeting.get("schedule", {})
+        peak_adjustments = schedule.get("peak_adjustments", [])
+        try:
+            for peak in peak_adjustments:
+                days = peak.get("days", [])
+                hours = peak.get("hours", "")
+                bid_adj = peak.get("bid_adj", 0)
+
+                if not hours or not days:
+                    continue
+
+                # Parse hours string like "8-20"
+                parts = str(hours).split("-")
+                if len(parts) != 2:
+                    continue
+                try:
+                    start_h = int(parts[0])
+                    end_h = int(parts[1])
+                except ValueError:
+                    continue
+
+                multiplier = 1.0 + (bid_adj / 100.0) if bid_adj else 1.0
+                multiplier = max(0.1, min(5.0, multiplier))
+
+                for day in days:
+                    result = await self.set_ad_schedule(
+                        campaign_id, day.upper(), start_h, end_h, multiplier
+                    )
+                    if result.get("status") == "error":
+                        results["errors"].append(f"Schedule {day}: {result.get('error', '')}")
+
+                targeting_applied.append(
+                    f"Schedule: {','.join(d[:3] for d in days)} {hours} ({bid_adj:+d}%)"
+                )
+        except Exception as e:
+            logger.warning("Ad scheduling failed", error=str(e))
+
+        # ── 4. CALL EXTENSION ────────────────────────────────────────
+        call_ext = spec.get("_pipeline_metadata", {}).get("extensions", {}).get("call_extension", {})
+        if not call_ext:
+            # Also check top-level extensions from pipeline
+            call_ext = spec.get("call_extension", {})
+        phone = call_ext.get("phone", "")
+        if phone:
+            try:
+                await self._deploy_call_extension(campaign_id, phone, call_ext.get("country_code", "US"))
+                targeting_applied.append(f"Call ext: {phone}")
+            except Exception as e:
+                logger.warning("Call extension failed", error=str(e))
+                results["errors"].append(f"Call extension: {str(e)[:100]}")
+
+        if targeting_applied:
+            results["targeting_applied"] = targeting_applied
+            logger.info("Targeting settings applied",
+                campaign_id=campaign_id, settings=targeting_applied)
+
+    async def _deploy_call_extension(
+        self, campaign_id: str, phone_number: str, country_code: str = "US"
+    ) -> Dict[str, Any]:
+        """Create a call extension asset and link it to the campaign."""
+        await self._ensure_token()
+        client = self._get_client()
+        asset_service = client.get_service("AssetService")
+        ca_service = client.get_service("CampaignAssetService")
+        campaign_resource = f"customers/{self.customer_id}/campaigns/{campaign_id}"
+
+        # Create call asset
+        asset_op = client.get_type("AssetOperation")
+        asset_op.create.call_asset.phone_number = phone_number
+        asset_op.create.call_asset.country_code = country_code
+
+        asset_response = await self._run_sync(
+            asset_service.mutate_assets,
+            customer_id=self.customer_id,
+            operations=[asset_op],
+        )
+
+        if not asset_response.results:
+            return {"status": "error", "error": "No asset created"}
+
+        asset_resource = asset_response.results[0].resource_name
+
+        # Link to campaign
+        link_op = client.get_type("CampaignAssetOperation")
+        link = link_op.create
+        link.campaign = campaign_resource
+        link.asset = asset_resource
+        link.field_type = client.enums.AssetFieldTypeEnum.CALL
+
+        await self._run_sync(
+            ca_service.mutate_campaign_assets,
+            customer_id=self.customer_id,
+            operations=[link_op],
+        )
+
+        logger.info("Call extension deployed", campaign_id=campaign_id, phone=phone_number)
+        return {"status": "created", "phone": phone_number}
 
     async def update_campaign_status(self, campaign_resource: str, status: str) -> Dict[str, Any]:
         await self._ensure_token()

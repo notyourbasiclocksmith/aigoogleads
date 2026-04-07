@@ -285,7 +285,7 @@ async def get_health_check(
     - top money-making keywords
     - account status summary
     - optimizer status
-    - problem count for "Fix My Ads" button
+    - problem count for "Deep Optimizer" button
     """
     start_date = date.today() - timedelta(days=days)
     tid = user.tenant_id
@@ -458,7 +458,7 @@ async def get_health_check(
         )
         budget_limited_count = bl.scalar() or 0
 
-    # ── Problem count (for Fix My Ads button) ────────────────────────────
+    # ── Problem count (for Deep Optimizer button) ────────────────────────
     problem_count = wasted_keyword_count + wasted_search_term_count + wasted_ad_count + budget_limited_count
     total_wasted = round(wasted_keyword_cost + wasted_search_term_cost + wasted_ad_cost, 2)
 

@@ -119,6 +119,7 @@ class GoogleAdsOperatorService:
                 "campaign_type": intent_payload.get("campaign", {}).get("campaign_type"),
                 "services": intent_payload.get("services"),
                 "locations": intent_payload.get("locations"),
+                "forward_phone": intent_payload.get("forward_phone"),
             }
             spec = await pipeline.run(
                 user_prompt=user_message,

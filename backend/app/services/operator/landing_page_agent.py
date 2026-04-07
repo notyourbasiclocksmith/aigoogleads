@@ -49,6 +49,11 @@ class LandingPageAgent:
         self.db = db
         self.tenant_id = tenant_id
 
+    def _build_absolute_url(self, slug: str) -> str:
+        """Convert a landing page slug to an absolute URL for Google Ads."""
+        base = (settings.APP_URL or "http://localhost:3000").rstrip("/")
+        return f"{base}/lp/{slug}"
+
     # ── PUBLIC: Full flow for campaign pipeline ────────────────────
 
     async def run_for_campaign(
@@ -59,6 +64,7 @@ class LandingPageAgent:
         campaign_headlines: Dict[str, List[str]],
         conversation_id: str,
         business_context: Dict[str, Any],
+        tracking_phone: str = "",
     ) -> Dict[str, Any]:
         """
         Check/create landing pages for each service in the campaign.
@@ -90,7 +96,7 @@ class LandingPageAgent:
                 results.append({
                     "service": service,
                     "landing_page_id": existing.id,
-                    "url": existing.url or f"/lp/{existing.slug}",
+                    "url": existing.url or self._build_absolute_url(existing.slug),
                     "status": "existing",
                     "audit_score": existing.audit_score,
                     "name": existing.name,
@@ -136,6 +142,36 @@ class LandingPageAgent:
                 )
                 continue
 
+            # Inject tracking phone number into landing page CTAs
+            if tracking_phone:
+                for variant in page_result.get("variants", []):
+                    content = variant.get("content", {})
+                    hero = content.get("hero", {})
+                    if hero:
+                        hero["cta_phone"] = tracking_phone
+                    cta_footer = content.get("cta_footer", {})
+                    if cta_footer:
+                        cta_footer["phone"] = tracking_phone
+                    content["_tracking_phone"] = tracking_phone
+
+            # Create FormsAI contact form and embed it in the landing page
+            form_embed = await self._create_contact_form(
+                service=service,
+                location=location,
+                business_context=business_context,
+                campaign_id=None,
+            )
+            if form_embed:
+                # Inject form embed data into each variant's content
+                for variant in page_result.get("variants", []):
+                    content = variant.get("content", {})
+                    content["contact_form"] = {
+                        "embed_slug": form_embed.get("slug", ""),
+                        "embed_url": form_embed.get("embed_url", ""),
+                        "form_id": form_embed.get("form_id", ""),
+                        "share_url": form_embed.get("share_url", ""),
+                    }
+
             # Generate HTML preview for each variant
             variants_with_preview = []
             for variant in page_result.get("variants", []):
@@ -152,16 +188,35 @@ class LandingPageAgent:
             results.append({
                 "service": service,
                 "landing_page_id": page_result.get("landing_page_id"),
-                "url": f"/lp/{page_result.get('slug', '')}",
+                "url": self._build_absolute_url(page_result.get("slug", "")),
                 "status": "generated",
                 "name": page_result.get("name"),
                 "variants": variants_with_preview,
+                "qa_scores": {
+                    v.get("key", chr(65 + i)): {
+                        "score": v.get("qa_score"),
+                        "issues": v.get("qa_issues", []),
+                        "fixed": v.get("qa_fixed", False),
+                    }
+                    for i, v in enumerate(page_result.get("variants", []))
+                },
             })
+
+            # Build QA summary for progress message
+            qa_summary_parts = []
+            for v in page_result.get("variants", []):
+                qs = v.get("qa_score")
+                fixed = v.get("qa_fixed", False)
+                key = v.get("key", "?")
+                if qs is not None:
+                    fix_note = " (auto-fixed)" if fixed else ""
+                    qa_summary_parts.append(f"{key}: {qs}/100{fix_note}")
+            qa_line = f" QA scores: {', '.join(qa_summary_parts)}." if qa_summary_parts else ""
 
             await self._emit_progress(
                 conversation_id,
                 f"Generated 3 landing page variants for '{service}'. "
-                f"Ready for review.",
+                f"QA reviewed by Claude.{qa_line} Ready for review.",
                 "landing_page_ready",
                 extra={
                     "type": "landing_page_preview",
@@ -173,6 +228,8 @@ class LandingPageAgent:
                             "key": v.get("key"),
                             "name": v.get("name"),
                             "preview_html": v.get("preview_html", ""),
+                            "qa_score": v.get("qa_score"),
+                            "qa_fixed": v.get("qa_fixed", False),
                         }
                         for v in variants_with_preview
                     ],
@@ -289,8 +346,8 @@ class LandingPageAgent:
         lp.status = "published"
         lp.published_at = datetime.now(timezone.utc)
 
-        # Set the final URL
-        page_url = lp.url or f"/lp/{lp.slug}"
+        # Set the final URL (absolute for Google Ads)
+        page_url = lp.url or self._build_absolute_url(lp.slug)
 
         # Audit the page content
         try:
@@ -422,8 +479,15 @@ class LandingPageAgent:
         self,
         landing_page_id: str,
         conversation_id: str = "",
+        engine: str = "google",
+        engine_model: str = "",
     ) -> Dict[str, Any]:
-        """Generate hero and section images for all variants using SEOpix."""
+        """Generate hero and section images for all variants using SEOpix.
+
+        Args:
+            engine: Image engine — 'google' (default), 'dalle', 'flux', 'stability'
+            engine_model: Sub-model override
+        """
         from app.integrations.image_generator.client import ImageGeneratorClient
 
         lp = await self.db.get(LandingPage, landing_page_id)
@@ -433,6 +497,13 @@ class LandingPageAgent:
         img_client = ImageGeneratorClient()
         if not img_client.is_configured:
             return {"error": "Image generator not configured"}
+
+        # Build engine-specific kwargs
+        engine_kwargs: Dict[str, str] = {}
+        if engine_model:
+            model_key = {"google": "google_model", "flux": "flux_model", "stability": "stability_model"}.get(engine)
+            if model_key:
+                engine_kwargs[model_key] = engine_model
 
         biz_ctx = await self._get_business_context()
         results = []
@@ -452,9 +523,10 @@ class LandingPageAgent:
             try:
                 img_result = await img_client.generate_single(
                     prompt=prompt,
-                    engine="dalle",
+                    engine=engine,
                     style="photorealistic",
                     size="1792x1024",
+                    **engine_kwargs,
                     metadata={
                         "businessName": biz_ctx.get("name", ""),
                         "businessType": biz_ctx.get("industry", "service"),
@@ -508,6 +580,50 @@ class LandingPageAgent:
             ).order_by(LandingPage.created_at.desc()).limit(1)
         )
         return result.scalar_one_or_none()
+
+    # ── PRIVATE: Create FormsAI contact form ──────────────────────
+
+    async def _create_contact_form(
+        self,
+        service: str,
+        location: str,
+        business_context: Dict[str, Any],
+        campaign_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Create a contact form via FormsAI/BotForms for the landing page.
+        Returns embed info (slug, embed_url, form_id) or None if unavailable.
+        """
+        try:
+            from app.integrations.formsai.client import formsai_client
+
+            if not formsai_client.available:
+                logger.debug("FormsAI not configured — skipping contact form creation")
+                return None
+
+            form_result = await formsai_client.create_landing_page_form(
+                service=service,
+                location=location,
+                business_name=business_context.get("name", business_context.get("business_name", "")),
+                business_phone=business_context.get("phone", ""),
+                business_email=business_context.get("email", ""),
+                notify_email=business_context.get("email", ""),
+                campaign_id=campaign_id,
+                tenant_id=self.tenant_id,
+            )
+
+            if form_result:
+                logger.info(
+                    "FormsAI contact form created for landing page",
+                    service=service,
+                    form_id=form_result.get("form_id"),
+                    slug=form_result.get("slug"),
+                )
+            return form_result
+
+        except Exception as e:
+            logger.error("FormsAI form creation failed", error=str(e), service=service)
+            return None
 
     # ── PRIVATE: Generate landing page via existing service ───────
 
@@ -677,12 +793,29 @@ class LandingPageAgent:
                 <div style="color:#555;font-size:14px;line-height:1.6;">{_esc(faq_item.get("answer", ""))}</div>
             </div>'''
 
+        city = business_context.get("city", "")
+        state = business_context.get("state", "")
+
         html = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Google Tag Manager placeholder - configure GTM ID in settings -->
 <link href="https://fonts.googleapis.com/css2?family={font}:wght@400;600;700&display=swap" rel="stylesheet">
+<script type="application/ld+json">
+{{
+  "@context": "https://schema.org",
+  "@type": "LocalBusiness",
+  "name": "{_esc(biz_name)}",
+  "telephone": "{_esc(phone)}",
+  "address": {{
+    "@type": "PostalAddress",
+    "addressLocality": "{_esc(city)}",
+    "addressRegion": "{_esc(state)}"
+  }}
+}}
+</script>
 <style>
   * {{ margin:0; padding:0; box-sizing:border-box; }}
   body {{ font-family:'{font}',system-ui,sans-serif; color:#111; background:#f8f9fa; }}
@@ -690,7 +823,7 @@ class LandingPageAgent:
   a {{ text-decoration:none; }}
 </style>
 </head>
-<body>
+<body data-gtm-ready="true">
 
 <!-- HERO -->
 <section style="background:linear-gradient(135deg, {primary_color}, {_darken(primary_color)});color:#fff;padding:48px 20px 40px;text-align:center;">
@@ -748,6 +881,9 @@ class LandingPageAgent:
   </div>
 </section>""" if faq_html else ""}
 
+<!-- CONTACT FORM -->
+{self._render_form_section(content, primary_color, accent_color)}
+
 <!-- CTA FOOTER -->
 <section style="background:linear-gradient(135deg, {primary_color}, {_darken(primary_color)});color:#fff;padding:48px 20px;text-align:center;">
   <div class="container">
@@ -764,6 +900,66 @@ class LandingPageAgent:
 </html>'''
 
         return html
+
+    def _render_form_section(
+        self,
+        content: Dict[str, Any],
+        primary_color: str,
+        accent_color: str,
+    ) -> str:
+        """
+        Render the contact form section. If a FormsAI embed slug exists in the
+        content, render an iframe embed. Otherwise, render a built-in HTML form
+        that posts to the FormsAI endpoint or falls back to a tel: CTA.
+        """
+        form_data = content.get("contact_form", {})
+        embed_slug = form_data.get("embed_slug", "")
+        embed_url = form_data.get("embed_url", "")
+
+        if embed_slug or embed_url:
+            # FormsAI embedded form
+            src = embed_url or f"https://botforms.ai/embed?slug={embed_slug}"
+            return f'''
+<section id="contact-form" style="padding:48px 20px;background:#f8f9fa;">
+  <div class="container">
+    <h2 style="text-align:center;font-size:26px;margin-bottom:8px;color:#111;">Get Your Free Quote</h2>
+    <p style="text-align:center;color:#555;font-size:15px;margin-bottom:24px;">Fill out the form below and we'll get back to you within minutes</p>
+    <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:16px;box-shadow:0 4px 20px rgba(0,0,0,0.08);overflow:hidden;">
+      <iframe src="{src}" width="100%" height="650" frameborder="0" loading="lazy"
+        style="border:none;display:block;"></iframe>
+    </div>
+  </div>
+</section>'''
+
+        # Fallback: simple inline form (no FormsAI integration)
+        return f'''
+<section id="contact-form" style="padding:48px 20px;background:#f8f9fa;">
+  <div class="container">
+    <h2 style="text-align:center;font-size:26px;margin-bottom:8px;color:#111;">Request a Free Quote</h2>
+    <p style="text-align:center;color:#555;font-size:15px;margin-bottom:24px;">We'll respond within minutes</p>
+    <div style="max-width:480px;margin:0 auto;background:#fff;padding:32px;border-radius:16px;box-shadow:0 4px 20px rgba(0,0,0,0.08);">
+      <div style="margin-bottom:16px;">
+        <label style="display:block;font-size:13px;font-weight:600;color:#333;margin-bottom:6px;">Full Name *</label>
+        <input type="text" placeholder="Your full name" style="width:100%;padding:12px 16px;border:1px solid #ddd;border-radius:8px;font-size:15px;outline:none;" />
+      </div>
+      <div style="margin-bottom:16px;">
+        <label style="display:block;font-size:13px;font-weight:600;color:#333;margin-bottom:6px;">Phone Number *</label>
+        <input type="tel" placeholder="(555) 123-4567" style="width:100%;padding:12px 16px;border:1px solid #ddd;border-radius:8px;font-size:15px;outline:none;" />
+      </div>
+      <div style="margin-bottom:16px;">
+        <label style="display:block;font-size:13px;font-weight:600;color:#333;margin-bottom:6px;">Email</label>
+        <input type="email" placeholder="you@example.com" style="width:100%;padding:12px 16px;border:1px solid #ddd;border-radius:8px;font-size:15px;outline:none;" />
+      </div>
+      <div style="margin-bottom:24px;">
+        <label style="display:block;font-size:13px;font-weight:600;color:#333;margin-bottom:6px;">How can we help?</label>
+        <textarea placeholder="Describe your situation..." rows="3" style="width:100%;padding:12px 16px;border:1px solid #ddd;border-radius:8px;font-size:15px;outline:none;resize:vertical;"></textarea>
+      </div>
+      <button style="width:100%;padding:14px;background:{accent_color};color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:700;cursor:pointer;">
+        Get My Free Quote
+      </button>
+    </div>
+  </div>
+</section>'''
 
 
 # ── HELPER FUNCTIONS ──────────────────────────────────────────────

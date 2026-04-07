@@ -93,6 +93,11 @@ class Settings(BaseSettings):
     # Ahrefs API (keyword intelligence for campaign pipeline)
     AHREFS_API_KEY: str = ""
 
+    # FormsAI / BotForms (contact form engine for landing pages)
+    FORMSAI_API_URL: str = "https://formsai-backend-bz0j.onrender.com"
+    FORMSAI_API_KEY: str = ""  # JWT token for FormsAI API auth
+    FORMSAI_EMBED_URL: str = "https://botforms.ai"
+
     # CallFlux Bridge (cross-platform LSA + call data)
     CALLFLUX_BRIDGE_API_KEY: str = ""
     CALLFLUX_API_URL: str = ""  # e.g. https://callflux-api.onrender.com

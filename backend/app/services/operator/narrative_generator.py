@@ -1,11 +1,11 @@
 """
-Narrative Generator — uses LLM to produce plain-English executive summary
+Narrative Generator — uses Claude Opus to produce plain-English executive summary
 and strategic analysis from scan results.
 """
 import json
 import structlog
 from typing import List, Optional, Dict, Any
-from openai import AsyncOpenAI
+import anthropic
 
 from app.core.config import settings
 from app.services.operator.schemas import (
@@ -23,26 +23,32 @@ async def generate_narrative(
 ) -> str:
     """
     Generate a plain-English AI narrative explaining the scan findings.
-    Falls back to template-based narrative if LLM is unavailable.
+    Uses Claude Opus for quality, falls back to OpenAI then template.
     """
-    if settings.OPENAI_API_KEY:
+    # Try Claude Opus first
+    if settings.ANTHROPIC_API_KEY:
         try:
-            return await _llm_narrative(snapshot, summary, recommendations, business_context)
+            return await _claude_narrative(snapshot, summary, recommendations, business_context)
         except Exception as e:
-            logger.error("LLM narrative generation failed, using template", error=str(e))
+            logger.error("Claude narrative generation failed", error=str(e))
+
+    # Fallback to OpenAI
+    if getattr(settings, "OPENAI_API_KEY", ""):
+        try:
+            return await _openai_narrative_fallback(snapshot, summary, recommendations, business_context)
+        except Exception as e:
+            logger.error("OpenAI narrative fallback failed", error=str(e))
 
     return _template_narrative(snapshot, summary, recommendations)
 
 
-async def _llm_narrative(
+def _build_narrative_prompt(
     snapshot: AccountSnapshot,
     summary: ExecutiveSummary,
     recommendations: List[RecommendationOutput],
     business_context: Optional[Dict[str, Any]] = None,
 ) -> str:
-    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-
-    # Build compact recommendation summary for the prompt
+    """Build the narrative prompt (shared between Claude and OpenAI)."""
     rec_summary = {}
     for rec in recommendations:
         group = rec.group_name.value
@@ -56,8 +62,8 @@ async def _llm_narrative(
 
     biz = business_context or {}
 
-    prompt = f"""You are the AI Campaign Operator for IntelliAds.ai — a senior Google Ads strategist
-analyzing a client's account.
+    return f"""You are the Deep Optimizer for IntelliAds.ai — an elite Google Ads strategist
+analyzing a client's account after a comprehensive multi-pass scan.
 
 ACCOUNT CONTEXT:
 - Business: {biz.get('business_name', 'Local service business')} in {biz.get('city', 'their market')}
@@ -91,11 +97,48 @@ Write a concise executive summary (3-5 short paragraphs) that:
 
 Write in confident, direct, professional language. No fluff or caveats.
 Use specific numbers from the data. Address the business owner directly ("Your account...").
-Do not use markdown headers — just flowing paragraphs.
-"""
+Do not use markdown headers — just flowing paragraphs."""
+
+
+async def _claude_narrative(
+    snapshot: AccountSnapshot,
+    summary: ExecutiveSummary,
+    recommendations: List[RecommendationOutput],
+    business_context: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Generate narrative using Claude Opus."""
+    client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+    prompt = _build_narrative_prompt(snapshot, summary, recommendations, business_context)
+
+    resp = await client.messages.create(
+        model="claude-opus-4-20250514",
+        max_tokens=1024,
+        temperature=0.7,
+        system="You are the Deep Optimizer — an elite Google Ads strategist producing executive summaries for local business owners. Be direct, use real numbers, and tell a story.",
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    content = ""
+    for block in resp.content:
+        if hasattr(block, "text"):
+            content += block.text
+
+    return content or _template_narrative(snapshot, summary, recommendations)
+
+
+async def _openai_narrative_fallback(
+    snapshot: AccountSnapshot,
+    summary: ExecutiveSummary,
+    recommendations: List[RecommendationOutput],
+    business_context: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Fallback to OpenAI if Claude is unavailable."""
+    from openai import AsyncOpenAI
+    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    prompt = _build_narrative_prompt(snapshot, summary, recommendations, business_context)
 
     response = await client.chat.completions.create(
-        model=settings.OPENAI_MODEL,
+        model=getattr(settings, "OPENAI_MODEL", "gpt-4o-mini"),
         messages=[{"role": "user", "content": prompt}],
         temperature=0.7,
         max_tokens=800,

@@ -131,19 +131,33 @@ class CompetitorIntelService:
         gaps = []
         overused = set(serp_themes.get("overused", []))
 
+        # Expanded angle library — universal + urgency + social + financial
         potential_angles = [
-            "warranty", "guarantee", "same day", "emergency",
-            "financing", "veteran", "family-owned", "certified",
-            "eco-friendly", "transparent pricing", "no hidden fees",
-            "satisfaction guaranteed", "background checked",
+            "warranty", "guarantee", "same day", "transparent pricing",
+            "no hidden fees", "satisfaction guaranteed", "free estimate",
+            "licensed & insured", "background checked", "5-star rated",
+            "emergency", "24/7", "fast response", "same day service",
+            "family-owned", "veteran-owned", "locally owned",
+            "certified", "award-winning", "trusted since",
+            "financing available", "price match", "no trip charge",
+            "upfront pricing", "affordable", "discount",
         ]
 
         dominant = set(serp_themes.get("dominant", []))
+        heatmap_themes = set(
+            t.get("theme", "").lower() if isinstance(t, dict) else str(t).lower()
+            for t in messaging_heatmap.get("themes", [])
+        )
+
         for angle in potential_angles:
-            if angle.split()[0] not in dominant and angle not in overused:
+            angle_words = angle.lower().split()
+            is_dominant = any(w in dominant for w in angle_words if len(w) > 3)
+            is_overused = angle.lower() in overused
+            is_in_heatmap = any(angle.lower() in t for t in heatmap_themes)
+            if not is_dominant and not is_overused and not is_in_heatmap:
                 gaps.append(angle)
 
-        return gaps[:8]
+        return gaps[:10]
 
     def _suggest_differentiation(self, serp_themes: Dict, gaps: List[str]) -> List[str]:
         suggestions = []
