@@ -411,8 +411,15 @@ class CampaignAgentPipeline:
         # ── Agent 1: Strategist (everything depends on this) ──
         await self._emit_progress("Strategist", "running", "Analyzing your business, competitors, and existing campaigns to design the optimal campaign architecture...")
         t0 = time.time()
-        strategy = await self._agent_strategist(context, user_prompt)
-        self._agent_timings.append({"agent": "Strategist", "duration_ms": int((time.time() - t0) * 1000), "status": "done" if strategy else "error"})
+        logger.info("PIPELINE AGENT START: Strategist", conversation_id=conversation_id)
+        try:
+            strategy = await self._agent_strategist(context, user_prompt)
+        except Exception as e:
+            logger.error("PIPELINE AGENT FAILED: Strategist", error=str(e), traceback=traceback.format_exc(), conversation_id=conversation_id)
+            strategy = None
+        elapsed = round(time.time() - t0, 1)
+        logger.info("PIPELINE AGENT END: Strategist", elapsed_seconds=elapsed, success=bool(strategy), conversation_id=conversation_id)
+        self._agent_timings.append({"agent": "Strategist", "duration_ms": int(elapsed * 1000), "status": "done" if strategy else "error"})
         if not strategy:
             await self._emit_progress("Strategist", "error", "Failed to generate strategy")
             await self._finalize_log(exec_log, "failed", error="Strategist agent failed")
@@ -430,17 +437,24 @@ class CampaignAgentPipeline:
         if self.ahrefs.available:
             await self._emit_progress("Keyword Research", "running", "Pulling real search volume & CPC data from Ahrefs...")
             t0 = time.time()
+            logger.info("PIPELINE AGENT START: Ahrefs Enrichment", conversation_id=conversation_id)
             competitor_domains = [
                 c.get("domain", "") for c in context.get("competitors", {}).get("top_competitors", [])[:3]
             ]
-            ahrefs_data = await self.ahrefs.enrich_keyword_research(
-                services=strategy.get("services", []),
-                locations=strategy.get("locations", []),
-                business_website=context["business"].get("website", ""),
-                competitor_domains=competitor_domains,
-                country="us",
-            )
-            self._agent_timings.append({"agent": "Ahrefs Enrichment", "duration_ms": int((time.time() - t0) * 1000), "status": "done", "keywords_found": ahrefs_data.get("summary", {}).get("total_keywords_found", 0)})
+            try:
+                ahrefs_data = await self.ahrefs.enrich_keyword_research(
+                    services=strategy.get("services", []),
+                    locations=strategy.get("locations", []),
+                    business_website=context["business"].get("website", ""),
+                    competitor_domains=competitor_domains,
+                    country="us",
+                )
+            except Exception as e:
+                logger.error("PIPELINE AGENT FAILED: Ahrefs Enrichment", error=str(e), traceback=traceback.format_exc(), conversation_id=conversation_id)
+                ahrefs_data = {}
+            elapsed = round(time.time() - t0, 1)
+            logger.info("PIPELINE AGENT END: Ahrefs Enrichment", elapsed_seconds=elapsed, keywords_found=ahrefs_data.get("summary", {}).get("total_keywords_found", 0), conversation_id=conversation_id)
+            self._agent_timings.append({"agent": "Ahrefs Enrichment", "duration_ms": int(elapsed * 1000), "status": "done", "keywords_found": ahrefs_data.get("summary", {}).get("total_keywords_found", 0)})
             context["ahrefs"] = ahrefs_data
             exec_log.ahrefs_data = ahrefs_data.get("summary", {})
             ahrefs_count = ahrefs_data.get("summary", {}).get("total_keywords_found", 0)
@@ -454,12 +468,26 @@ class CampaignAgentPipeline:
         await self._emit_progress("Extensions", "running", "Generating sitelinks, callouts, and structured snippets...")
 
         t0 = time.time()
+        logger.info("PIPELINE AGENTS START: Keyword Research + Targeting + Extensions (parallel)", conversation_id=conversation_id)
         keywords, targeting, extensions = await asyncio.gather(
             self._agent_keyword_research(context, strategy),
             self._agent_targeting(context, strategy),
             self._agent_extensions(context, strategy),
+            return_exceptions=True,
         )
-        parallel_ms = int((time.time() - t0) * 1000)
+        # Handle exceptions from gather
+        if isinstance(keywords, Exception):
+            logger.error("PIPELINE AGENT FAILED: Keyword Research", error=str(keywords), traceback="".join(traceback.format_exception(type(keywords), keywords, keywords.__traceback__)), conversation_id=conversation_id)
+            keywords = None
+        if isinstance(targeting, Exception):
+            logger.error("PIPELINE AGENT FAILED: Targeting", error=str(targeting), traceback="".join(traceback.format_exception(type(targeting), targeting, targeting.__traceback__)), conversation_id=conversation_id)
+            targeting = None
+        if isinstance(extensions, Exception):
+            logger.error("PIPELINE AGENT FAILED: Extensions", error=str(extensions), traceback="".join(traceback.format_exception(type(extensions), extensions, extensions.__traceback__)), conversation_id=conversation_id)
+            extensions = None
+        parallel_s = round(time.time() - t0, 1)
+        logger.info("PIPELINE AGENTS END: Keyword Research + Targeting + Extensions", elapsed_seconds=parallel_s, kw_ok=bool(keywords), tgt_ok=bool(targeting), ext_ok=bool(extensions), conversation_id=conversation_id)
+        parallel_ms = int(parallel_s * 1000)
         self._agent_timings.append({"agent": "Keyword Research", "duration_ms": parallel_ms, "status": "done" if keywords else "error"})
         self._agent_timings.append({"agent": "Targeting", "duration_ms": parallel_ms, "status": "done" if targeting else "error"})
         self._agent_timings.append({"agent": "Extensions", "duration_ms": parallel_ms, "status": "done" if extensions else "error"})
@@ -477,8 +505,15 @@ class CampaignAgentPipeline:
         # ── Agent 5: Ad Copy (needs keywords for ad group alignment) ──
         await self._emit_progress("Ad Copy", "running", f"Writing 15 headlines + 4 descriptions per ad group with pinning strategy...")
         t0 = time.time()
-        ad_copy = await self._agent_ad_copy(context, strategy, keywords or {})
-        self._agent_timings.append({"agent": "Ad Copy", "duration_ms": int((time.time() - t0) * 1000), "status": "done" if ad_copy else "error"})
+        logger.info("PIPELINE AGENT START: Ad Copy", conversation_id=conversation_id)
+        try:
+            ad_copy = await self._agent_ad_copy(context, strategy, keywords or {})
+        except Exception as e:
+            logger.error("PIPELINE AGENT FAILED: Ad Copy", error=str(e), traceback=traceback.format_exc(), conversation_id=conversation_id)
+            ad_copy = None
+        elapsed = round(time.time() - t0, 1)
+        logger.info("PIPELINE AGENT END: Ad Copy", elapsed_seconds=elapsed, ad_groups=len(ad_copy.get("ad_groups", [])) if ad_copy else 0, conversation_id=conversation_id)
+        self._agent_timings.append({"agent": "Ad Copy", "duration_ms": int(elapsed * 1000), "status": "done" if ad_copy else "error"})
         ag_count = len(ad_copy.get("ad_groups", [])) if ad_copy else 0
 
         # ── RETRY: If ad copy failed or returned 0 ad groups, retry once ──
@@ -516,7 +551,10 @@ class CampaignAgentPipeline:
         # ── CallFlux: Auto-create tracking number BEFORE landing pages ──
         # (so tracking number can be injected into landing page CTAs)
         tracking_num = ""
+        logger.info("PIPELINE STEP START: CallFlux Tracking", conversation_id=conversation_id)
+        t0_cf = time.time()
         tracking_result = await self._setup_callflux_tracking(spec, context)
+        logger.info("PIPELINE STEP END: CallFlux Tracking", elapsed_seconds=round(time.time() - t0_cf, 1), has_number=bool(tracking_result and tracking_result.get("tracking_number")), conversation_id=conversation_id)
         if tracking_result and tracking_result.get("tracking_number"):
             tracking_num = tracking_result["tracking_number"]
             spec["call_extension"] = {"phone": tracking_num, "country_code": "US"}
@@ -590,11 +628,15 @@ class CampaignAgentPipeline:
                 return []
 
         # ── Landing Page Agent: Check/create landing pages per service ──
+        # NOTE: Landing page generation is the biggest time sink (3+ variants x QA x images per service).
+        # TODO: Move landing page generation to a background task. Return the campaign spec first,
+        # then generate landing pages async and update final_urls when ready.
         try:
             from app.services.operator.landing_page_agent import LandingPageAgent
             lp_agent = LandingPageAgent(self.db, self.tenant_id)
             await self._emit_progress("Landing Pages", "running", "Checking landing pages for each service...")
             t0 = time.time()
+            logger.info("PIPELINE AGENT START: Landing Pages", conversation_id=conversation_id, services=len(strategy.get("services", [])))
 
             # Build keyword/headline maps per service
             kw_by_svc = {}
@@ -620,7 +662,9 @@ class CampaignAgentPipeline:
                 business_context=context.get("business", {}),
                 tracking_phone=tracking_num,  # Inject tracking number into CTAs
             )
-            lp_ms = int((time.time() - t0) * 1000)
+            lp_elapsed = round(time.time() - t0, 1)
+            lp_ms = int(lp_elapsed * 1000)
+            logger.info("PIPELINE AGENT END: Landing Pages", elapsed_seconds=lp_elapsed, pages=len(lp_result.get("pages", [])), conversation_id=conversation_id)
             self._agent_timings.append({"agent": "Landing Pages", "duration_ms": lp_ms, "status": "done"})
 
             # Update ad group final_urls with landing page URLs
@@ -642,14 +686,17 @@ class CampaignAgentPipeline:
                 f"linked to ad groups")
 
         except Exception as e:
-            logger.warning("Landing page agent failed — continuing without", error=str(e))
+            logger.error("PIPELINE AGENT FAILED: Landing Pages", error=str(e), traceback=traceback.format_exc(), conversation_id=conversation_id)
             self._agent_timings.append({"agent": "Landing Pages", "duration_ms": 0, "status": "error"})
             await self._emit_progress("Landing Pages", "done", "Skipped (will use existing URLs)")
 
         # ── Image Generation (runs while QA prepares) ──
         image_results = []
         try:
+            logger.info("PIPELINE AGENT START: Image Generation", conversation_id=conversation_id)
+            t0_img = time.time()
             image_results = await _generate_campaign_images()
+            logger.info("PIPELINE AGENT END: Image Generation", elapsed_seconds=round(time.time() - t0_img, 1), images=len(image_results), conversation_id=conversation_id)
             if image_results:
                 spec["_image_results"] = image_results
                 # Add image URLs to PMax asset groups if applicable
@@ -667,10 +714,32 @@ class CampaignAgentPipeline:
         # ── Agent 6: QA Review ──
         await self._emit_progress("Quality Assurance", "running", "Auditing compliance, keyword-ad relevance, character limits, and campaign structure...")
         t0 = time.time()
-        qa_result = await self._agent_qa(spec, context, user_prompt)
-        self._agent_timings.append({"agent": "Quality Assurance", "duration_ms": int((time.time() - t0) * 1000), "status": "done" if qa_result else "error"})
+        logger.info("PIPELINE AGENT START: Quality Assurance", conversation_id=conversation_id)
+        try:
+            qa_result = await self._agent_qa(spec, context, user_prompt)
+        except Exception as e:
+            logger.error("PIPELINE AGENT FAILED: Quality Assurance", error=str(e), traceback=traceback.format_exc(), conversation_id=conversation_id)
+            qa_result = None
+        qa_elapsed = round(time.time() - t0, 1)
+        logger.info("PIPELINE AGENT END: Quality Assurance", elapsed_seconds=qa_elapsed, score=qa_result.get("score") if qa_result else None, conversation_id=conversation_id)
+        self._agent_timings.append({"agent": "Quality Assurance", "duration_ms": int(qa_elapsed * 1000), "status": "done" if qa_result else "error"})
         if qa_result:
             score = qa_result.get("score", 0)
+            # Log critical QA issues so we can see what's failing
+            critical_issues = [i for i in qa_result.get("programmatic_issues", []) if i.get("severity") == "critical"]
+            if critical_issues:
+                logger.warning("QA CRITICAL ISSUES FOUND",
+                    conversation_id=conversation_id,
+                    count=len(critical_issues),
+                    issues=[{"field": i.get("field", ""), "message": i.get("message", ""), "check": i.get("check", "")} for i in critical_issues[:20]],
+                )
+            strategic_issues = qa_result.get("strategic_issues", [])
+            if strategic_issues:
+                logger.info("QA STRATEGIC ISSUES",
+                    conversation_id=conversation_id,
+                    count=len(strategic_issues),
+                    issues=[i.get("message", str(i))[:200] if isinstance(i, dict) else str(i)[:200] for i in strategic_issues[:10]],
+                )
             spec = self._apply_qa_fixes(spec, qa_result)
             prog_count = len(qa_result.get("programmatic_issues", []))
             strat_count = len(qa_result.get("strategic_issues", []))
@@ -709,9 +778,13 @@ class CampaignAgentPipeline:
         }
         await self._finalize_log(exec_log, "completed", output_summary=output_summary, output_full=spec)
 
+        total_elapsed = round(time.time() - self._pipeline_start, 1)
         logger.info("Campaign pipeline complete",
+            conversation_id=conversation_id,
             campaign_name=spec.get("campaign", {}).get("name"),
             ad_groups=len(spec.get("ad_groups", [])),
+            total_elapsed_seconds=total_elapsed,
+            agent_timings=self._agent_timings,
         )
         return spec
 

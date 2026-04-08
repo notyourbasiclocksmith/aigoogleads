@@ -2436,7 +2436,6 @@ class GoogleAdsClient:
                     ga_service.mutate,
                     customer_id=self.customer_id,
                     mutate_operations=operations,
-                    partial_failure=False,
                 )
             except GoogleAdsException as ex:
                 errors = self._extract_google_ads_errors(ex)
