@@ -64,7 +64,7 @@ ACTION PAYLOAD FORMATS:
 - enable_campaign: {"campaign_id": "123"}
 - update_campaign_budget: {"campaign_id": "123", "new_daily_budget_cents": 5000}
 - create_campaign: {"name": "...", "objective": "OUTCOME_LEADS", "daily_budget_cents": 2000, "special_ad_categories": []}
-- create_adset: {"campaign_id": "...", "name": "...", "daily_budget_cents": 2000, "optimization_goal": "LEAD_GENERATION", "billing_event": "IMPRESSIONS", "targeting": {"geo_locations": {"cities": [{"key": "..."}]}, "age_min": 25, "age_max": 55, "interests": [{"id": "...", "name": "..."}]}, "start_time": "2026-04-10T00:00:00-0500"}
+- create_adset: {"campaign_id": "...", "name": "...", "daily_budget_cents": 2000, "optimization_goal": "LEAD_GENERATION", "billing_event": "IMPRESSIONS", "destination_type": "WEBSITE", "bid_strategy": "LOWEST_COST_WITHOUT_CAP", "targeting": {"geo_locations": {"cities": [{"key": "..."}]}, "age_min": 25, "age_max": 55, "interests": [{"id": "...", "name": "..."}]}, "start_time": "2026-04-10T00:00:00-0500"}
 - create_ad_creative: {"name": "...", "page_id": "PAGE_ID", "message": "Ad copy text", "link": "https://...", "image_url": "https://...", "headline": "25 char headline", "description": "Description text", "call_to_action_type": "CALL_NOW", "instagram_user_id": "IG_ID_IF_AVAILABLE"}
 - create_carousel_creative: {"name": "...", "page_id": "PAGE_ID", "message": "Primary text", "link": "https://...", "cards": [{"name": "Card headline", "description": "...", "image_url": "https://...", "link": "https://..."}], "call_to_action_type": "LEARN_MORE"}
 - create_ad: {"adset_id": "...", "creative_id": "...", "name": "Ad Name"}
@@ -89,6 +89,8 @@ ACTION PAYLOAD FORMATS:
         "daily_budget_cents": 2000,
         "optimization_goal": "LEAD_GENERATION",
         "billing_event": "IMPRESSIONS",
+        "destination_type": "WEBSITE",
+        "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
         "targeting": {"geo_locations": {"cities": [{"key": "2418779", "name": "Arlington"}]}, "age_min": 25, "age_max": 65, "interests": [{"id": "6003139266461", "name": "Locksmith"}]},
         "creatives": [
           {"name": "Creative 1", "message": "Ad primary text...", "link": "https://...", "image_url": "https://...", "headline": "Call Now", "call_to_action_type": "CALL_NOW"}
@@ -119,7 +121,17 @@ META ADS CREATION REQUIREMENTS (CRITICAL):
 7. INSTAGRAM: If instagram_accounts are in the context data, include instagram_user_id in creatives to enable Instagram placements. Without it, ads only run on Facebook.
 8. OBJECTIVES (v21.0): OUTCOME_LEADS (best for local business), OUTCOME_TRAFFIC, OUTCOME_AWARENESS, OUTCOME_ENGAGEMENT, OUTCOME_SALES, OUTCOME_APP_PROMOTION
 9. OPTIMIZATION GOALS: LEAD_GENERATION (forms), LINK_CLICKS (website), LANDING_PAGE_VIEWS, REACH, IMPRESSIONS, CONVERSATIONS (Messenger/WhatsApp)
-10. BUDGET: Minimum daily budget varies by country ($1/day US). Budget in CENTS (e.g., $20/day = 2000). IMPORTANT: For deploy_full_meta_campaign, set budget at the AD SET level only (daily_budget_cents in each adset), NOT at the campaign level. Setting budget at both levels causes a Meta API error.
+10. DESTINATION TYPE (required on ad sets — tells Meta where users go after clicking):
+   - OUTCOME_LEADS: "WEBSITE" (landing page with form), "ON_AD" (instant form / Lead Ad), "MESSENGER", "INSTAGRAM_DIRECT"
+   - OUTCOME_TRAFFIC: "WEBSITE"
+   - OUTCOME_SALES: "WEBSITE" or "APP"
+   - For local businesses using OUTCOME_LEADS: use "WEBSITE" if sending to a landing page, or "ON_AD" for Lead Ads (instant forms that keep users on Facebook/Instagram)
+11. BID STRATEGY (optional on ad sets — controls how Meta bids in the auction):
+   - "LOWEST_COST_WITHOUT_CAP" (default) — Meta gets the most results for your budget
+   - "LOWEST_COST_WITH_BID_CAP" — set a max bid per result (requires bid_amount)
+   - "COST_CAP" — set a target cost per result (Meta stays near this average)
+   - Omit bid_strategy to use Meta's default (lowest cost)
+12. BUDGET: Minimum daily budget varies by country ($1/day US). Budget in CENTS (e.g., $20/day = 2000). IMPORTANT: For deploy_full_meta_campaign, set budget at the AD SET level only (daily_budget_cents in each adset), NOT at the campaign level. Setting budget at both levels causes a Meta API error.
 
 TARGETING RESEARCH FLOW:
 When creating campaigns or when the user asks about targeting:
@@ -152,6 +164,14 @@ When user asks to create a campaign:
 7. Suggest AI-generated images if no image URL provided
 8. For local businesses: use CALL_NOW CTA, target local area, use OUTCOME_LEADS objective
 9. After creation, offer to preview the ads with preview_ad
+
+BILLING & PAYMENT:
+- If the account has no billing method set up (billing_status.has_billing is false), warn the user that ads will not deliver until payment is configured in Meta Business Suite. Provide a direct link: https://business.facebook.com/billing_hub/payment_methods
+- Always check billing status before recommending campaign activation.
+
+BUSINESS VERIFICATION:
+- If business_verification.is_verified is false AND the campaign uses special_ad_categories (HOUSING, CREDIT, EMPLOYMENT, ISSUES_ELECTIONS_POLITICS), warn the user that Meta requires business verification for these ad categories. Ads in these categories may be rejected or limited without verification.
+- Direct users to verify at: https://business.facebook.com/settings/security
 
 IMPORTANT: Only use entity IDs that appear in the provided account data. Never fabricate IDs."""
 
@@ -226,6 +246,21 @@ USER REQUEST: {user_message}"""
         parts.append(f"Account: {acc.get('name', 'Unknown')} (ID: {acc.get('account_id', 'N/A')})")
         parts.append(f"Currency: {acc.get('currency', 'USD')} | Status: {acc.get('account_status', 'N/A')}")
 
+        # Billing status
+        billing = ctx.get("billing_status", {})
+        if billing.get("has_billing"):
+            parts.append(f"BILLING: Payment method configured ({billing.get('funding_source', 'on file')})")
+        else:
+            parts.append(f"BILLING: NO PAYMENT METHOD — ads will NOT deliver until billing is configured")
+
+        # Business verification
+        biz_verify = ctx.get("business_verification", {})
+        biz_name = biz_verify.get("business_name")
+        if biz_name:
+            verified = biz_verify.get("is_verified", False)
+            status = biz_verify.get("verification_status", "unknown")
+            parts.append(f"BUSINESS: {biz_name} | Verified: {'Yes' if verified else f'No ({status})'}")
+
         # Page info (critical for ad creation)
         page_id = ctx.get("page_id")
         page_name = ctx.get("page_name")
@@ -273,6 +308,47 @@ USER REQUEST: {user_message}"""
                     f"Spend:${p.get('spend', 0)} | Impressions:{p.get('impressions', 0)} | "
                     f"Clicks:{p.get('clicks', 0)} | CTR:{p.get('ctr', 0)}% | "
                     f"CPC:${p.get('cpc', 0)} | Reach:{p.get('reach', 0)}"
+                )
+
+        adsets = ctx.get("adsets", [])
+        if adsets:
+            parts.append(f"\nAD SETS ({len(adsets)}):")
+            for s in adsets:
+                budget = s.get("daily_budget") or s.get("lifetime_budget") or "N/A"
+                targeting = s.get("targeting", {})
+                geo = targeting.get("geo_locations", {}) if isinstance(targeting, dict) else {}
+                geo_str = ""
+                if geo.get("cities"):
+                    geo_str = f" | Cities:{[c.get('name','?') for c in geo['cities'][:3]]}"
+                elif geo.get("countries"):
+                    geo_str = f" | Countries:{geo['countries']}"
+                parts.append(
+                    f"  [{s.get('status')}] {s.get('name')} (ID:{s.get('id')}) — "
+                    f"Campaign:{s.get('campaign_id')} | Goal:{s.get('optimization_goal')} | "
+                    f"Budget:{budget} | Billing:{s.get('billing_event')}"
+                    f"{geo_str}"
+                )
+                if s.get("bid_amount"):
+                    parts.append(f"    Bid: {s.get('bid_amount')} ({s.get('bid_strategy', 'N/A')})")
+                if s.get("promoted_object"):
+                    parts.append(f"    Promoted Object: {s.get('promoted_object')}")
+
+        ads_list = ctx.get("ads", [])
+        if ads_list:
+            parts.append(f"\nADS ({len(ads_list)}):")
+            for ad in ads_list:
+                creative = ad.get("creative", {})
+                creative_str = ""
+                if creative:
+                    creative_str = f" | Creative:{creative.get('name', creative.get('id', 'N/A'))}"
+                    if creative.get("body"):
+                        body_preview = creative['body'][:60]
+                        creative_str += f" | Body:{body_preview}..."
+                    if creative.get("call_to_action_type"):
+                        creative_str += f" | CTA:{creative['call_to_action_type']}"
+                parts.append(
+                    f"  [{ad.get('status')}] {ad.get('name')} (ID:{ad.get('id')}) — "
+                    f"AdSet:{ad.get('adset_id')}{creative_str}"
                 )
 
         audiences = ctx.get("audiences", [])

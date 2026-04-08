@@ -99,16 +99,21 @@ class MetaAdsClient:
             p.update(extra)
         return p
 
-    async def _get(self, path: str, params: Optional[Dict] = None) -> Dict[str, Any]:
-        """GET request to Meta API."""
+    async def _get(self, path: str, params: Optional[Dict] = None, max_pages: int = 1) -> Dict[str, Any]:
+        """GET request to Meta API with optional pagination.
+
+        Args:
+            path: API endpoint path.
+            params: Query parameters.
+            max_pages: Maximum number of pages to fetch (default 1 for backward compat).
+                       Set higher to accumulate paginated ``data`` arrays.
+        """
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(
                 f"{META_API_BASE}/{path}",
                 params=self._params(params),
             )
-            if resp.status_code == 200:
-                return resp.json()
-            else:
+            if resp.status_code != 200:
                 error_data = {}
                 try:
                     error_data = resp.json().get("error", {})
@@ -120,6 +125,30 @@ class MetaAdsClient:
                 logger.error("Meta API GET error", path=path, error=error,
                     code=error_code, subcode=error_subcode)
                 return {"error": error, "error_code": error_code, "error_subcode": error_subcode}
+
+            result = resp.json()
+
+            # Paginate if the response has a "data" array and more pages exist
+            if max_pages > 1 and "data" in result:
+                all_data = list(result["data"])
+                pages_fetched = 1
+                next_url = result.get("paging", {}).get("next")
+
+                while next_url and pages_fetched < max_pages:
+                    resp = await client.get(next_url)
+                    if resp.status_code != 200:
+                        break
+                    page = resp.json()
+                    page_data = page.get("data", [])
+                    if not page_data:
+                        break
+                    all_data.extend(page_data)
+                    pages_fetched += 1
+                    next_url = page.get("paging", {}).get("next")
+
+                result["data"] = all_data
+
+            return result
 
     async def _post(self, path: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """POST request to Meta API."""
@@ -161,6 +190,41 @@ class MetaAdsClient:
         )
         return result.get("data", []) if "error" not in result else []
 
+    async def check_billing_status(self) -> Dict[str, Any]:
+        """Check if the ad account has a valid billing/payment method."""
+        account = await self.get_account_info()
+        if "error" in account:
+            return {"has_billing": False, "funding_source": None, "error": account.get("error")}
+        funding = account.get("funding_source_details")
+        has_billing = bool(funding and funding.get("id"))
+        funding_source = None
+        if has_billing:
+            display_string = funding.get("display_string", "")
+            fund_type = funding.get("type", "")
+            funding_source = display_string or fund_type or "Payment method on file"
+        return {"has_billing": has_billing, "funding_source": funding_source}
+
+    async def get_business_verification_status(self) -> Dict[str, Any]:
+        """Check if the ad account's business is verified."""
+        account = await self.get_account_info()
+        if "error" in account:
+            return {"is_verified": False, "business_name": None, "error": account.get("error")}
+        business = account.get("business")
+        if not business:
+            return {"is_verified": False, "business_name": None}
+        business_id = business.get("id")
+        if not business_id:
+            return {"is_verified": False, "business_name": business.get("name")}
+        biz_info = await self._get(business_id, {"fields": "id,name,verification_status"})
+        if "error" in biz_info:
+            return {"is_verified": False, "business_name": business.get("name")}
+        verification_status = biz_info.get("verification_status", "not_verified")
+        return {
+            "is_verified": verification_status == "verified",
+            "verification_status": verification_status,
+            "business_name": biz_info.get("name") or business.get("name"),
+        }
+
     # ── Campaigns ──────────────────────────────────────────────
 
     async def get_campaigns(self, status_filter: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -171,7 +235,7 @@ class MetaAdsClient:
         }
         if status_filter:
             params["filtering"] = f'[{{"field":"status","operator":"EQUAL","value":"{status_filter}"}}]'
-        result = await self._get(f"{self._act}/campaigns", params)
+        result = await self._get(f"{self._act}/campaigns", params, max_pages=3)
         return result.get("data", []) if "error" not in result else []
 
     async def get_campaign_insights(
@@ -205,14 +269,20 @@ class MetaAdsClient:
 
     # ── Ad Sets ────────────────────────────────────────────────
 
-    async def get_adsets(self, campaign_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """List ad sets."""
-        parent = campaign_id if campaign_id else self._act
+    async def get_adsets(self, campaign_id: Optional[str] = None, campaign_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """List ad sets. Filter by single campaign_id or multiple campaign_ids."""
         params = {
-            "fields": "id,name,status,daily_budget,lifetime_budget,optimization_goal,billing_event,targeting,start_time,end_time,promoted_object,destination_type",
+            "fields": "id,name,campaign_id,status,optimization_goal,billing_event,daily_budget,lifetime_budget,targeting,start_time,end_time,promoted_object,bid_amount,bid_strategy",
             "limit": 100,
         }
-        result = await self._get(f"{parent}/adsets", params)
+        # If a single campaign_id is provided, query that campaign's adsets directly
+        if campaign_id:
+            result = await self._get(f"{campaign_id}/adsets", params, max_pages=3)
+            return result.get("data", []) if "error" not in result else []
+        # If multiple campaign_ids, filter at account level
+        if campaign_ids:
+            params["filtering"] = json.dumps([{"field": "campaign.id", "operator": "IN", "value": campaign_ids}])
+        result = await self._get(f"{self._act}/adsets", params, max_pages=3)
         return result.get("data", []) if "error" not in result else []
 
     async def get_adset_insights(
@@ -230,14 +300,20 @@ class MetaAdsClient:
 
     # ── Ads ────────────────────────────────────────────────────
 
-    async def get_ads(self, adset_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """List ads."""
-        parent = adset_id if adset_id else self._act
+    async def get_ads(self, adset_id: Optional[str] = None, adset_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """List ads. Filter by single adset_id or multiple adset_ids."""
         params = {
-            "fields": "id,name,status,creative{id,name,title,body,image_url,thumbnail_url,call_to_action_type,link_url,object_story_spec},created_time",
+            "fields": "id,name,adset_id,status,creative{id,name,title,body,image_url,thumbnail_url,call_to_action_type}",
             "limit": 100,
         }
-        result = await self._get(f"{parent}/ads", params)
+        # If a single adset_id is provided, query that adset's ads directly
+        if adset_id:
+            result = await self._get(f"{adset_id}/ads", params, max_pages=3)
+            return result.get("data", []) if "error" not in result else []
+        # If multiple adset_ids, filter at account level
+        if adset_ids:
+            params["filtering"] = json.dumps([{"field": "adset.id", "operator": "IN", "value": adset_ids}])
+        result = await self._get(f"{self._act}/ads", params, max_pages=3)
         return result.get("data", []) if "error" not in result else []
 
     async def get_ad_insights(
@@ -296,6 +372,27 @@ class MetaAdsClient:
                 "image_url": images[first_key].get("url"),
                 "name": name,
             }
+        return result
+
+    # ── Video Upload ────────────────────────────────────────────
+
+    async def upload_ad_video(self, video_url: str, name: str = "video") -> Dict[str, Any]:
+        """
+        Upload a video to Meta's ad video library via URL.
+        Meta processes videos asynchronously — the response returns an `id`
+        immediately but the video may still be encoding. The caller can poll
+        GET /{video_id}?fields=status to check processing status.
+        Returns {"video_id": "..."} on success.
+        """
+        result = await self._post(f"{self._act}/advideos", {
+            "file_url": video_url,
+            "name": name,
+        })
+        if "error" in result:
+            return result
+        video_id = result.get("id")
+        if video_id:
+            return {"video_id": video_id, "name": name, "status": "processing"}
         return result
 
     # ── Write Operations ───────────────────────────────────────
@@ -357,12 +454,18 @@ class MetaAdsClient:
         promoted_object: Optional[Dict] = None,
         destination_type: Optional[str] = None,
         bid_amount: Optional[int] = None,
+        bid_strategy: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Create an ad set with proper Meta-required fields.
         targeting MUST include geo_locations and age_min/age_max at minimum.
         When using lifetime_budget, end_time is REQUIRED by Meta.
+        bid_strategy: LOWEST_COST_WITHOUT_CAP, LOWEST_COST_WITH_BID_CAP, or COST_CAP.
         """
+        valid_bid_strategies = ["LOWEST_COST_WITHOUT_CAP", "LOWEST_COST_WITH_BID_CAP", "COST_CAP"]
+        if bid_strategy and bid_strategy not in valid_bid_strategies:
+            return {"error": f"Invalid bid_strategy '{bid_strategy}'. Valid: {valid_bid_strategies}"}
+
         if optimization_goal not in VALID_OPTIMIZATION_GOALS:
             return {"error": f"Invalid optimization_goal '{optimization_goal}'. Valid: {VALID_OPTIMIZATION_GOALS}"}
 
@@ -405,19 +508,27 @@ class MetaAdsClient:
             data["destination_type"] = destination_type
         if bid_amount:
             data["bid_amount"] = str(bid_amount)
+        if bid_strategy:
+            data["bid_strategy"] = bid_strategy
 
         return await self._post(f"{self._act}/adsets", data)
 
     async def create_ad(
         self, adset_id: str, name: str, creative_id: str, status: str = "PAUSED",
+        tracking_specs: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        """Create an ad linking to an existing creative."""
-        return await self._post(f"{self._act}/ads", {
+        """Create an ad linking to an existing creative.
+        tracking_specs format: [{"action.type": ["offsite_conversion"], "fb_pixel": [pixel_id]}]
+        """
+        data: Dict[str, Any] = {
             "name": name,
             "adset_id": adset_id,
             "creative": json.dumps({"creative_id": creative_id}),
             "status": status,
-        })
+        }
+        if tracking_specs:
+            data["tracking_specs"] = json.dumps(tracking_specs)
+        return await self._post(f"{self._act}/ads", data)
 
     async def create_ad_creative(
         self, name: str, page_id: str, message: str,
@@ -558,6 +669,8 @@ class MetaAdsClient:
         performance = await self.get_all_campaign_performance(date_from, date_to)
         audiences = await self.get_custom_audiences()
         instagram_accounts = await self.get_instagram_accounts()
+        adsets = await self.get_adsets()
+        ads = await self.get_ads()
 
         # Compute heuristics
         total_spend = sum(float(p.get("spend", 0)) for p in performance)
@@ -570,6 +683,8 @@ class MetaAdsClient:
             "account": account,
             "campaigns": campaigns,
             "performance": performance,
+            "adsets": adsets,
+            "ads": ads,
             "audiences": audiences,
             "instagram_accounts": instagram_accounts,
             "heuristics": {

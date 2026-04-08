@@ -224,14 +224,16 @@ class MetaAdsMutationService:
 
     # ── Ad Operations ─────────────────────────────────────────
 
-    async def _create_ad(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    async def _create_ad(self, payload: Dict[str, Any], tracking_specs: list = None) -> Dict[str, Any]:
         adset_id = payload.get("adset_id")
         creative_id = payload.get("creative_id")
         if not adset_id or not creative_id:
             return {"status": "failed", "error": "adset_id and creative_id are required"}
 
         name = payload.get("name", "New Ad")
-        result = await self.client.create_ad(adset_id, name, creative_id, "PAUSED")
+        # Allow tracking_specs from payload or passed explicitly
+        specs = tracking_specs or payload.get("tracking_specs")
+        result = await self.client.create_ad(adset_id, name, creative_id, "PAUSED", tracking_specs=specs)
         if "error" in result:
             return {"status": "failed", "error": result["error"]}
         return {"status": "success", "ad_id": result.get("id"), "name": name}
@@ -333,6 +335,14 @@ class MetaAdsMutationService:
         # 2. Create Ad Sets
         objective = campaign_data.get("objective", "OUTCOME_LEADS")
         conversion_objectives = {"OUTCOME_SALES", "OUTCOME_LEADS"}
+
+        # Build tracking_specs for conversion campaigns (pixel tracking on ads)
+        conversion_tracking_specs = None
+        if objective in conversion_objectives and self.pixel_id:
+            conversion_tracking_specs = [
+                {"action.type": ["offsite_conversion"], "fb_pixel": [self.pixel_id]}
+            ]
+
         adsets = payload.get("adsets", [payload.get("adset", {})])
         for adset_data in adsets:
             if not adset_data:
@@ -368,11 +378,14 @@ class MetaAdsMutationService:
                     continue
 
                 # Create ad linking creative to adset
-                ad_result = await self._create_ad({
-                    "adset_id": adset_id,
-                    "creative_id": creative_result["creative_id"],
-                    "name": creative_data.get("ad_name", creative_data.get("name", "AI Ad")),
-                })
+                ad_result = await self._create_ad(
+                    {
+                        "adset_id": adset_id,
+                        "creative_id": creative_result["creative_id"],
+                        "name": creative_data.get("ad_name", creative_data.get("name", "AI Ad")),
+                    },
+                    tracking_specs=conversion_tracking_specs,
+                )
                 results["steps"].append({"step": "ad", "result": ad_result})
                 if ad_result.get("status") != "success":
                     results["status"] = "partial"

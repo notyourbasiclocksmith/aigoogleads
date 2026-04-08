@@ -34,4 +34,21 @@ class MetaAdsContextService:
         if self.page_id:
             context["page_id"] = self.page_id
             context["page_name"] = self.page_name or "Unknown Page"
+
+        # Add billing status
+        try:
+            billing = await self.client.check_billing_status()
+            context["billing_status"] = billing
+        except Exception as e:
+            logger.warning("Failed to fetch billing status", error=str(e))
+            context["billing_status"] = {"has_billing": False, "funding_source": None, "error": str(e)}
+
+        # Add business verification status
+        try:
+            verification = await self.client.get_business_verification_status()
+            context["business_verification"] = verification
+        except Exception as e:
+            logger.warning("Failed to fetch business verification", error=str(e))
+            context["business_verification"] = {"is_verified": False, "business_name": None, "error": str(e)}
+
         return context

@@ -31,6 +31,10 @@ function SettingsContent() {
   const [showManualInput, setShowManualInput] = useState(false);
   const [metaStatus, setMetaStatus] = useState<any>({ connected: false });
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
+  const [metaAdAccounts, setMetaAdAccounts] = useState<any[]>([]);
+  const [loadingMetaAccounts, setLoadingMetaAccounts] = useState(false);
+  const [showMetaAccountPicker, setShowMetaAccountPicker] = useState(false);
+  const [selectingMetaAccount, setSelectingMetaAccount] = useState(false);
 
   useEffect(() => {
     // Fetch Meta connection status
@@ -908,7 +912,30 @@ function SettingsContent() {
                     <AlertTriangle className="w-3 h-3 inline mr-1" /> {metaStatus.sync_error}
                   </p>
                 )}
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={loadingMetaAccounts}
+                    onClick={async () => {
+                      if (showMetaAccountPicker) {
+                        setShowMetaAccountPicker(false);
+                        return;
+                      }
+                      setLoadingMetaAccounts(true);
+                      try {
+                        const accts = await api.get("/api/meta/ad-accounts");
+                        setMetaAdAccounts(Array.isArray(accts) ? accts : []);
+                        setShowMetaAccountPicker(true);
+                      } catch (e: any) {
+                        alert(e.message || "Failed to load Meta ad accounts");
+                      }
+                      setLoadingMetaAccounts(false);
+                    }}
+                  >
+                    {loadingMetaAccounts ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+                    Change Account
+                  </Button>
                   <Button
                     variant="outline"
                     size="sm"
@@ -920,6 +947,7 @@ function SettingsContent() {
                       try {
                         await api.delete("/api/meta/oauth/disconnect");
                         setMetaStatus({ connected: false });
+                        setShowMetaAccountPicker(false);
                       } catch (e: any) { alert(e.message || "Failed to disconnect"); }
                       finally { setDisconnecting(null); }
                     }}
@@ -927,6 +955,63 @@ function SettingsContent() {
                     {disconnecting === "meta" ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <XCircle className="w-4 h-4 mr-2" />} Disconnect
                   </Button>
                 </div>
+
+                {showMetaAccountPicker && metaAdAccounts.length > 0 && (
+                  <div className="space-y-2 mt-3 p-4 rounded-lg border border-blue-200 bg-blue-50">
+                    <p className="text-sm font-medium text-blue-800">Select a different ad account:</p>
+                    {metaAdAccounts.map((acct: any) => (
+                      <button
+                        key={acct.account_id || acct.id}
+                        disabled={selectingMetaAccount}
+                        onClick={async () => {
+                          const accountId = acct.account_id || acct.id;
+                          if (accountId === metaStatus.ad_account_id) return;
+                          setSelectingMetaAccount(true);
+                          try {
+                            await api.post("/api/meta/ad-accounts/select", { account_id: accountId });
+                            const s = await api.get("/api/meta/oauth/status");
+                            setMetaStatus(s || { connected: false });
+                            setShowMetaAccountPicker(false);
+                          } catch (e: any) {
+                            alert(e.message || "Failed to switch account");
+                          }
+                          setSelectingMetaAccount(false);
+                        }}
+                        className={`w-full flex items-center gap-3 p-3 rounded-lg border text-left transition-all ${
+                          (acct.account_id || acct.id) === metaStatus.ad_account_id
+                            ? "border-blue-500 bg-blue-100 ring-1 ring-blue-500/30"
+                            : "border-slate-200 bg-white hover:border-slate-300"
+                        }`}
+                      >
+                        <Target className={`w-5 h-5 flex-shrink-0 ${
+                          (acct.account_id || acct.id) === metaStatus.ad_account_id ? "text-blue-600" : "text-slate-400"
+                        }`} />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-slate-900 truncate">{acct.name || "Ad Account"}</p>
+                          <p className="text-xs text-slate-500">
+                            ID: {acct.account_id || acct.id}
+                            {acct.currency ? ` · ${acct.currency}` : ""}
+                          </p>
+                        </div>
+                        {(acct.account_id || acct.id) === metaStatus.ad_account_id && (
+                          <Badge variant="default" className="text-xs">Current</Badge>
+                        )}
+                      </button>
+                    ))}
+                    {selectingMetaAccount && (
+                      <div className="flex items-center gap-2 py-2">
+                        <Loader2 className="w-4 h-4 text-blue-600 animate-spin" />
+                        <span className="text-sm text-blue-700">Switching account...</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {showMetaAccountPicker && metaAdAccounts.length === 0 && !loadingMetaAccounts && (
+                  <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 mt-3">
+                    <p className="text-sm text-amber-700">No other ad accounts found. You may need to reconnect with a different Meta account.</p>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="text-center py-6">

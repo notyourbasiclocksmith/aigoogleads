@@ -3,12 +3,53 @@ Brain API — Meta Ads endpoints for Jarvis S2S calls.
 """
 from typing import Optional, Dict
 from fastapi import APIRouter, Depends, Query, Body
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_db, require_brain_api_key, S2SContext
 from app.services.meta_service import MetaService
 
 router = APIRouter(prefix="/meta")
+
+
+# ── Request Body Models ──────────────────────────────────────
+
+class CreateCampaignRequest(BaseModel):
+    name: str
+    objective: str = "OUTCOME_LEADS"
+    daily_budget: int = 2000
+    status: str = "PAUSED"
+
+class CreateAdSetRequest(BaseModel):
+    campaign_id: str
+    name: str
+    daily_budget: int = 2000
+    optimization_goal: str = "LEAD_GENERATION"
+    targeting: Optional[Dict] = None
+    status: str = "PAUSED"
+
+class CreateAdCreativeRequest(BaseModel):
+    name: str
+    page_id: str
+    message: str
+    link: Optional[str] = None
+    image_url: Optional[str] = None
+    call_to_action_type: str = "LEARN_MORE"
+
+class CreateAdRequest(BaseModel):
+    name: str
+    adset_id: str
+    creative_id: str
+    status: str = "PAUSED"
+
+class AiCreateAdCreativeRequest(BaseModel):
+    page_id: str
+    business_name: str = ""
+    business_type: str = ""
+    topic: str
+    link: Optional[str] = None
+    cta_type: str = "LEARN_MORE"
+    include_image: bool = True
 
 
 @router.get("/health")
@@ -68,21 +109,18 @@ async def get_all_performance(
 
 @router.post("/campaigns")
 async def create_campaign(
-    name: str = Query(...),
-    objective: str = Query("OUTCOME_LEADS"),
-    daily_budget: int = Query(2000),
-    status: str = Query("PAUSED"),
+    body: CreateCampaignRequest,
     ctx: S2SContext = Depends(require_brain_api_key),
     db: AsyncSession = Depends(get_db),
 ):
     svc = MetaService(db)
-    return await svc.create_campaign(ctx.tenant_id, name, objective, daily_budget, status)
+    return await svc.create_campaign(ctx.tenant_id, body.name, body.objective, body.daily_budget, body.status)
 
 
 @router.post("/campaigns/{campaign_id}/status")
 async def update_campaign_status(
     campaign_id: str,
-    status: str = Query(...),
+    status: str = Body(..., embed=True),
     ctx: S2SContext = Depends(require_brain_api_key),
     db: AsyncSession = Depends(get_db),
 ):
@@ -93,7 +131,7 @@ async def update_campaign_status(
 @router.post("/campaigns/{campaign_id}/budget")
 async def update_campaign_budget(
     campaign_id: str,
-    daily_budget: int = Query(...),
+    daily_budget: int = Body(..., embed=True),
     ctx: S2SContext = Depends(require_brain_api_key),
     db: AsyncSession = Depends(get_db),
 ):
@@ -127,19 +165,14 @@ async def get_adset_insights(
 
 @router.post("/adsets")
 async def create_adset(
-    campaign_id: str = Query(...),
-    name: str = Query(...),
-    daily_budget: int = Query(2000),
-    optimization_goal: str = Query("LEAD_GENERATION"),
-    targeting: Optional[Dict] = Body(None),
-    status: str = Query("PAUSED"),
+    body: CreateAdSetRequest,
     ctx: S2SContext = Depends(require_brain_api_key),
     db: AsyncSession = Depends(get_db),
 ):
     svc = MetaService(db)
     return await svc.create_adset(
-        ctx.tenant_id, campaign_id, name, daily_budget,
-        optimization_goal, targeting, status,
+        ctx.tenant_id, body.campaign_id, body.name, body.daily_budget,
+        body.optimization_goal, body.targeting, body.status,
     )
 
 
@@ -169,51 +202,37 @@ async def get_ad_insights(
 
 @router.post("/creatives")
 async def create_ad_creative(
-    name: str = Query(...),
-    page_id: str = Query(...),
-    message: str = Query(...),
-    link: Optional[str] = Query(None),
-    image_url: Optional[str] = Query(None),
-    call_to_action_type: str = Query("LEARN_MORE"),
+    body: CreateAdCreativeRequest,
     ctx: S2SContext = Depends(require_brain_api_key),
     db: AsyncSession = Depends(get_db),
 ):
     svc = MetaService(db)
     return await svc.create_ad_creative(
-        ctx.tenant_id, name, page_id, message, link, image_url, call_to_action_type,
+        ctx.tenant_id, body.name, body.page_id, body.message, body.link, body.image_url, body.call_to_action_type,
     )
 
 
 @router.post("/creatives/ai-create")
 async def ai_create_ad_creative(
-    page_id: str = Query(...),
-    business_name: str = Query(""),
-    business_type: str = Query(""),
-    topic: str = Query(...),
-    link: Optional[str] = Query(None),
-    cta_type: str = Query("LEARN_MORE"),
-    include_image: bool = Query(True),
+    body: AiCreateAdCreativeRequest,
     ctx: S2SContext = Depends(require_brain_api_key),
     db: AsyncSession = Depends(get_db),
 ):
     svc = MetaService(db)
     return await svc.ai_create_ad_creative(
-        ctx.tenant_id, page_id, business_name, business_type, topic,
-        link, cta_type, include_image,
+        ctx.tenant_id, body.page_id, body.business_name, body.business_type, body.topic,
+        body.link, body.cta_type, body.include_image,
     )
 
 
 @router.post("/ads")
 async def create_ad(
-    adset_id: str = Query(...),
-    name: str = Query(...),
-    creative_id: str = Query(...),
-    status: str = Query("PAUSED"),
+    body: CreateAdRequest,
     ctx: S2SContext = Depends(require_brain_api_key),
     db: AsyncSession = Depends(get_db),
 ):
     svc = MetaService(db)
-    return await svc.create_ad(ctx.tenant_id, adset_id, name, creative_id, status)
+    return await svc.create_ad(ctx.tenant_id, body.adset_id, body.name, body.creative_id, body.status)
 
 
 # ── Audiences ──────────────────────────────────────────────

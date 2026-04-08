@@ -17,6 +17,7 @@ const steps = [
   { label: "Business Info", subtitle: "Tell us about your business", icon: Building2, color: "from-blue-500 to-indigo-600" },
   { label: "Online Presence", subtitle: "Connect your digital footprint", icon: Globe, color: "from-emerald-500 to-teal-600" },
   { label: "Google Ads", subtitle: "Link your ad account", icon: Link2, color: "from-orange-500 to-amber-600" },
+  { label: "Meta Ads", subtitle: "Connect Facebook & Instagram", icon: Facebook, color: "from-blue-600 to-sky-600" },
   { label: "Goals & Budget", subtitle: "Define your targets", icon: Target, color: "from-purple-500 to-violet-600" },
   { label: "AI Preferences", subtitle: "Set your automation level", icon: Settings2, color: "from-pink-500 to-rose-600" },
 ];
@@ -190,8 +191,28 @@ function OnboardingContent() {
   const [selectingAccount, setSelectingAccount] = useState(false);
   const [manualCustomerId, setManualCustomerId] = useState("");
 
+  // Meta Ads connection state
+  const [metaAdsConnected, setMetaAdsConnected] = useState(false);
+  const [metaAccountName, setMetaAccountName] = useState("");
+  const [metaPageName, setMetaPageName] = useState("");
+
   useEffect(() => {
-    if (searchParams.get("oauth_success") === "true") {
+    const oauthOrigin = searchParams.get("origin");
+    if (oauthOrigin === "onboarding_meta" && searchParams.get("meta_success") === "true") {
+      // Meta OAuth callback
+      setStep(3);
+      setMetaAdsConnected(true);
+      // Fetch Meta connection status to show account info
+      api.get("/api/meta/oauth/status").then((s: any) => {
+        if (s?.connected) {
+          setMetaAccountName(s.account_name || "");
+          setMetaPageName(s.page_name || "");
+        }
+      }).catch(() => {});
+    } else if (oauthOrigin === "onboarding_meta" && searchParams.get("meta_error")) {
+      setStep(3);
+      setError(`Meta Ads connection failed: ${searchParams.get("meta_error")}`);
+    } else if (searchParams.get("oauth_success") === "true") {
       setStep(2);
       setGoogleAdsConnected(true);
       // Fetch accessible customers so user can pick one
@@ -266,6 +287,19 @@ function OnboardingContent() {
         if (data.autonomy_mode) setAutonomyMode(data.autonomy_mode);
         if (data.google_ads_connected) setGoogleAdsConnected(true);
         if (data.service_area) setServiceArea(data.service_area);
+        if (data.meta_ads_connected) {
+          setMetaAdsConnected(true);
+          setMetaAccountName(data.meta_account_name || "");
+          setMetaPageName(data.meta_page_name || "");
+        }
+      }).catch(() => {});
+      // Also check Meta status directly
+      api.get("/api/meta/oauth/status").then((s: any) => {
+        if (s?.connected) {
+          setMetaAdsConnected(true);
+          setMetaAccountName(s.account_name || "");
+          setMetaPageName(s.page_name || "");
+        }
       }).catch(() => {});
     }).catch(() => {});
   }, [router]);
@@ -293,11 +327,13 @@ function OnboardingContent() {
       } else if (step === 2) {
         // Google Ads connection is optional — skip or already connected
       } else if (step === 3) {
+        // Meta Ads connection is optional — skip or already connected
+      } else if (step === 4) {
         await api.post("/api/onboarding/step4", {
           monthly_budget: parseInt(monthlyBudget) || 1000,
           conversion_goal: conversionGoal,
         });
-      } else if (step === 4) {
+      } else if (step === 5) {
         await api.post("/api/onboarding/step5", { autonomy_mode: autonomyMode });
         setOnboardingComplete(true);
         // AIAnalysisScreen handles the redirect to dashboard
@@ -745,8 +781,94 @@ function OnboardingContent() {
                 </div>
               )}
 
-              {/* ═══════ STEP 4: Goals & Budget ═══════ */}
+              {/* ═══════ STEP 4: Meta Ads ═══════ */}
               {step === 3 && (
+                <div className="space-y-6">
+                  <div className="relative rounded-2xl border border-slate-700/50 bg-gradient-to-b from-slate-800/50 to-slate-900/50 p-8 text-center overflow-hidden">
+                    <div className="absolute inset-0 bg-gradient-to-br from-blue-600/5 to-sky-500/5" />
+                    <div className="absolute top-0 right-0 w-32 h-32 bg-blue-600/10 rounded-full blur-3xl" />
+
+                    <div className="relative z-10">
+                      {metaAdsConnected ? (
+                        <>
+                          <div className="w-20 h-20 mx-auto rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center mb-5">
+                            <CheckCircle2 className="w-10 h-10 text-emerald-400" />
+                          </div>
+                          <h3 className="text-xl font-bold text-white mb-2">Meta Ads Connected</h3>
+                          <p className="text-slate-400 max-w-sm mx-auto mb-4">
+                            Your Meta account is linked. We&apos;ll manage your Facebook &amp; Instagram campaigns.
+                          </p>
+                          {(metaAccountName || metaPageName) && (
+                            <div className="space-y-2 max-w-sm mx-auto mb-4">
+                              {metaAccountName && (
+                                <div className="flex items-center justify-center gap-2 text-sm text-slate-300">
+                                  <Target className="w-4 h-4 text-blue-400" />
+                                  <span>Account: {metaAccountName}</span>
+                                </div>
+                              )}
+                              {metaPageName && (
+                                <div className="flex items-center justify-center gap-2 text-sm text-slate-300">
+                                  <Facebook className="w-4 h-4 text-blue-400" />
+                                  <span>Page: {metaPageName}</span>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm font-medium">
+                            <CheckCircle2 className="w-4 h-4" /> Account verified &amp; ready
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="w-20 h-20 mx-auto rounded-2xl bg-gradient-to-br from-blue-600/20 to-sky-500/20 border border-blue-500/30 flex items-center justify-center mb-5">
+                            <Facebook className="w-10 h-10 text-blue-400" />
+                          </div>
+                          <h3 className="text-xl font-bold text-white mb-2">Connect Meta Ads</h3>
+                          <p className="text-slate-400 max-w-sm mx-auto mb-6">
+                            Link your Meta account to create and manage Facebook &amp; Instagram ad campaigns with AI optimization.
+                          </p>
+                          <div className="flex flex-col items-center gap-3">
+                            <Button
+                              size="lg"
+                              onClick={async () => {
+                                try {
+                                  const res = await api.get("/api/meta/oauth/authorize?origin=onboarding");
+                                  if (res.auth_url) window.location.href = res.auth_url;
+                                } catch {
+                                  setError("Meta Ads connection not available. You can connect later from Settings.");
+                                }
+                              }}
+                              className="h-12 px-8 bg-gradient-to-r from-blue-600 to-sky-500 hover:from-blue-700 hover:to-sky-600 text-white font-semibold rounded-xl shadow-lg shadow-blue-500/20 transition-all duration-200"
+                            >
+                              <ExternalLink className="w-4 h-4 mr-2" />
+                              Connect Meta Ads Account
+                            </Button>
+                            <p className="text-xs text-slate-500">You can also connect later from Settings</p>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Benefits */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    {[
+                      { title: "Facebook & Instagram", desc: "Run ads across both platforms", icon: Instagram },
+                      { title: "AI Creative", desc: "AI-generated ad copy & targeting", icon: Sparkles },
+                      { title: "Smart Audiences", desc: "Interest & lookalike targeting", icon: Target },
+                    ].map(({ title, desc, icon: BIcon }) => (
+                      <div key={title} className="p-4 rounded-xl bg-slate-800/30 border border-slate-700/30">
+                        <BIcon className="w-5 h-5 text-blue-400 mb-2" />
+                        <p className="text-sm font-medium text-white">{title}</p>
+                        <p className="text-xs text-slate-500 mt-0.5">{desc}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* ═══════ STEP 5: Goals & Budget ═══════ */}
+              {step === 4 && (
                 <div className="space-y-6">
                   <div className="space-y-3">
                     <label className="text-sm font-medium text-slate-300 flex items-center gap-2">
@@ -812,8 +934,8 @@ function OnboardingContent() {
                 </div>
               )}
 
-              {/* ═══════ STEP 5: AI Preferences ═══════ */}
-              {step === 4 && (
+              {/* ═══════ STEP 6: AI Preferences ═══════ */}
+              {step === 5 && (
                 <div className="space-y-5">
                   <div className="p-4 rounded-xl bg-pink-500/5 border border-pink-500/20">
                     <p className="text-sm text-pink-300 flex items-center gap-2">
@@ -902,16 +1024,18 @@ function OnboardingContent() {
                 onClick={handleNext}
                 disabled={loading}
                 className={`h-11 px-8 rounded-xl font-semibold shadow-lg transition-all duration-200 ${
-                  step === 4
+                  step === 5
                     ? "bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 shadow-emerald-500/20"
                     : "bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 shadow-blue-500/20"
                 } text-white`}
               >
                 {loading ? (
                   <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Saving...</>
-                ) : step === 4 ? (
+                ) : step === 5 ? (
                   <><Rocket className="w-4 h-4 mr-2" /> Launch Dashboard</>
                 ) : step === 2 && !googleAdsConnected ? (
+                  <>Skip for Now <ArrowRight className="w-4 h-4 ml-2" /></>
+                ) : step === 3 && !metaAdsConnected ? (
                   <>Skip for Now <ArrowRight className="w-4 h-4 ml-2" /></>
                 ) : (
                   <>Continue <ArrowRight className="w-4 h-4 ml-2" /></>
