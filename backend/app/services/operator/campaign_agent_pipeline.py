@@ -138,14 +138,14 @@ def _programmatic_qa(spec: Dict[str, Any]) -> List[Dict[str, Any]]:
                 kw_to_ag[text_lower] = ag.get("name", f"#{ag_idx}")
 
     # ── Negative keywords blocking own keywords ──
-    all_keywords = set()
     for ag in spec.get("ad_groups", []):
+        ag_keywords = set()
         for kw in ag.get("keywords", []):
             text = kw.get("text", "").lower() if isinstance(kw, dict) else str(kw).lower()
-            all_keywords.add(text)
+            ag_keywords.add(text)
         for neg in ag.get("negative_keywords", []):
             neg_text = neg.get("text", "").lower() if isinstance(neg, dict) else str(neg).lower()
-            for pos_kw in all_keywords:
+            for pos_kw in ag_keywords:
                 if neg_text in pos_kw:
                     issues.append({
                         "severity": "critical",
@@ -1210,8 +1210,11 @@ Only include promotion_extensions if the business has real offers. Empty array [
         # Group keywords by service for per-ad-group context
         kw_by_service = {}
         for kw in keywords.get("keywords", []):
-            svc = kw.get("service", "")
-            kw_by_service.setdefault(svc, []).append(kw["text"])
+            if isinstance(kw, str):
+                kw_by_service.setdefault("", []).append(kw)
+            elif isinstance(kw, dict):
+                svc = kw.get("service", "")
+                kw_by_service.setdefault(svc, []).append(kw.get("text", ""))
 
         services_context = []
         for svc in services:
@@ -1518,14 +1521,25 @@ Return this JSON:
         # Group keywords by service
         kw_by_service: Dict[str, List] = {}
         for kw in keywords.get("keywords", []):
-            svc = kw.get("service", "")
-            kw_by_service.setdefault(svc, []).append({
-                "text": kw["text"],
-                "match_type": kw.get("match_type", "PHRASE"),
-            })
+            if isinstance(kw, str):
+                kw_by_service.setdefault("", []).append({
+                    "text": kw,
+                    "match_type": "PHRASE",
+                })
+            elif isinstance(kw, dict):
+                svc = kw.get("service", "")
+                kw_by_service.setdefault(svc, []).append({
+                    "text": kw.get("text", ""),
+                    "match_type": kw.get("match_type", "PHRASE"),
+                })
 
         # Global negatives
-        negatives = [n.get("text", "") for n in keywords.get("negatives", []) if n.get("text")]
+        negatives = []
+        for n in keywords.get("negatives", []):
+            if isinstance(n, str):
+                negatives.append(n)
+            elif isinstance(n, dict) and n.get("text"):
+                negatives.append(n["text"])
 
         # Build ad groups by merging keywords + ad copy per service
         ad_groups = []
@@ -1555,7 +1569,7 @@ Return this JSON:
             if not descriptions:
                 descriptions = [
                     f"Professional {svc} services. Call now for a free estimate!"[:90],
-                    f"Licensed & insured. Serving the {strategy.get('locations', ['local'])[0]} area."[:90],
+                    f"Licensed & insured. Serving the {(strategy.get('locations') or ['local'])[0]} area."[:90],
                 ]
                 logger.warning("Using fallback descriptions for ad group", service=svc)
 
@@ -1584,10 +1598,12 @@ Return this JSON:
                 h_dict = {"text": text}
                 # Check if this headline has a pin assignment
                 pin_key = str(i)  # Pinning map uses string indices or headline text
-                pin_pos = headline_pins.get(pin_key) or headline_pins.get(text, "")
-                if pin_pos:
+                pin_pos = headline_pins.get(pin_key)
+                if pin_pos is None:
+                    pin_pos = headline_pins.get(text)
+                if pin_pos is not None:
                     h_dict["pinned_position"] = pin_pos
-                elif isinstance(h, dict) and h.get("pinned_position"):
+                elif isinstance(h, dict) and h.get("pinned_position") is not None:
                     h_dict["pinned_position"] = h["pinned_position"]
                 pinned_headlines.append(h_dict)
 
@@ -1596,15 +1612,17 @@ Return this JSON:
                 text = d if isinstance(d, str) else d.get("text", "") if isinstance(d, dict) else str(d)
                 d_dict = {"text": text}
                 pin_key = str(i)
-                pin_pos = description_pins.get(pin_key) or description_pins.get(text, "")
-                if pin_pos:
+                pin_pos = description_pins.get(pin_key)
+                if pin_pos is None:
+                    pin_pos = description_pins.get(text)
+                if pin_pos is not None:
                     d_dict["pinned_position"] = pin_pos
-                elif isinstance(d, dict) and d.get("pinned_position"):
+                elif isinstance(d, dict) and d.get("pinned_position") is not None:
                     d_dict["pinned_position"] = d["pinned_position"]
                 pinned_descriptions.append(d_dict)
 
             ad_group = {
-                "name": f"{svc} \u2014 {strategy.get('locations', ['DFW'])[0] if strategy.get('locations') else 'All Areas'}",
+                "name": f"{svc} \u2014 {(strategy.get('locations') or ['DFW'])[0] if strategy.get('locations') else 'All Areas'}",
                 "keywords": svc_keywords,
                 "ads": [{
                     "headlines": pinned_headlines,
@@ -1696,12 +1714,31 @@ Return this JSON:
                     text = h if isinstance(h, str) else h.get("text", "")
                     if text.lower().strip() not in seen_headlines:
                         seen_headlines.add(text.lower().strip())
-                        unique_headlines.append(h[:30] if isinstance(h, str) else h)
+                        if isinstance(h, str):
+                            unique_headlines.append(h[:30])
+                        else:
+                            h_copy = dict(h)
+                            h_copy["text"] = h_copy.get("text", "")[:30]
+                            unique_headlines.append(h_copy)
                 ad["headlines"] = unique_headlines
 
                 # Truncate all to limits
-                ad["headlines"] = [h[:30] if isinstance(h, str) else h for h in ad.get("headlines", [])]
-                ad["descriptions"] = [d[:90] if isinstance(d, str) else d for d in ad.get("descriptions", [])]
+                def _truncate_headline(h):
+                    if isinstance(h, str):
+                        return h[:30]
+                    h_copy = dict(h)
+                    h_copy["text"] = h_copy.get("text", "")[:30]
+                    return h_copy
+
+                def _truncate_description(d):
+                    if isinstance(d, str):
+                        return d[:90]
+                    d_copy = dict(d)
+                    d_copy["text"] = d_copy.get("text", "")[:90]
+                    return d_copy
+
+                ad["headlines"] = [_truncate_headline(h) for h in ad.get("headlines", [])]
+                ad["descriptions"] = [_truncate_description(d) for d in ad.get("descriptions", [])]
 
         # Truncate sitelink fields
         for sl in spec.get("sitelinks", []):

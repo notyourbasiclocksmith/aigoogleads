@@ -658,16 +658,24 @@ class LandingPageAgent:
 
     async def _get_business_context(self) -> Dict[str, Any]:
         """Load business profile for this tenant."""
+        from sqlalchemy.orm import selectinload
+        from app.models.tenant import Tenant
+
         result = await self.db.execute(
-            select(BusinessProfile).where(BusinessProfile.tenant_id == self.tenant_id)
+            select(BusinessProfile)
+            .options(selectinload(BusinessProfile.tenant))
+            .where(BusinessProfile.tenant_id == self.tenant_id)
         )
         bp = result.scalar_one_or_none()
         if not bp:
             return {}
 
+        # Business name comes from the Tenant.name field, not description
+        biz_name = (bp.tenant.name if bp.tenant else "") or ""
+
         return {
-            "name": getattr(bp, "description", "") or "",
-            "business_name": getattr(bp, "description", "") or "",
+            "name": biz_name,
+            "business_name": biz_name,
             "industry": bp.industry_classification or "",
             "phone": bp.phone or "",
             "website": bp.website_url or "",
@@ -812,36 +820,57 @@ class LandingPageAgent:
 <meta property="og:type" content="website">
 {og_image_tag}'''
 
-        # Schema.org service items from services_section
+        # Build JSON-LD schema as a Python dict, then serialize with json.dumps
+        # to avoid broken JSON from HTML-escaping quotes inside <script> tags.
+        jsonld_schema: dict = {
+            "@context": "https://schema.org",
+            "@type": ["LocalBusiness", "ProfessionalService"],
+            "name": biz_name,
+            "telephone": phone,
+            "address": {
+                "@type": "PostalAddress",
+                "addressLocality": city,
+                "addressRegion": state,
+            },
+            "areaServed": {
+                "@type": "City",
+                "name": city,
+                "containedInPlace": {
+                    "@type": "State",
+                    "name": state,
+                },
+            },
+        }
+
+        # Service catalog
         service_items = []
         for svc in services_section.get("services", []):
-            svc_name = _esc(svc.get("name", ""))
+            svc_name = svc.get("name", "")
             if svc_name:
-                service_items.append(f'{{"@type": "Offer", "itemOffered": {{"@type": "Service", "name": "{svc_name}"}}}}')
-        service_catalog_json = ""
+                service_items.append({"@type": "Offer", "itemOffered": {"@type": "Service", "name": svc_name}})
         if service_items:
-            service_catalog_json = f''',
-  "hasOfferCatalog": {{
-    "@type": "OfferCatalog",
-    "name": "Services",
-    "itemListElement": [{", ".join(service_items)}]
-  }}'''
+            jsonld_schema["hasOfferCatalog"] = {
+                "@type": "OfferCatalog",
+                "name": "Services",
+                "itemListElement": service_items,
+            }
 
         # Aggregate rating from reviews
         review_list = reviews.get("reviews", [])
-        aggregate_rating_json = ""
         if review_list:
-            review_count = len(review_list)
-            aggregate_rating_json = f''',
-  "aggregateRating": {{
-    "@type": "AggregateRating",
-    "ratingValue": "5",
-    "reviewCount": "{review_count}"
-  }}'''
+            jsonld_schema["aggregateRating"] = {
+                "@type": "AggregateRating",
+                "ratingValue": "5",
+                "reviewCount": str(len(review_list)),
+            }
 
         # URL and image properties
-        url_json = f',\n  "url": "{APP_URL}/lp/{slug}"' if slug else ""
-        image_json = f',\n  "image": "{hero.get("hero_image_url", "")}"' if hero.get("hero_image_url") else ""
+        if slug:
+            jsonld_schema["url"] = f"{APP_URL}/lp/{slug}"
+        if hero.get("hero_image_url"):
+            jsonld_schema["image"] = hero["hero_image_url"]
+
+        jsonld_str = json.dumps(jsonld_schema, indent=2, ensure_ascii=False)
 
         html = f'''<!DOCTYPE html>
 <html lang="en">
@@ -855,25 +884,7 @@ class LandingPageAgent:
 <!-- Google Tag Manager placeholder - configure GTM ID in settings -->
 <link href="https://fonts.googleapis.com/css2?family={font}:wght@400;600;700&display=swap" rel="stylesheet">
 <script type="application/ld+json">
-{{
-  "@context": "https://schema.org",
-  "@type": ["LocalBusiness", "ProfessionalService"],
-  "name": "{_esc(biz_name)}",
-  "telephone": "{_esc(phone)}",
-  "address": {{
-    "@type": "PostalAddress",
-    "addressLocality": "{_esc(city)}",
-    "addressRegion": "{_esc(state)}"
-  }},
-  "areaServed": {{
-    "@type": "City",
-    "name": "{_esc(city)}",
-    "containedInPlace": {{
-      "@type": "State",
-      "name": "{_esc(state)}"
-    }}
-  }}{service_catalog_json}{aggregate_rating_json}{url_json}{image_json}
-}}
+{jsonld_str}
 </script>
 <style>
   * {{ margin:0; padding:0; box-sizing:border-box; }}

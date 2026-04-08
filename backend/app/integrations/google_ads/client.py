@@ -1226,21 +1226,16 @@ class GoogleAdsClient:
                                        bid_modifier: float) -> Dict[str, Any]:
         try:
             client = self._get_client()
-            campaign_bid_modifier_service = client.get_service("CampaignBidModifierService")
+            ga_service = client.get_service("GoogleAdsService")
+            campaign_criterion_service = client.get_service("CampaignCriterionService")
 
-            operation = client.get_type("CampaignBidModifierOperation")
-            modifier = operation.create
-            modifier.campaign = f"customers/{self.customer_id}/campaigns/{campaign_id}"
-            modifier.bid_modifier = bid_modifier
+            operation = client.get_type("CampaignCriterionOperation")
+            criterion = operation.create
+            criterion.campaign = ga_service.campaign_path(self.customer_id, campaign_id)
+            criterion.device.type_ = client.enums.DeviceEnum[device.upper()]
+            criterion.bid_modifier = bid_modifier
 
-            device_map = {
-                "MOBILE": client.enums.DeviceEnum.MOBILE,
-                "TABLET": client.enums.DeviceEnum.TABLET,
-                "DESKTOP": client.enums.DeviceEnum.DESKTOP,
-            }
-            modifier.device.type_ = device_map.get(device.upper(), client.enums.DeviceEnum.MOBILE)
-
-            campaign_bid_modifier_service.mutate_campaign_bid_modifiers(
+            campaign_criterion_service.mutate_campaign_criteria(
                 customer_id=self.customer_id, operations=[operation]
             )
             return {"status": "set", "device": device, "bid_modifier": bid_modifier}
@@ -2437,7 +2432,7 @@ class GoogleAdsClient:
                     ga_service.mutate,
                     customer_id=self.customer_id,
                     mutate_operations=operations,
-                    partial_failure=True,
+                    partial_failure=False,
                 )
             except GoogleAdsException as ex:
                 errors = self._extract_google_ads_errors(ex)

@@ -130,8 +130,11 @@ class GoogleAdsOperatorService:
             return spec
         except Exception as e:
             logger.error("Campaign pipeline failed", error=str(e))
-            # Fall back to Claude's original thin spec
-            return claude_intent.get("payload", {})
+            # Fall back to Claude's original thin spec with degradation flag
+            fallback = claude_intent.get("payload", {})
+            fallback["_pipeline_failed"] = True
+            fallback["_pipeline_error"] = str(e)
+            return fallback
 
     # ── LANDING PAGE ACTION DETECTION & EXECUTION ────────────────
 
@@ -520,13 +523,15 @@ class GoogleAdsOperatorService:
             from app.services.operator.prompt_enhancer import enhance_prompt
             biz_ctx = {}
             from app.models.business_profile import BusinessProfile
+            from app.models.tenant import Tenant
             bp_result = await self.db.execute(
                 select(BusinessProfile).where(BusinessProfile.tenant_id == tenant_id)
             )
             bp = bp_result.scalar_one_or_none()
+            tenant_obj = await self.db.get(Tenant, tenant_id)
             if bp:
                 biz_ctx = {
-                    "name": getattr(bp, "description", "") or "",
+                    "name": (tenant_obj.name if tenant_obj else "") or "",
                     "industry": bp.industry_classification or "",
                     "services": bp.services_json or [],
                     "city": bp.city or "",
@@ -582,29 +587,37 @@ class GoogleAdsOperatorService:
                 claude_intent=intent,
             )
             # Validate pipeline spec has minimum required structure
+            pipeline_failed = pipeline_spec.get("_pipeline_failed", False)
             has_ad_groups = len(pipeline_spec.get("ad_groups", [])) > 0
             has_asset_groups = len(pipeline_spec.get("asset_groups", [])) > 0
             has_campaign = bool(pipeline_spec.get("campaign", {}).get("name"))
-            if not has_campaign or (not has_ad_groups and not has_asset_groups):
+            if pipeline_failed or not has_campaign or (not has_ad_groups and not has_asset_groups):
                 logger.error("Pipeline produced invalid spec — missing campaign or ad groups",
                     has_campaign=has_campaign, ad_groups=has_ad_groups, asset_groups=has_asset_groups)
-            # Replace the thin Claude payload with the pipeline-generated spec
-            for action in claude_response.get("recommended_actions", []):
-                if action.get("action_type") == "deploy_full_campaign":
-                    action["action_payload"] = pipeline_spec
-                    action["label"] = f"Deploy Campaign: {pipeline_spec.get('campaign', {}).get('name', 'AI Campaign')}"
-                    # Enrich reasoning with pipeline metadata
-                    meta = pipeline_spec.get("_pipeline_metadata", {})
-                    qa_score = meta.get("qa_score")
-                    if qa_score:
-                        action["reasoning"] = (
-                            f"{action.get('reasoning', '')} "
-                            f"[Pipeline QA Score: {qa_score}/100]"
-                        ).strip()
+                # Do NOT inject invalid spec — keep original Claude thin payload and warn user
+                claude_response["message"] = (
+                    claude_response.get("message", "") +
+                    "\n\n⚠️ The campaign pipeline failed to produce a valid campaign spec. "
+                    "Please try again or provide more details about the campaign you'd like to create."
+                ).strip()
+            else:
+                # Replace the thin Claude payload with the pipeline-generated spec
+                for action in claude_response.get("recommended_actions", []):
+                    if action.get("action_type") == "deploy_full_campaign":
+                        action["action_payload"] = pipeline_spec
+                        action["label"] = f"Deploy Campaign: {pipeline_spec.get('campaign', {}).get('name', 'AI Campaign')}"
+                        # Enrich reasoning with pipeline metadata
+                        meta = pipeline_spec.get("_pipeline_metadata", {})
+                        qa_score = meta.get("qa_score")
+                        if qa_score:
+                            action["reasoning"] = (
+                                f"{action.get('reasoning', '')} "
+                                f"[Pipeline QA Score: {qa_score}/100]"
+                            ).strip()
 
-                    # Attach image prompts from enhancer for post-deploy generation
-                    if enhanced_data.get("image_prompts"):
-                        pipeline_spec["_image_prompts"] = enhanced_data["image_prompts"]
+                        # Attach image prompts from enhancer for post-deploy generation
+                        if enhanced_data.get("image_prompts"):
+                            pipeline_spec["_image_prompts"] = enhanced_data["image_prompts"]
 
         # ── LANDING PAGE ACTION INTERCEPT: Auto-execute landing page actions
         # since they are non-destructive (don't modify ad account) ──

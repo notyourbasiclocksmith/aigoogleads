@@ -217,6 +217,7 @@ class LLMFallbackService:
         last_error: Exception | None = None
 
         for attempt in range(2):
+            raw = ""
             try:
                 response = await self._anthropic.messages.create(
                     model=model,
@@ -337,6 +338,13 @@ class LLMFallbackService:
                     ],
                 )
                 raw = response.choices[0].message.content
+                if raw is None:
+                    logger.warning(
+                        "openai_null_content",
+                        model=model,
+                        attempt=attempt + 1,
+                    )
+                    continue
                 return json.loads(raw)
 
             except (json.JSONDecodeError, IndexError, KeyError) as exc:
