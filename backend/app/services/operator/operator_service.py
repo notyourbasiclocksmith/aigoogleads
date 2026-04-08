@@ -109,6 +109,7 @@ class GoogleAdsOperatorService:
         user_message: str,
         account_context: Dict[str, Any],
         claude_intent: Dict[str, Any],
+        image_engine: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run the multi-agent pipeline and return the enriched deploy_full_campaign payload."""
         pipeline = CampaignAgentPipeline(self.db, tenant_id, customer_id)
@@ -120,6 +121,7 @@ class GoogleAdsOperatorService:
                 "services": intent_payload.get("services"),
                 "locations": intent_payload.get("locations"),
                 "forward_phone": intent_payload.get("forward_phone"),
+                "image_engine": image_engine or "google",
             }
             spec = await pipeline.run(
                 user_prompt=user_message,
@@ -585,6 +587,7 @@ class GoogleAdsOperatorService:
                 user_message=effective_message,
                 account_context=account_context,
                 claude_intent=intent,
+                image_engine=image_engine,
             )
             # Validate pipeline spec has minimum required structure
             pipeline_failed = pipeline_spec.get("_pipeline_failed", False)

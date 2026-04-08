@@ -100,12 +100,10 @@ class CallFluxClient:
             "password": password,
         }
 
+        url = f"{self.base_url}/api/auth/register"
         try:
             async with httpx.AsyncClient(timeout=CALLFLUX_TIMEOUT) as client:
-                resp = await client.post(
-                    f"{self.base_url}/api/auth/register",
-                    json=payload,
-                )
+                resp = await client.post(url, json=payload)
                 if resp.status_code in (200, 201):
                     data = resp.json()
                     logger.info("CallFlux tenant registered",
@@ -122,12 +120,22 @@ class CallFluxClient:
                     logger.info("CallFlux tenant already exists, attempting login",
                         email=email)
                     return await self.login(email, password)
+                elif resp.status_code == 404:
+                    logger.error("CallFlux registration endpoint not found (404). "
+                        "Check CALLFLUX_API_URL configuration — the API may be "
+                        "down or the URL may be incorrect.",
+                        url=url, base_url=self.base_url)
+                    return {"error": f"CallFlux API not reachable (404). Verify CALLFLUX_API_URL={self.base_url} is correct and the service is running."}
                 else:
                     logger.error("CallFlux registration failed",
-                        status=resp.status_code, body=resp.text[:200])
+                        status=resp.status_code, url=url, body=resp.text[:200])
                     return {"error": f"Registration failed: {resp.status_code}"}
+        except httpx.ConnectError as e:
+            logger.error("CallFlux connection failed — service may be down or URL is wrong",
+                url=url, error=str(e))
+            return {"error": f"Cannot connect to CallFlux at {self.base_url}. Check CALLFLUX_API_URL."}
         except Exception as e:
-            logger.error("CallFlux registration error", error=str(e))
+            logger.error("CallFlux registration error", url=url, error=str(e))
             return {"error": str(e)}
 
     async def login(self, email: str, password: str) -> Dict[str, Any]:
@@ -135,19 +143,24 @@ class CallFluxClient:
         if not self.is_configured:
             return {"error": "CallFlux not configured"}
 
+        url = f"{self.base_url}/api/auth/login"
         try:
             async with httpx.AsyncClient(timeout=CALLFLUX_TIMEOUT) as client:
-                resp = await client.post(
-                    f"{self.base_url}/api/auth/login",
-                    json={"email": email, "password": password},
-                )
+                resp = await client.post(url, json={"email": email, "password": password})
                 if resp.status_code == 200:
                     data = resp.json()
                     return {
                         "access_token": data.get("access_token", ""),
                         "refresh_token": data.get("refresh_token", ""),
                     }
+                elif resp.status_code == 404:
+                    logger.error("CallFlux login endpoint not found (404)",
+                        url=url, base_url=self.base_url)
+                    return {"error": f"CallFlux API not reachable (404). Verify CALLFLUX_API_URL={self.base_url}"}
                 return {"error": f"Login failed: {resp.status_code}"}
+        except httpx.ConnectError as e:
+            logger.error("CallFlux login connection failed", url=url, error=str(e))
+            return {"error": f"Cannot connect to CallFlux at {self.base_url}"}
         except Exception as e:
             return {"error": str(e)}
 

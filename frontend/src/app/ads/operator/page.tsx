@@ -1644,7 +1644,7 @@ export default function OperatorPage() {
                 onChange={(e) => setImageEngine(e.target.value)}
                 className="bg-white/5 border border-white/10 rounded-md text-xs text-white/70 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-violet-500/50"
               >
-                <option value="google">Google Imagen (Nano)</option>
+                <option value="google">Nano Banana (Google)</option>
                 <option value="dalle">DALL-E 3</option>
                 <option value="stability">Stability AI</option>
                 <option value="flux">Flux.1 Pro</option>

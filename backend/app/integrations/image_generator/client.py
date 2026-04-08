@@ -90,6 +90,33 @@ class ImageGeneratorClient:
                     }
                 else:
                     error = resp.json().get("error", resp.text[:200]) if resp.headers.get("content-type", "").startswith("application/json") else resp.text[:200]
+                    error_lower = error.lower() if isinstance(error, str) else ""
+
+                    # Auto-fallback: if Google engine fails with location error, retry with DALL-E
+                    if engine == "google" and "location" in error_lower and "not supported" in error_lower:
+                        logger.warning("Google image gen location not supported — falling back to DALL-E",
+                            original_error=error[:100])
+                        fallback_payload = {**payload, "engine": "dalle"}
+                        fallback_payload.pop("googleModel", None)
+                        fb_resp = await client.post(
+                            f"{self.base_url}/api/generate-single",
+                            json=fallback_payload,
+                            headers=self._headers(),
+                        )
+                        if fb_resp.status_code in (200, 201):
+                            data = fb_resp.json()
+                            logger.info("Fallback DALL-E image generated", filename=data.get("filename"))
+                            return {
+                                "success": True,
+                                "filename": data.get("filename"),
+                                "image_url": data.get("imageUrl"),
+                                "message": "Generated with DALL-E fallback (Google location not supported)",
+                                "fallback_engine": "dalle",
+                            }
+                        else:
+                            fb_error = fb_resp.text[:200]
+                            logger.error("DALL-E fallback also failed", error=fb_error)
+
                     logger.error("Image generation failed", status=resp.status_code, error=error)
                     return {"success": False, "error": error}
 
@@ -177,6 +204,8 @@ class ImageGeneratorClient:
         """
         High-level method: generate an ad-ready image for a specific service.
         Builds an optimized prompt and metadata automatically.
+
+        Engine fallback order: requested engine -> dalle -> placeholder.
         """
         prompt = (
             f"Professional {business_type} business photo: a licensed {service.lower()} expert "
@@ -198,13 +227,42 @@ class ImageGeneratorClient:
         if longitude is not None:
             metadata["longitude"] = str(longitude)
 
-        return await self.generate_single(
+        result = await self.generate_single(
             prompt=prompt,
             engine=engine,
             style=style,
             size=size,
             metadata=metadata,
         )
+
+        # If primary engine failed and it was not already dalle, try dalle as fallback
+        if not result.get("success") and engine != "dalle":
+            logger.warning("Primary engine failed, trying DALL-E fallback",
+                original_engine=engine, error=result.get("error", "")[:100])
+            result = await self.generate_single(
+                prompt=prompt,
+                engine="dalle",
+                style=style,
+                size=size,
+                metadata=metadata,
+            )
+
+        # If all engines failed, return a placeholder image URL
+        if not result.get("success"):
+            logger.warning("All image engines failed — returning placeholder",
+                service=service, error=result.get("error", "")[:100])
+            # Unsplash Source provides royalty-free placeholder images by keyword
+            placeholder_query = f"{business_type}+{service}+professional".replace(" ", "+")
+            w, h = size.split("x") if "x" in size else ("1024", "1024")
+            result = {
+                "success": True,
+                "image_url": f"https://source.unsplash.com/{w}x{h}/?{placeholder_query}",
+                "filename": f"placeholder-{service.lower().replace(' ', '-')}.jpg",
+                "message": "Placeholder image (all generation engines unavailable)",
+                "is_placeholder": True,
+            }
+
+        return result
 
     async def health_check(self) -> Dict[str, Any]:
         """Check if the image generator API is healthy."""
