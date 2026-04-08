@@ -1235,8 +1235,9 @@ class GoogleAdsClient:
             criterion.device.type_ = client.enums.DeviceEnum[device.upper()]
             criterion.bid_modifier = bid_modifier
 
-            campaign_criterion_service.mutate_campaign_criteria(
-                customer_id=self.customer_id, operations=[operation]
+            await self._run_sync(
+                campaign_criterion_service.mutate_campaign_criteria,
+                customer_id=self.customer_id, operations=[operation],
             )
             return {"status": "set", "device": device, "bid_modifier": bid_modifier}
         except Exception as e:
@@ -1253,8 +1254,9 @@ class GoogleAdsClient:
             criterion.campaign = f"customers/{self.customer_id}/campaigns/{campaign_id}"
             criterion.location.geo_target_constant = f"geoTargetConstants/{location_id}"
 
-            campaign_criterion_service.mutate_campaign_criteria(
-                customer_id=self.customer_id, operations=[operation]
+            await self._run_sync(
+                campaign_criterion_service.mutate_campaign_criteria,
+                customer_id=self.customer_id, operations=[operation],
             )
             return {"status": "added", "location_id": location_id}
         except Exception as e:
@@ -1276,8 +1278,9 @@ class GoogleAdsClient:
             criterion.proximity.radius = radius_miles
             criterion.proximity.radius_units = client.enums.ProximityRadiusUnitsEnum.MILES
 
-            campaign_criterion_service.mutate_campaign_criteria(
-                customer_id=self.customer_id, operations=[operation]
+            await self._run_sync(
+                campaign_criterion_service.mutate_campaign_criteria,
+                customer_id=self.customer_id, operations=[operation],
             )
             return {"status": "added", "latitude": latitude, "longitude": longitude, "radius_miles": radius_miles}
         except Exception as e:
@@ -1311,8 +1314,9 @@ class GoogleAdsClient:
             criterion.ad_schedule.end_minute = client.enums.MinuteOfHourEnum.ZERO
             criterion.bid_modifier = bid_modifier
 
-            campaign_criterion_service.mutate_campaign_criteria(
-                customer_id=self.customer_id, operations=[operation]
+            await self._run_sync(
+                campaign_criterion_service.mutate_campaign_criteria,
+                customer_id=self.customer_id, operations=[operation],
             )
             return {"status": "set", "day": day_of_week, "start": start_hour, "end": end_hour}
         except Exception as e:
@@ -1433,6 +1437,7 @@ class GoogleAdsClient:
                 "SEARCH": client.enums.AdvertisingChannelTypeEnum.SEARCH,
                 "DISPLAY": client.enums.AdvertisingChannelTypeEnum.DISPLAY,
                 "PERFORMANCE_MAX": client.enums.AdvertisingChannelTypeEnum.PERFORMANCE_MAX,
+                "CALL": client.enums.AdvertisingChannelTypeEnum.SEARCH,
             }
             campaign.advertising_channel_type = channel_map.get(
                 channel, client.enums.AdvertisingChannelTypeEnum.SEARCH
@@ -1807,8 +1812,8 @@ class GoogleAdsClient:
 
             field_types = client.enums.AssetFieldTypeEnum
 
-            # Headlines (≤30 chars, up to 5)
-            for headline in text_assets.get("headlines", [])[:5]:
+            # Headlines (≤30 chars, up to 15)
+            for headline in text_assets.get("headlines", [])[:15]:
                 await _create_and_link(headline[:30], field_types.HEADLINE)
 
             # Long headlines (≤90 chars, up to 5)
@@ -2248,6 +2253,7 @@ class GoogleAdsClient:
                 "SEARCH": client.enums.AdvertisingChannelTypeEnum.SEARCH,
                 "DISPLAY": client.enums.AdvertisingChannelTypeEnum.DISPLAY,
                 "PERFORMANCE_MAX": client.enums.AdvertisingChannelTypeEnum.PERFORMANCE_MAX,
+                "CALL": client.enums.AdvertisingChannelTypeEnum.SEARCH,
             }
             campaign.advertising_channel_type = channel_map.get(
                 channel, client.enums.AdvertisingChannelTypeEnum.SEARCH
@@ -2291,10 +2297,8 @@ class GoogleAdsClient:
             ag_temp_ids = []  # Track temp IDs for result mapping
             all_neg_kws = []  # Collect negative keywords for batch
 
-            # TODO: For PERFORMANCE_MAX, create asset groups instead of ad groups.
-            # PMax requires: headline assets, description assets, image assets,
-            # long headline, business name, and a listing group (audience signal).
-            # For now, PMax campaigns are created with budget+bidding only.
+            # PMax asset groups are deployed after the atomic mutate via
+            # _deploy_pmax_asset_groups (needs real campaign resource name).
 
             for ag_spec in ad_group_specs if not is_pmax else []:
                 ag_temp_id = next_temp_id
@@ -2757,10 +2761,30 @@ class GoogleAdsClient:
                             error=signal_result.get("error"),
                             asset_group=ag_spec.get("name"))
 
-                # Step 5: Link image assets if available
+                # Step 5: Upload and link image assets if available
                 images = ag_spec.get("images", [])
                 if images:
-                    await self._link_image_assets_to_asset_group(ag_resource, images)
+                    resolved_images = []
+                    for img in images:
+                        # If the pipeline provided a URL instead of an asset_resource,
+                        # upload the image first to get the asset resource name.
+                        if img.get("url") and not img.get("asset_resource"):
+                            upload_result = await self.create_image_asset(
+                                image_url=img["url"],
+                                asset_name=f"pmax_{ag_spec.get('name', 'img')}_{len(resolved_images)}",
+                            )
+                            if upload_result.get("status") == "success":
+                                resolved_images.append({
+                                    "asset_resource": upload_result["asset_resource"],
+                                    "field_type": img.get("field_type", "MARKETING_IMAGE"),
+                                })
+                            else:
+                                logger.warning("Image upload failed for asset group",
+                                    url=img["url"], error=upload_result.get("error"))
+                        else:
+                            resolved_images.append(img)
+                    if resolved_images:
+                        await self._link_image_assets_to_asset_group(ag_resource, resolved_images)
 
                 asset_groups_deployed.append({
                     "name": ag_spec.get("name"),
@@ -2945,7 +2969,9 @@ class GoogleAdsClient:
                     request.country_code = "US"
                     request.location_names.names.append(name)
 
-                    response = gtc_service.suggest_geo_target_constants(request=request)
+                    response = await self._run_sync(
+                        gtc_service.suggest_geo_target_constants, request=request,
+                    )
                     for suggestion in response.geo_target_constant_suggestions:
                         gtc = suggestion.geo_target_constant
                         resolved.append({

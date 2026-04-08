@@ -519,7 +519,8 @@ class CampaignAgentPipeline:
         tracking_result = await self._setup_callflux_tracking(spec, context)
         if tracking_result and tracking_result.get("tracking_number"):
             tracking_num = tracking_result["tracking_number"]
-            spec["call_extension"] = {"phone": tracking_num, "country": "US"}
+            spec["call_extension"] = {"phone": tracking_num, "country_code": "US"}
+            spec["_pipeline_metadata"]["extensions"]["call_extension"] = {"phone": tracking_num, "country_code": "US"}
             spec["_pipeline_metadata"]["callflux"] = tracking_result
             await self._emit_progress("Call Tracking", "done",
                 f"Tracking number {tracking_num} assigned "
@@ -1592,6 +1593,26 @@ Return this JSON:
             if not isinstance(description_pins, dict):
                 description_pins = {}
 
+            # Map integer pin positions to string enum names expected by deploy code
+            # LLMs return 0-indexed or 1-indexed integers inconsistently;
+            # deploy code expects "HEADLINE_1", "HEADLINE_2", etc.
+            _PIN_MAP_HEADLINE = {0: "HEADLINE_1", 1: "HEADLINE_1", 2: "HEADLINE_2", 3: "HEADLINE_3"}
+            _PIN_MAP_DESCRIPTION = {0: "DESCRIPTION_1", 1: "DESCRIPTION_1", 2: "DESCRIPTION_2"}
+
+            def _normalize_headline_pin(pin_pos):
+                if isinstance(pin_pos, str) and pin_pos.upper().startswith("HEADLINE_"):
+                    return pin_pos.upper()
+                if isinstance(pin_pos, (int, float)):
+                    return _PIN_MAP_HEADLINE.get(int(pin_pos))
+                return None
+
+            def _normalize_description_pin(pin_pos):
+                if isinstance(pin_pos, str) and pin_pos.upper().startswith("DESCRIPTION_"):
+                    return pin_pos.upper()
+                if isinstance(pin_pos, (int, float)):
+                    return _PIN_MAP_DESCRIPTION.get(int(pin_pos))
+                return None
+
             pinned_headlines = []
             for i, h in enumerate(headlines):
                 text = h if isinstance(h, str) else h.get("text", "") if isinstance(h, dict) else str(h)
@@ -1602,9 +1623,13 @@ Return this JSON:
                 if pin_pos is None:
                     pin_pos = headline_pins.get(text)
                 if pin_pos is not None:
-                    h_dict["pinned_position"] = pin_pos
+                    normalized = _normalize_headline_pin(pin_pos)
+                    if normalized:
+                        h_dict["pinned_position"] = normalized
                 elif isinstance(h, dict) and h.get("pinned_position") is not None:
-                    h_dict["pinned_position"] = h["pinned_position"]
+                    normalized = _normalize_headline_pin(h["pinned_position"])
+                    if normalized:
+                        h_dict["pinned_position"] = normalized
                 pinned_headlines.append(h_dict)
 
             pinned_descriptions = []
@@ -1616,9 +1641,13 @@ Return this JSON:
                 if pin_pos is None:
                     pin_pos = description_pins.get(text)
                 if pin_pos is not None:
-                    d_dict["pinned_position"] = pin_pos
+                    normalized = _normalize_description_pin(pin_pos)
+                    if normalized:
+                        d_dict["pinned_position"] = normalized
                 elif isinstance(d, dict) and d.get("pinned_position") is not None:
-                    d_dict["pinned_position"] = d["pinned_position"]
+                    normalized = _normalize_description_pin(d["pinned_position"])
+                    if normalized:
+                        d_dict["pinned_position"] = normalized
                 pinned_descriptions.append(d_dict)
 
             ad_group = {
@@ -2344,7 +2373,7 @@ Return this JSON:
         Build PMax asset group specs from pipeline agent outputs.
 
         PMax Asset Group requirements (Google Ads API):
-        - headlines: up to 5, max 30 chars each (min 3)
+        - headlines: up to 15, max 30 chars each (min 3)
         - long_headlines: up to 5, max 90 chars each (min 1)
         - descriptions: up to 5, max 90 chars each (min 2, one ≤60 chars)
         - business_name: max 25 chars (required)
@@ -2372,10 +2401,10 @@ Return this JSON:
             svc_kws = kw_by_service.get(svc, [])
             svc_copy = copy_by_service.get(svc, {})
 
-            # Headlines: take top 5 from the ad copy agent (max 30 chars)
+            # Headlines: take top 15 from the ad copy agent (max 30 chars)
             raw_headlines = svc_copy.get("headlines", [])
             headlines = []
-            for h in raw_headlines[:5]:
+            for h in raw_headlines[:15]:
                 text = h if isinstance(h, str) else h.get("text", "") if isinstance(h, dict) else str(h)
                 if text.strip():
                     headlines.append(text.strip()[:30])
@@ -2473,5 +2502,12 @@ Return this JSON:
             "sitelinks": [],
             "callouts": [],
             "structured_snippets": {},
+            "_pipeline_metadata": {
+                "strategy": {},
+                "targeting": {},
+                "extensions": {},
+                "keyword_stats": {},
+                "qa_score": None,
+            },
             "_pipeline_error": "Pipeline failed — please try again or create manually",
         }
