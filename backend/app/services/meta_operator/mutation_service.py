@@ -21,8 +21,9 @@ logger = structlog.get_logger()
 class MetaAdsMutationService:
     """Executes Meta Ads mutations with audit trail."""
 
-    def __init__(self, client: MetaAdsClient):
+    def __init__(self, client: MetaAdsClient, pixel_id: str = None):
         self.client = client
+        self.pixel_id = pixel_id
 
     async def execute_action(self, action_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Route action to the appropriate handler."""
@@ -82,7 +83,7 @@ class MetaAdsMutationService:
     async def _create_campaign(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         name = payload.get("name", "New Campaign")
         objective = payload.get("objective", "OUTCOME_LEADS")
-        daily_budget = payload.get("daily_budget_cents", 2000)
+        daily_budget = payload.get("daily_budget_cents")  # None means ad-set-level budget
         special_ad_categories = payload.get("special_ad_categories", [])
         result = await self.client.create_campaign(
             name, objective, daily_budget, "PAUSED",
@@ -313,12 +314,11 @@ class MetaAdsMutationService:
         """
         results: Dict[str, Any] = {"status": "success", "steps": []}
 
-        # 1. Create Campaign
+        # 1. Create Campaign (budget set at ad set level, NOT campaign level)
         campaign_data = payload.get("campaign", {})
         campaign_result = await self._create_campaign({
             "name": campaign_data.get("name", "AI Campaign"),
             "objective": campaign_data.get("objective", "OUTCOME_LEADS"),
-            "daily_budget_cents": campaign_data.get("daily_budget_cents", 2000),
             "special_ad_categories": campaign_data.get("special_ad_categories", []),
         })
         results["steps"].append({"step": "campaign", "result": campaign_result})
@@ -331,11 +331,18 @@ class MetaAdsMutationService:
         results["campaign_id"] = campaign_id
 
         # 2. Create Ad Sets
+        objective = campaign_data.get("objective", "OUTCOME_LEADS")
+        conversion_objectives = {"OUTCOME_SALES", "OUTCOME_LEADS"}
         adsets = payload.get("adsets", [payload.get("adset", {})])
         for adset_data in adsets:
             if not adset_data:
                 continue
             adset_data["campaign_id"] = campaign_id
+
+            # Auto-inject pixel_id for conversion objectives if not already set
+            if objective in conversion_objectives and self.pixel_id and not adset_data.get("promoted_object"):
+                adset_data["promoted_object"] = {"pixel_id": self.pixel_id}
+
             adset_result = await self._create_adset(adset_data)
             results["steps"].append({"step": "adset", "result": adset_result})
             if adset_result.get("status") != "success":

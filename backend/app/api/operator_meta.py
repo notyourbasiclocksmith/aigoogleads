@@ -86,9 +86,7 @@ async def get_conversation(
 ):
     svc = MetaAdsOperatorService(db)
     try:
-        from app.services.operator.operator_service import GoogleAdsOperatorService
-        gads_svc = GoogleAdsOperatorService(db)
-        return await gads_svc.get_conversation(conversation_id, user.tenant_id)
+        return await svc.get_conversation(conversation_id, user.tenant_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Conversation not found")
 

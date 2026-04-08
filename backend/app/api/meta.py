@@ -39,7 +39,7 @@ async def meta_callback(
     db: AsyncSession = Depends(get_db),
 ):
     """Handle OAuth callback from Facebook, store tokens."""
-    from app.services.meta_oauth_service import exchange_code_for_tokens, discover_ad_accounts, discover_pages
+    from app.services.meta_oauth_service import exchange_code_for_tokens, discover_ad_accounts, discover_pages, discover_pixels
     from app.core.security import decrypt_token
 
     parts = state.split(":")
@@ -71,6 +71,13 @@ async def meta_callback(
                 conn.page_id = pages[0].get("id")
                 conn.page_name = pages[0].get("name")
 
+            # Auto-select first pixel if only one exists
+            if conn.ad_account_id:
+                pixels = await discover_pixels(token, conn.ad_account_id)
+                if pixels and len(pixels) == 1:
+                    conn.pixel_id = pixels[0].get("id")
+                    conn.pixel_name = pixels[0].get("name")
+
             await db.flush()
     except Exception as e:
         import structlog
@@ -101,6 +108,8 @@ async def meta_status(
         "ad_account_id": conn.ad_account_id if conn else None,
         "account_name": conn.account_name if conn else None,
         "page_name": conn.page_name if conn else None,
+        "pixel_id": conn.pixel_id if conn else None,
+        "pixel_name": conn.pixel_name if conn else None,
         "sync_error": conn.sync_error if conn else None,
     }
 
@@ -153,6 +162,71 @@ async def list_pages(
         raise HTTPException(status_code=400, detail="Meta not connected")
     pages = await discover_pages(token)
     return {"pages": pages}
+
+
+@router.get("/pixels")
+async def list_pixels(
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """List discoverable Meta Pixels for the connected ad account."""
+    from app.services.meta_oauth_service import get_valid_access_token, discover_pixels
+    token = await get_valid_access_token(user.tenant_id, db)
+    if not token:
+        raise HTTPException(status_code=400, detail="Meta not connected")
+
+    result = await db.execute(
+        select(IntegrationMeta).where(IntegrationMeta.tenant_id == user.tenant_id)
+    )
+    conn = result.scalar_one_or_none()
+    if not conn or not conn.ad_account_id:
+        raise HTTPException(status_code=400, detail="No ad account selected")
+
+    pixels = await discover_pixels(token, conn.ad_account_id)
+    return {"pixels": pixels}
+
+
+class SelectPixelRequest(BaseModel):
+    pixel_id: str
+    pixel_name: Optional[str] = None
+
+
+@router.post("/pixels/select")
+async def select_pixel(
+    req: SelectPixelRequest,
+    user: CurrentUser = Depends(require_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save the selected Meta Pixel for conversion tracking."""
+    from app.services.meta_oauth_service import get_valid_access_token, discover_pixels
+
+    result = await db.execute(
+        select(IntegrationMeta).where(IntegrationMeta.tenant_id == user.tenant_id)
+    )
+    conn = result.scalar_one_or_none()
+    if not conn or not conn.is_active:
+        raise HTTPException(status_code=400, detail="Meta not connected")
+    if not conn.ad_account_id:
+        raise HTTPException(status_code=400, detail="No ad account selected")
+
+    token = await get_valid_access_token(user.tenant_id, db)
+    if not token:
+        raise HTTPException(status_code=400, detail="Meta token expired")
+
+    # Validate the pixel exists
+    pixels = await discover_pixels(token, conn.ad_account_id)
+    pixel = next((p for p in pixels if p.get("id") == req.pixel_id), None)
+    if not pixel:
+        raise HTTPException(status_code=404, detail="Pixel not found for this ad account")
+
+    conn.pixel_id = req.pixel_id
+    conn.pixel_name = req.pixel_name or pixel.get("name")
+    await db.commit()
+    return {
+        "success": True,
+        "pixel_id": conn.pixel_id,
+        "pixel_name": conn.pixel_name,
+    }
 
 
 class SelectAdAccountRequest(BaseModel):

@@ -169,6 +169,23 @@ async def discover_ad_accounts(access_token: str) -> List[Dict]:
     return resp.json().get("data", [])
 
 
+async def discover_pixels(access_token: str, ad_account_id: str) -> List[Dict]:
+    """List Meta Pixels for an ad account."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{META_GRAPH_URL}/{ad_account_id}/adspixels",
+            params={
+                "access_token": access_token,
+                "fields": "id,name,is_created_by_business",
+                "limit": 50,
+            },
+        )
+    if resp.status_code != 200:
+        logger.warning("Meta list pixels failed", status=resp.status_code, body=resp.text[:300])
+        return []
+    return resp.json().get("data", [])
+
+
 async def discover_pages(access_token: str) -> List[Dict]:
     """List Facebook Pages accessible by this user."""
     async with httpx.AsyncClient() as client:

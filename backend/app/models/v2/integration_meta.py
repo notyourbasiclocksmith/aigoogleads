@@ -18,6 +18,8 @@ class IntegrationMeta(Base):
     access_token_encrypted = Column(String(2000), nullable=True)
     page_id = Column(String(100), nullable=True)
     page_name = Column(String(255), nullable=True)
+    pixel_id = Column(String(100), nullable=True)
+    pixel_name = Column(String(255), nullable=True)
     account_name = Column(String(255), nullable=True)
     token_expires_at = Column(DateTime(timezone=True), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)

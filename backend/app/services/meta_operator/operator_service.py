@@ -31,20 +31,88 @@ class MetaAdsOperatorService:
         self.db = db
         self.claude = ClaudeMetaAgentService()
 
-    async def _get_meta_client(self, tenant_id: str) -> MetaAdsClient:
-        """Get an authenticated Meta Ads client for a tenant."""
+    async def _get_integration(self, tenant_id: str) -> IntegrationMeta:
+        """Get the IntegrationMeta record for a tenant."""
         result = await self.db.execute(
             select(IntegrationMeta).where(IntegrationMeta.tenant_id == tenant_id)
         )
         integration = result.scalars().first()
         if not integration:
             raise ValueError("No Meta Ads integration found for this tenant")
+        return integration
+
+    async def _get_meta_client(self, tenant_id: str) -> MetaAdsClient:
+        """Get an authenticated Meta Ads client for a tenant."""
+        from app.services.meta_oauth_service import get_valid_access_token
+        from app.core.security import encrypt_token
+
+        token = await get_valid_access_token(tenant_id, self.db)
+        if not token:
+            raise ValueError("Meta access token expired or missing")
+        integration = await self._get_integration(tenant_id)
         return MetaAdsClient(
             ad_account_id=integration.ad_account_id,
-            access_token_encrypted=integration.access_token_encrypted,
+            access_token_encrypted=encrypt_token(token),
         )
 
     # ── CONVERSATION MANAGEMENT ────────────────────────���─────────
+
+    async def get_conversation(self, conversation_id: str, tenant_id: str) -> Dict[str, Any]:
+        """Get full conversation with messages."""
+        result = await self.db.execute(
+            select(OperatorConversation).where(
+                and_(
+                    OperatorConversation.id == conversation_id,
+                    OperatorConversation.tenant_id == tenant_id,
+                )
+            )
+        )
+        conv = result.scalars().first()
+        if not conv:
+            raise ValueError("Conversation not found")
+
+        msg_result = await self.db.execute(
+            select(OperatorMessage)
+            .where(OperatorMessage.conversation_id == conversation_id)
+            .order_by(OperatorMessage.created_at)
+        )
+        messages = msg_result.scalars().all()
+
+        action_result = await self.db.execute(
+            select(ProposedAction)
+            .where(ProposedAction.conversation_id == conversation_id)
+            .order_by(ProposedAction.created_at)
+        )
+        actions = action_result.scalars().all()
+        actions_by_msg = {}
+        for a in actions:
+            actions_by_msg.setdefault(a.message_id, []).append({
+                "id": a.id,
+                "action_type": a.action_type,
+                "label": a.label,
+                "reasoning": a.reasoning,
+                "expected_impact": a.expected_impact,
+                "risk_level": a.risk_level,
+                "status": a.status,
+                "action_payload": a.action_payload,
+            })
+
+        return {
+            "conversation_id": conv.id,
+            "title": conv.title,
+            "customer_id": conv.customer_id,
+            "messages": [
+                {
+                    "id": m.id,
+                    "role": m.role,
+                    "content": m.content,
+                    "structured_payload": m.structured_payload,
+                    "proposed_actions": actions_by_msg.get(m.id, []),
+                    "created_at": m.created_at.isoformat(),
+                }
+                for m in messages
+            ],
+        }
 
     async def create_conversation(self, tenant_id: str, user_id: str) -> Dict[str, Any]:
         conv = OperatorConversation(
@@ -129,7 +197,13 @@ class MetaAdsOperatorService:
 
         # Get Meta Ads client + context
         meta_client = await self._get_meta_client(tenant_id)
-        context_svc = MetaAdsContextService(meta_client)
+        integration = await self._get_integration(tenant_id)
+        context_svc = MetaAdsContextService(
+            meta_client,
+            pixel_id=integration.pixel_id if integration else None,
+            page_id=integration.page_id if integration else None,
+            page_name=integration.page_name if integration else None,
+        )
         account_context = await context_svc.build_full_context()
 
         # Conversation history
@@ -162,7 +236,7 @@ class MetaAdsOperatorService:
         )
         if has_auto:
             meta_client = await self._get_meta_client(tenant_id)
-            mutation_svc = MetaAdsMutationService(meta_client)
+            mutation_svc = MetaAdsMutationService(meta_client, pixel_id=integration.pixel_id if integration else None)
             for action in claude_response.get("recommended_actions", []):
                 if action.get("action_type") in META_AUTO_EXECUTE_ACTIONS:
                     try:
@@ -290,7 +364,8 @@ class MetaAdsOperatorService:
             return {"status": "no_actions", "message": "No pending actions found to approve"}
 
         meta_client = await self._get_meta_client(tenant_id)
-        mutation_svc = MetaAdsMutationService(meta_client)
+        integration = await self._get_integration(tenant_id)
+        mutation_svc = MetaAdsMutationService(meta_client, pixel_id=integration.pixel_id if integration else None)
 
         execution_results = []
         now = datetime.now(timezone.utc)

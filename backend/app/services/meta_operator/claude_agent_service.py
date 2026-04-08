@@ -82,7 +82,7 @@ ACTION PAYLOAD FORMATS:
   NOTE: Use this to find the instagram_user_id needed for Instagram ad placements. Run this before creating creatives if you need Instagram placement.
 - deploy_full_meta_campaign: {
     "page_id": "PAGE_ID",
-    "campaign": {"name": "...", "objective": "OUTCOME_LEADS", "daily_budget_cents": 2000, "special_ad_categories": []},
+    "campaign": {"name": "...", "objective": "OUTCOME_LEADS", "special_ad_categories": []},
     "adsets": [
       {
         "name": "Ad Set 1",
@@ -119,7 +119,7 @@ META ADS CREATION REQUIREMENTS (CRITICAL):
 7. INSTAGRAM: If instagram_accounts are in the context data, include instagram_user_id in creatives to enable Instagram placements. Without it, ads only run on Facebook.
 8. OBJECTIVES (v21.0): OUTCOME_LEADS (best for local business), OUTCOME_TRAFFIC, OUTCOME_AWARENESS, OUTCOME_ENGAGEMENT, OUTCOME_SALES, OUTCOME_APP_PROMOTION
 9. OPTIMIZATION GOALS: LEAD_GENERATION (forms), LINK_CLICKS (website), LANDING_PAGE_VIEWS, REACH, IMPRESSIONS, CONVERSATIONS (Messenger/WhatsApp)
-10. BUDGET: Minimum daily budget varies by country ($1/day US). Budget in CENTS (e.g., $20/day = 2000).
+10. BUDGET: Minimum daily budget varies by country ($1/day US). Budget in CENTS (e.g., $20/day = 2000). IMPORTANT: For deploy_full_meta_campaign, set budget at the AD SET level only (daily_budget_cents in each adset), NOT at the campaign level. Setting budget at both levels causes a Meta API error.
 
 TARGETING RESEARCH FLOW:
 When creating campaigns or when the user asks about targeting:
@@ -160,7 +160,7 @@ class ClaudeMetaAgentService:
     """Calls Claude API with Meta Ads account context to produce structured analysis."""
 
     def __init__(self):
-        self.client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        self.client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
         self.model = settings.ANTHROPIC_MODEL
 
     async def analyze(
@@ -189,7 +189,7 @@ USER REQUEST: {user_message}"""
         messages.append({"role": "user", "content": user_content})
 
         try:
-            response = self.client.messages.create(
+            response = await self.client.messages.create(
                 model=self.model,
                 max_tokens=4096,
                 system=SYSTEM_PROMPT,
@@ -227,6 +227,13 @@ USER REQUEST: {user_message}"""
         parts.append(f"Currency: {acc.get('currency', 'USD')} | Status: {acc.get('account_status', 'N/A')}")
 
         # Page info (critical for ad creation)
+        page_id = ctx.get("page_id")
+        page_name = ctx.get("page_name")
+        if page_id:
+            parts.append(f"\nFACEBOOK PAGE: {page_name} (ID: {page_id})")
+        else:
+            parts.append(f"\nFACEBOOK PAGE: NOT CONNECTED — ad creation will fail without a page_id")
+
         instagram_accounts = ctx.get("instagram_accounts", [])
         if instagram_accounts:
             parts.append(f"\nINSTAGRAM ACCOUNTS ({len(instagram_accounts)}):")

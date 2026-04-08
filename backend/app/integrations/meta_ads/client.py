@@ -302,13 +302,13 @@ class MetaAdsClient:
 
     async def create_campaign(
         self, name: str, objective: str = "OUTCOME_LEADS",
-        daily_budget: int = 2000, status: str = "PAUSED",
+        daily_budget: Optional[int] = None, status: str = "PAUSED",
         special_ad_categories: Optional[List[str]] = None,
         special_ad_category_country: Optional[List[str]] = None,
         buying_type: str = "AUCTION",
     ) -> Dict[str, Any]:
         """
-        Create a campaign. Budget in cents.
+        Create a campaign. Budget in cents (optional — omit when using ad-set-level budgets).
         Meta REQUIRES special_ad_categories — use ["NONE"] for normal ads.
         special_ad_category_country REQUIRED when special_ad_categories contains
         HOUSING, CREDIT, or EMPLOYMENT (e.g., ["US", "CA"]).
@@ -330,10 +330,11 @@ class MetaAdsClient:
             "name": name,
             "objective": objective,
             "status": status,
-            "daily_budget": str(daily_budget),
             "special_ad_categories": json.dumps(categories),
             "buying_type": buying_type,
         }
+        if daily_budget is not None:
+            data["daily_budget"] = str(daily_budget)
         if special_ad_category_country:
             data["special_ad_category_country"] = json.dumps(special_ad_category_country)
 
