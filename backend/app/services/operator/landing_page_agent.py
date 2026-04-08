@@ -721,6 +721,7 @@ class LandingPageAgent:
         content: Dict[str, Any],
         business_context: Dict[str, Any],
         strategy: Dict[str, Any],
+        slug: str = "",
     ) -> str:
         """
         Render landing page content JSON into a complete HTML preview.
@@ -796,24 +797,82 @@ class LandingPageAgent:
         city = business_context.get("city", "")
         state = business_context.get("state", "")
 
+        # --- Build enhanced structured data ---
+        APP_URL = settings.APP_URL.rstrip("/")
+        hero_headline = _esc(hero.get("headline", "Professional Service"))
+        hero_subheadline = _esc(hero.get("subheadline", ""))
+        location_str = f"{_esc(city)}, {_esc(state)}" if city and state else _esc(city) or _esc(state)
+        meta_title = f"{hero_headline} | {location_str} | {_esc(biz_name)}" if location_str else f"{hero_headline} | {_esc(biz_name)}"
+        canonical_tag = f'<link rel="canonical" href="{APP_URL}/lp/{slug}">' if slug else ""
+
+        # Open Graph tags
+        og_image_tag = f'<meta property="og:image" content="{hero.get("hero_image_url", "")}">' if hero.get("hero_image_url") else ""
+        og_tags = f'''<meta property="og:title" content="{meta_title}">
+<meta property="og:description" content="{hero_subheadline}">
+<meta property="og:type" content="website">
+{og_image_tag}'''
+
+        # Schema.org service items from services_section
+        service_items = []
+        for svc in services_section.get("services", []):
+            svc_name = _esc(svc.get("name", ""))
+            if svc_name:
+                service_items.append(f'{{"@type": "Offer", "itemOffered": {{"@type": "Service", "name": "{svc_name}"}}}}')
+        service_catalog_json = ""
+        if service_items:
+            service_catalog_json = f''',
+  "hasOfferCatalog": {{
+    "@type": "OfferCatalog",
+    "name": "Services",
+    "itemListElement": [{", ".join(service_items)}]
+  }}'''
+
+        # Aggregate rating from reviews
+        review_list = reviews.get("reviews", [])
+        aggregate_rating_json = ""
+        if review_list:
+            review_count = len(review_list)
+            aggregate_rating_json = f''',
+  "aggregateRating": {{
+    "@type": "AggregateRating",
+    "ratingValue": "5",
+    "reviewCount": "{review_count}"
+  }}'''
+
+        # URL and image properties
+        url_json = f',\n  "url": "{APP_URL}/lp/{slug}"' if slug else ""
+        image_json = f',\n  "image": "{hero.get("hero_image_url", "")}"' if hero.get("hero_image_url") else ""
+
         html = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{meta_title}</title>
+<meta name="description" content="{hero_subheadline}">
+{canonical_tag}
+{og_tags}
 <!-- Google Tag Manager placeholder - configure GTM ID in settings -->
 <link href="https://fonts.googleapis.com/css2?family={font}:wght@400;600;700&display=swap" rel="stylesheet">
 <script type="application/ld+json">
 {{
   "@context": "https://schema.org",
-  "@type": "LocalBusiness",
+  "@type": ["LocalBusiness", "ProfessionalService"],
   "name": "{_esc(biz_name)}",
   "telephone": "{_esc(phone)}",
   "address": {{
     "@type": "PostalAddress",
     "addressLocality": "{_esc(city)}",
     "addressRegion": "{_esc(state)}"
-  }}
+  }},
+  "areaServed": {{
+    "@type": "City",
+    "name": "{_esc(city)}",
+    "containedInPlace": {{
+      "@type": "State",
+      "name": "{_esc(state)}"
+    }}
+  }}{service_catalog_json}{aggregate_rating_json}{url_json}{image_json}
 }}
 </script>
 <style>

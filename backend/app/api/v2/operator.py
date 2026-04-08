@@ -1152,7 +1152,7 @@ async def preview_landing_page(
     if not variant_content:
         raise HTTPException(404, f"Variant {variant_key} not found")
 
-    html = agent._render_preview_html(variant_content, biz_ctx, lp.strategy_json or {})
+    html = agent._render_preview_html(variant_content, biz_ctx, lp.strategy_json or {}, slug=lp.slug or "")
     from fastapi.responses import HTMLResponse
     return HTMLResponse(content=html)
 

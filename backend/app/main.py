@@ -8,6 +8,7 @@ from app.api import auth, tenants, onboarding, dashboard, ads_accounts, ads_audi
 from app.api import workspace, brain_analytics, brain_gbp, brain_meta, brain_image
 from app.api import operator, operator_meta, operator_unified, leads, analytics
 from app.api.v2 import mcc, conversions, change_mgmt, connectors, policy, billing, notifications, evaluation, operator as operator_v2, growth, strategist
+from app.api import landing_pages_public
 
 logger = structlog.get_logger()
 
@@ -108,6 +109,9 @@ app.include_router(evaluation.router, prefix="/api/v2/evaluation", tags=["V2 Eva
 app.include_router(operator_v2.router, prefix="/api/v2/operator", tags=["V2 AI Operator"])
 app.include_router(growth.router, prefix="/api/v2/growth", tags=["V2 Growth Features"])
 app.include_router(strategist.router, prefix="/api/v2/strategist", tags=["V2 Campaign Strategist AI"])
+
+# Public landing pages (no auth, no prefix — serves at /lp/{slug})
+app.include_router(landing_pages_public.router)
 
 
 @app.get("/api/health")
