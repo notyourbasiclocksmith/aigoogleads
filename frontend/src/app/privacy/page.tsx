@@ -1,5 +1,8 @@
 export const metadata = {
   title: "Privacy Policy — IntelliAds.ai",
+  description:
+    "Learn how IntelliAds collects, uses, and protects your data. Covers account info, OAuth integrations, and your privacy rights.",
+  robots: "index, follow",
 };
 
 export default function PrivacyPage() {

@@ -1,0 +1,21 @@
+{
+  "name": "IntelliAds - AI Marketing Platform",
+  "short_name": "IntelliAds",
+  "description": "AI-powered Google Ads, Meta Ads, and GBP campaign management",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#0a0a1a",
+  "theme_color": "#7c3aed",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

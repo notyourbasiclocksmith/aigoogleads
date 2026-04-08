@@ -1,0 +1,34 @@
+# IntelliAds - AI Marketing Platform
+
+## What is IntelliAds?
+IntelliAds is an AI-powered marketing automation platform that creates, manages, and optimizes Google Ads, Meta (Facebook/Instagram) Ads, and Google Business Profile campaigns. It uses 6 specialized AI agents to build expert-quality ad campaigns in under 5 minutes.
+
+## Who is it for?
+- Local service businesses (plumbers, locksmiths, HVAC, dentists, lawyers, etc.)
+- Small and medium businesses managing their own advertising
+- Marketing agencies managing multiple client accounts
+
+## Key Features
+- AI Campaign Builder: 6 specialized agents (Strategist, Keyword Research, Targeting, Extensions, Ad Copy, QA) create complete campaigns
+- AI Landing Page Generator: Creates SEO-optimized landing pages with Schema.org markup for each service
+- Deep Optimizer: Autonomous campaign optimization with budget reallocation and bid adjustments
+- Creative Studio: AI image generation for ads using DALL-E 3, Stability AI, Flux.1, and Google Gemini
+- Multi-Platform: Google Ads, Meta Ads (Facebook/Instagram), Google Business Profile
+- Call Tracking: Integrated call tracking with AI-powered call scoring
+- Competitor Intelligence: Ahrefs-powered competitor analysis and keyword gap identification
+
+## Pricing
+- Starter: $97/month (1 Google Ads account, up to $5K ad spend)
+- Professional: $197/month (3 accounts, Google + Meta, up to $25K ad spend)
+- Agency: $397/month (10 accounts, all platforms, unlimited ad spend)
+- All plans include a 14-day free trial with no credit card required
+
+## Contact
+- Website: https://getintelliads.com
+- Email: hello@getintelliads.com
+
+## Technical Details
+- Built with Next.js, FastAPI, PostgreSQL
+- Uses Claude (Anthropic), GPT-4o (OpenAI) for AI agents
+- Google Ads API v17+, Meta Marketing API v22.0
+- Real-time campaign deployment and optimization

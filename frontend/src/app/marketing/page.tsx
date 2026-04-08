@@ -5,7 +5,7 @@ export const metadata: Metadata = {
   metadataBase: new URL("https://getintelliads.com"),
   title: "IntelliAds — Professional Ad Campaigns in Under 5 Minutes",
   description:
-    "Create professionally designed Google & Meta ad campaigns in minutes, not hours. AI-powered keyword research, ad copy, image generation, and landing pages — all in one platform.",
+    "Create professional Google & Meta ad campaigns in under 5 minutes. AI-powered keyword research, ad copy, images, and landing pages — all in one platform.",
   keywords:
     "AI ad campaigns, Google Ads automation, Meta Ads automation, AI campaign builder, PPC automation, AI ad copy, landing page generator, keyword research AI, ad image generator, IntelliAds",
   authors: [{ name: "IntelliAds" }],
@@ -31,6 +31,8 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
+    site: "@getintelliads",
+    creator: "@getintelliads",
     title: "IntelliAds — Professional Ad Campaigns in Under 5 Minutes",
     description:
       "Create professionally designed ad campaigns in minutes. AI handles keyword research, ad copy, images, and landing pages.",

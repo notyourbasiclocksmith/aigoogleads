@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 
 function JsonLd() {
-  const structuredData = {
+  const softwareApp = {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     name: "IntelliAds",
@@ -43,18 +43,107 @@ function JsonLd() {
     ],
     featureList:
       "AI Campaign Builder, Keyword Research, Ad Copy Generator, Image Generation, Landing Page Creator, Google Ads, Meta Ads, Google Business Profile",
-    aggregateRating: {
-      "@type": "AggregateRating",
-      ratingValue: "4.9",
-      ratingCount: "127",
-      bestRating: "5",
-    },
   };
+
+  const organization = {
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    name: "IntelliAds",
+    url: "https://getintelliads.com",
+    logo: "https://getintelliads.com/logo.png",
+    email: "hello@getintelliads.com",
+    description:
+      "AI-powered marketing automation platform for Google Ads, Meta Ads, and Google Business Profile",
+    foundingDate: "2024",
+    sameAs: [],
+  };
+
+  const faqPage = {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: [
+      {
+        "@type": "Question",
+        name: "How can IntelliAds create campaigns in 5 minutes?",
+        acceptedAnswer: {
+          "@type": "Answer",
+          text: "We use 6 specialized AI agents that work in parallel. While one researches keywords, another writes ad copy, another generates images, and another builds your landing page. This parallel processing is what makes it possible to do in minutes what takes humans hours.",
+        },
+      },
+      {
+        "@type": "Question",
+        name: "Do I need any advertising experience?",
+        acceptedAnswer: {
+          "@type": "Answer",
+          text: "Not at all. Just describe your business or enter your website URL. Our AI handles keyword research, ad copy, image creation, landing pages, targeting, and bidding strategy. You just review and approve.",
+        },
+      },
+      {
+        "@type": "Question",
+        name: "What platforms do you support?",
+        acceptedAnswer: {
+          "@type": "Answer",
+          text: "Google Ads (Search, Display, Performance Max), Meta Ads (Facebook and Instagram), and Google Business Profile. All managed from one dashboard with one subscription.",
+        },
+      },
+      {
+        "@type": "Question",
+        name: "How does the AI image generation work?",
+        acceptedAnswer: {
+          "@type": "Answer",
+          text: "We use multiple AI image generation APIs to create professional ad images sized for every placement — feed, stories, display, etc. Just describe what you want or let the AI decide based on your business and campaign goals.",
+        },
+      },
+      {
+        "@type": "Question",
+        name: "Are landing pages included?",
+        acceptedAnswer: {
+          "@type": "Answer",
+          text: "Yes. Our AI Landing Page Agent creates conversion-optimized pages with your branding, deployed and hosted automatically. No developer needed. Each page is designed to match your ad campaign for maximum conversion rates.",
+        },
+      },
+      {
+        "@type": "Question",
+        name: "Will AI accidentally overspend my budget?",
+        acceptedAnswer: {
+          "@type": "Answer",
+          text: "Never. Our guardrails engine enforces hard budget caps, limits spend changes, and blocks all automation if conversion tracking breaks. Every change is logged with one-click rollback.",
+        },
+      },
+      {
+        "@type": "Question",
+        name: "Can I use this for my agency with multiple clients?",
+        acceptedAnswer: {
+          "@type": "Answer",
+          text: "Yes. Our Elite plan supports unlimited accounts with MCC/agency mode. Each client gets their own isolated workspace with role-based access.",
+        },
+      },
+      {
+        "@type": "Question",
+        name: "Can I cancel anytime?",
+        acceptedAnswer: {
+          "@type": "Answer",
+          text: "Absolutely. No contracts, no commitments. Cancel with one click. Your ad accounts and campaigns remain yours.",
+        },
+      },
+    ],
+  };
+
   return (
-    <script
-      type="application/ld+json"
-      dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
-    />
+    <>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(softwareApp) }}
+      />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(organization) }}
+      />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(faqPage) }}
+      />
+    </>
   );
 }
 
@@ -943,7 +1032,7 @@ function Footer() {
             <h4 className="font-semibold text-white mb-4">Legal</h4>
             <ul className="space-y-2.5 text-sm">
               <li><a href="/privacy" className="hover:text-white transition-colors">Privacy Policy</a></li>
-              <li><a href="#" className="hover:text-white transition-colors">Terms of Service</a></li>
+              <li><a href="/privacy" className="hover:text-white transition-colors">Terms of Service</a></li>
             </ul>
           </div>
         </div>
