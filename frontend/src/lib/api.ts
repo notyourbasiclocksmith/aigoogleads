@@ -5,11 +5,16 @@ const API_URL =
     ? ""
     : process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+// Pipeline requests (campaign creation) can take 10-20 minutes.
+// Default browser fetch has no timeout, so we set a generous one.
+const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes
+
 interface ApiOptions {
   method?: string;
   body?: any;
   headers?: Record<string, string>;
   signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 class ApiClient {
@@ -33,7 +38,7 @@ class ApiClient {
   }
 
   async fetch<T = any>(path: string, options: ApiOptions = {}): Promise<T> {
-    const { method = "GET", body, headers = {}, signal } = options;
+    const { method = "GET", body, headers = {}, signal, timeoutMs = DEFAULT_TIMEOUT_MS } = options;
     const token = this.getToken();
 
     const fetchHeaders: Record<string, string> = {
@@ -44,12 +49,39 @@ class ApiClient {
       fetchHeaders["Authorization"] = `Bearer ${token}`;
     }
 
-    const res = await fetch(`${API_URL}${path}`, {
-      method,
-      headers: fetchHeaders,
-      body: body ? JSON.stringify(body) : undefined,
-      signal,
-    });
+    // Combine user-provided signal (e.g. cancel button) with a timeout signal
+    let combinedSignal = signal;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    if (timeoutMs > 0) {
+      const timeoutController = new AbortController();
+      timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs);
+      // If a user signal is provided, abort on either
+      if (signal) {
+        signal.addEventListener("abort", () => timeoutController.abort());
+      }
+      combinedSignal = timeoutController.signal;
+    }
+
+    let res: Response;
+    try {
+      res = await fetch(`${API_URL}${path}`, {
+        method,
+        headers: fetchHeaders,
+        body: body ? JSON.stringify(body) : undefined,
+        signal: combinedSignal,
+      });
+    } catch (err: any) {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (err.name === "AbortError" && signal && !signal.aborted) {
+        // The timeout fired, not the user cancel
+        throw new Error(
+          `Request timed out after ${Math.round(timeoutMs / 60000)} minutes — the pipeline may still be running. Refresh to check results.`
+        );
+      }
+      throw err;
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
 
     if (res.status === 401) {
       this.setToken(null);
@@ -71,8 +103,8 @@ class ApiClient {
     return this.fetch<T>(path);
   }
 
-  post<T = any>(path: string, body?: any, opts?: { signal?: AbortSignal }) {
-    return this.fetch<T>(path, { method: "POST", body, signal: opts?.signal });
+  post<T = any>(path: string, body?: any, opts?: { signal?: AbortSignal; timeoutMs?: number }) {
+    return this.fetch<T>(path, { method: "POST", body, signal: opts?.signal, timeoutMs: opts?.timeoutMs });
   }
 
   put<T = any>(path: string, body?: any) {

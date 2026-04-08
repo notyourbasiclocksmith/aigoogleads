@@ -1331,7 +1331,10 @@ export default function OperatorPage() {
     } catch (err: any) {
       if (err.name === "AbortError") {
         // User cancelled — don't show error
+      } else if (err.message?.includes("timed out")) {
+        setError(err.message);
       } else {
+        // Show the actual backend error detail (e.g. "Operator error: Pipeline failed...")
         setError(err.message || "Failed to send message");
       }
     } finally {
@@ -1874,9 +1877,19 @@ export default function OperatorPage() {
               )}
 
               {error && (
-                <div className="flex items-center gap-2 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-2.5">
-                  <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-                  <span>{error}</span>
+                <div className="flex items-start gap-2 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-2.5">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <div className="flex flex-col gap-1">
+                    <span>{error}</span>
+                    {error.includes("timed out") && (
+                      <button
+                        onClick={() => { setError(""); window.location.reload(); }}
+                        className="text-left text-red-300 underline hover:text-red-200"
+                      >
+                        Refresh to check results
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
 
