@@ -1010,6 +1010,7 @@ export default function OperatorPage() {
   const abortRef = useRef<AbortController | null>(null);
   const [liveLog, setLiveLog] = useState<string[]>([]);
   const logTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const pipelinePollRef = useRef<NodeJS.Timeout | null>(null);
 
   // ── Session History State ──
   const [sessions, setSessions] = useState<ConversationSession[]>([]);
@@ -1135,6 +1136,7 @@ export default function OperatorPage() {
       clearInterval(logTimerRef.current);
       logTimerRef.current = null;
     }
+    stopPipelinePolling();
     setSending(false);
     setLiveLog(prev => [...prev, "Process cancelled by user"]);
   }
@@ -1196,6 +1198,52 @@ export default function OperatorPage() {
     }, interval);
   }
 
+  function startPipelinePolling(convId: string) {
+    if (pipelinePollRef.current) clearInterval(pipelinePollRef.current);
+    const seenIds = new Set<string>();
+    pipelinePollRef.current = setInterval(async () => {
+      try {
+        const data = await api.get(`/api/operator/unified/chat/${convId}`);
+        const allMsgs: Message[] = (data.messages || []).map((m: any) => ({
+          id: m.id,
+          role: m.role,
+          content: m.content || m.structured_payload?.summary || "",
+          structured_payload: m.structured_payload,
+          proposed_actions: m.proposed_actions,
+          created_at: m.created_at,
+        }));
+        const progressMsgs = allMsgs.filter(
+          (m) => m.structured_payload?.type === "pipeline_progress" && !seenIds.has(m.id)
+        );
+        if (progressMsgs.length > 0) {
+          for (const pm of progressMsgs) seenIds.add(pm.id);
+          // Inject real pipeline progress messages into the messages state
+          // so PipelineProgressCard renders them in real-time
+          setMessages((prev) => {
+            const existingIds = new Set(prev.map((m) => m.id));
+            const newMsgs = progressMsgs.filter((m) => !existingIds.has(m.id));
+            return newMsgs.length > 0 ? [...prev, ...newMsgs] : prev;
+          });
+          // Stop the fake log stepper once real progress arrives
+          if (logTimerRef.current) {
+            clearInterval(logTimerRef.current);
+            logTimerRef.current = null;
+          }
+          setLiveLog([]);
+        }
+      } catch {
+        // Ignore polling errors
+      }
+    }, 3000);
+  }
+
+  function stopPipelinePolling() {
+    if (pipelinePollRef.current) {
+      clearInterval(pipelinePollRef.current);
+      pipelinePollRef.current = null;
+    }
+  }
+
   async function handleSend(text?: string) {
     const msg = text || input.trim();
     if (!msg || sending) return;
@@ -1248,7 +1296,15 @@ export default function OperatorPage() {
         };
       }
 
+      // Start polling for pipeline progress if we have a conversation
+      if (conversationId) {
+        startPipelinePolling(conversationId);
+      }
+
       const result = await api.post(`${apiBase}/chat`, body, { signal: controller.signal });
+
+      // Stop polling now that the response arrived
+      stopPipelinePolling();
 
       if (!conversationId && result.conversation_id) {
         setConversationId(result.conversation_id);
@@ -1281,6 +1337,7 @@ export default function OperatorPage() {
     } finally {
       setSending(false);
       abortRef.current = null;
+      stopPipelinePolling();
       if (logTimerRef.current) {
         clearInterval(logTimerRef.current);
         logTimerRef.current = null;

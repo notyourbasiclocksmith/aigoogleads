@@ -151,7 +151,7 @@ class ClaudeAdsAgentService:
     """Calls Claude API with account context to produce structured analysis."""
 
     def __init__(self):
-        self.client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        self.client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
         self.model = settings.ANTHROPIC_MODEL
 
     async def analyze(
@@ -185,7 +185,7 @@ USER REQUEST: {user_message}"""
         messages.append({"role": "user", "content": user_content})
 
         try:
-            response = self.client.messages.create(
+            response = await self.client.messages.create(
                 model=self.model,
                 max_tokens=4096,
                 system=SYSTEM_PROMPT,

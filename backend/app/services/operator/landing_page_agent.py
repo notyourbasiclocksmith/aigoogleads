@@ -858,11 +858,15 @@ class LandingPageAgent:
         # Aggregate rating from reviews
         review_list = reviews.get("reviews", [])
         if review_list:
-            jsonld_schema["aggregateRating"] = {
-                "@type": "AggregateRating",
-                "ratingValue": "5",
-                "reviewCount": str(len(review_list)),
-            }
+            ratings = [r.get("rating") for r in review_list if r.get("rating") is not None]
+            if ratings:
+                avg_rating = round(sum(ratings) / len(ratings), 1)
+                jsonld_schema["aggregateRating"] = {
+                    "@type": "AggregateRating",
+                    "ratingValue": str(avg_rating),
+                    "bestRating": "5",
+                    "reviewCount": str(len(review_list)),
+                }
 
         # URL and image properties
         if slug:
@@ -1008,28 +1012,73 @@ class LandingPageAgent:
     <h2 style="text-align:center;font-size:26px;margin-bottom:8px;color:#111;">Request a Free Quote</h2>
     <p style="text-align:center;color:#555;font-size:15px;margin-bottom:24px;">We'll respond within minutes</p>
     <div style="max-width:480px;margin:0 auto;background:#fff;padding:32px;border-radius:16px;box-shadow:0 4px 20px rgba(0,0,0,0.08);">
+      <form id="lp-contact-form" onsubmit="return handleLPFormSubmit(event);">
       <div style="margin-bottom:16px;">
         <label style="display:block;font-size:13px;font-weight:600;color:#333;margin-bottom:6px;">Full Name *</label>
-        <input type="text" placeholder="Your full name" style="width:100%;padding:12px 16px;border:1px solid #ddd;border-radius:8px;font-size:15px;outline:none;" />
+        <input type="text" name="full_name" required placeholder="Your full name" style="width:100%;padding:12px 16px;border:1px solid #ddd;border-radius:8px;font-size:15px;outline:none;" />
       </div>
       <div style="margin-bottom:16px;">
         <label style="display:block;font-size:13px;font-weight:600;color:#333;margin-bottom:6px;">Phone Number *</label>
-        <input type="tel" placeholder="(555) 123-4567" style="width:100%;padding:12px 16px;border:1px solid #ddd;border-radius:8px;font-size:15px;outline:none;" />
+        <input type="tel" name="phone" required placeholder="(555) 123-4567" style="width:100%;padding:12px 16px;border:1px solid #ddd;border-radius:8px;font-size:15px;outline:none;" />
       </div>
       <div style="margin-bottom:16px;">
         <label style="display:block;font-size:13px;font-weight:600;color:#333;margin-bottom:6px;">Email</label>
-        <input type="email" placeholder="you@example.com" style="width:100%;padding:12px 16px;border:1px solid #ddd;border-radius:8px;font-size:15px;outline:none;" />
+        <input type="email" name="email" placeholder="you@example.com" style="width:100%;padding:12px 16px;border:1px solid #ddd;border-radius:8px;font-size:15px;outline:none;" />
       </div>
       <div style="margin-bottom:24px;">
         <label style="display:block;font-size:13px;font-weight:600;color:#333;margin-bottom:6px;">How can we help?</label>
-        <textarea placeholder="Describe your situation..." rows="3" style="width:100%;padding:12px 16px;border:1px solid #ddd;border-radius:8px;font-size:15px;outline:none;resize:vertical;"></textarea>
+        <textarea name="message" placeholder="Describe your situation..." rows="3" style="width:100%;padding:12px 16px;border:1px solid #ddd;border-radius:8px;font-size:15px;outline:none;resize:vertical;"></textarea>
       </div>
-      <button style="width:100%;padding:14px;background:{accent_color};color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:700;cursor:pointer;">
+      <button type="submit" style="width:100%;padding:14px;background:{accent_color};color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:700;cursor:pointer;">
         Get My Free Quote
       </button>
+      <p id="lp-form-status" style="text-align:center;margin-top:12px;font-size:14px;display:none;"></p>
+      </form>
     </div>
   </div>
-</section>'''
+</section>
+<script>
+function handleLPFormSubmit(e) {{
+  e.preventDefault();
+  var form = document.getElementById('lp-contact-form');
+  var statusEl = document.getElementById('lp-form-status');
+  var btn = form.querySelector('button[type="submit"]');
+  var data = {{}};
+  var inputs = form.querySelectorAll('input, textarea');
+  for (var i = 0; i < inputs.length; i++) {{
+    if (inputs[i].name) data[inputs[i].name] = inputs[i].value;
+  }}
+  var slug = window.location.pathname.split('/lp/')[1];
+  if (slug) slug = slug.split('/')[0].split('?')[0];
+  if (!slug) {{ alert('Form submission error'); return false; }}
+  btn.disabled = true;
+  btn.textContent = 'Sending...';
+  fetch('/lp/' + slug + '/event', {{
+    method: 'POST',
+    headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify({{event_type: 'form_submit', metadata: data}})
+  }}).then(function(r) {{
+    if (r.ok) {{
+      statusEl.style.display = 'block';
+      statusEl.style.color = '#16a34a';
+      statusEl.textContent = 'Thank you! We will contact you shortly.';
+      form.reset();
+    }} else {{
+      statusEl.style.display = 'block';
+      statusEl.style.color = '#dc2626';
+      statusEl.textContent = 'Something went wrong. Please call us directly.';
+    }}
+  }}).catch(function() {{
+    statusEl.style.display = 'block';
+    statusEl.style.color = '#dc2626';
+    statusEl.textContent = 'Something went wrong. Please call us directly.';
+  }}).finally(function() {{
+    btn.disabled = false;
+    btn.textContent = 'Get My Free Quote';
+  }});
+  return false;
+}}
+</script>'''
 
 
 # ── HELPER FUNCTIONS ──────────────────────────────────────────────

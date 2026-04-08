@@ -92,12 +92,16 @@ class GoogleAdsContextService:
                         "daily_budget": round(row.campaign_budget.amount_micros / 1_000_000, 2),
                         "impressions": 0, "clicks": 0, "cost": 0,
                         "conversions": 0, "conv_value": 0,
+                        "search_impression_share_sum": 0, "search_impression_share_count": 0,
                     }
                 agg[cid]["impressions"] += row.metrics.impressions
                 agg[cid]["clicks"] += row.metrics.clicks
                 agg[cid]["cost"] += row.metrics.cost_micros / 1_000_000
                 agg[cid]["conversions"] += row.metrics.conversions
                 agg[cid]["conv_value"] += row.metrics.conversions_value
+                if row.metrics.search_impression_share:
+                    agg[cid]["search_impression_share_sum"] += row.metrics.search_impression_share
+                    agg[cid]["search_impression_share_count"] += 1
 
             # Compute derived metrics
             for c in agg.values():
@@ -105,6 +109,12 @@ class GoogleAdsContextService:
                 c["ctr"] = round(c["clicks"] / c["impressions"] * 100, 2) if c["impressions"] > 0 else 0
                 c["avg_cpc"] = round(c["cost"] / c["clicks"], 2) if c["clicks"] > 0 else 0
                 c["cost_per_conversion"] = round(c["cost"] / c["conversions"], 2) if c["conversions"] > 0 else 0
+                if c["search_impression_share_count"] > 0:
+                    c["search_impression_share"] = round(c["search_impression_share_sum"] / c["search_impression_share_count"], 4)
+                else:
+                    c["search_impression_share"] = None
+                del c["search_impression_share_sum"]
+                del c["search_impression_share_count"]
             return sorted(agg.values(), key=lambda x: x["cost"], reverse=True)
         except Exception as e:
             logger.error("Failed to get campaign performance", error=str(e))

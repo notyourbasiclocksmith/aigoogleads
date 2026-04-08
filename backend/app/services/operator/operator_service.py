@@ -725,6 +725,7 @@ class GoogleAdsOperatorService:
             "recommended_actions": proposed_actions,
             "questions": claude_response.get("questions", []),
             "message": claude_response.get("message", ""),
+            "next_steps": claude_response.get("next_steps", []),
             "landing_page_results": lp_results if lp_results else None,
         }
 
