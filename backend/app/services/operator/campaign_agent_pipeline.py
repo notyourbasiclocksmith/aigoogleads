@@ -1655,6 +1655,39 @@ Return this JSON:
                 ]
                 logger.warning("Using fallback descriptions for ad group", service=svc)
 
+            # Pad headlines to 15 if LLM returned fewer (Google RSA allows up to 15)
+            if len(headlines) < 15:
+                biz_name = strategy.get("business_name", context.get("business", {}).get("name", ""))
+                location = (strategy.get("locations") or [""])[0]
+                phone = context.get("business", {}).get("phone", "")
+                trust = context.get("business", {}).get("trust_signals", [])
+                padding_pool = [
+                    f"Call Now - {svc}"[:30],
+                    f"{svc} in {location}"[:30] if location else f"Expert {svc}"[:30],
+                    f"{location} {svc} Experts"[:30] if location else f"Licensed {svc}"[:30],
+                    f"Same-Day {svc}"[:30],
+                    f"Available 24/7"[:30],
+                    f"{biz_name}"[:30] if biz_name else f"Trusted {svc}"[:30],
+                    f"Free Estimate Available"[:30],
+                    f"Licensed & Insured"[:30],
+                    f"Call {phone}"[:30] if phone else f"Call Now for {svc}"[:30],
+                    f"Serving {location} Area"[:30] if location else f"Local {svc} Pros"[:30],
+                    f"Fast Response Time"[:30],
+                    f"{trust[0]}"[:30] if trust else f"5★ Rated Service"[:30],
+                    f"Mobile Service Available"[:30],
+                    f"OEM Parts & Equipment"[:30],
+                    f"Book Online Now"[:30],
+                ]
+                existing = {(h if isinstance(h, str) else h.get("text", "")).lower() for h in headlines}
+                for pad_h in padding_pool:
+                    if len(headlines) >= 15:
+                        break
+                    if pad_h.lower() not in existing:
+                        headlines.append(pad_h)
+                        existing.add(pad_h.lower())
+                if len(headlines) < 15:
+                    logger.warning("Could not pad to 15 headlines", service=svc, count=len(headlines))
+
             # Skip ad groups with no keywords
             if not svc_keywords:
                 logger.warning("Skipping ad group with no keywords", service=svc)
@@ -1861,6 +1894,11 @@ Return this JSON:
 
         # Truncate callouts
         spec["callouts"] = [c[:25] if isinstance(c, str) else str(c)[:25] for c in spec.get("callouts", [])]
+
+        # Truncate structured snippet values (max 25 chars each)
+        snippets = spec.get("structured_snippets", {})
+        if snippets.get("values"):
+            snippets["values"] = [v[:25] if isinstance(v, str) else str(v)[:25] for v in snippets["values"]]
 
         # ── If QA score < 70 and we haven't retried, trigger correction round ──
         if qa_result.get("score", 100) < 70 and not spec.get("_qa_retry"):
@@ -2426,11 +2464,30 @@ Return this JSON:
                 checked_urls.add(url)
                 urls_to_check.append(("sitelink", url))
 
+        # Group by domain so we can rate-limit per domain
+        from urllib.parse import urlparse
+        import asyncio as _aio
+
         async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
-            for source, url in urls_to_check[:15]:  # Cap at 15 to avoid delays
+            last_domain = ""
+            for source, url in urls_to_check[:15]:  # Cap at 15
                 try:
+                    domain = urlparse(url).netloc
+                    # Rate limit: 0.5s delay between requests to same domain to avoid 429
+                    if domain == last_domain:
+                        await _aio.sleep(0.5)
+                    last_domain = domain
+
                     resp = await client.head(url)
-                    if resp.status_code >= 400:
+                    # Treat 429 as a warning (rate-limited), not a critical disapproval
+                    if resp.status_code == 429:
+                        issues.append({
+                            "severity": "warning",
+                            "field": f"final_url ({source})",
+                            "message": f"URL {url} returned HTTP 429 (rate limited) — likely OK, verify manually",
+                            "check": "url_reachability",
+                        })
+                    elif resp.status_code >= 400:
                         issues.append({
                             "severity": "critical",
                             "field": f"final_url ({source})",
