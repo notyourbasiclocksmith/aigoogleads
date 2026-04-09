@@ -92,8 +92,21 @@ class ApiClient {
     }
 
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: "Request failed" }));
-      throw new Error(err.detail || `HTTP ${res.status}`);
+      // Try JSON first, then text — Render/proxy may return HTML on 502/504 timeouts
+      let errorDetail: string;
+      const contentType = res.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        const err = await res.json().catch(() => null);
+        errorDetail = err?.detail || `HTTP ${res.status}`;
+      } else {
+        const text = await res.text().catch(() => "");
+        if (res.status === 502 || res.status === 504) {
+          errorDetail = `Server timeout (${res.status}) — the pipeline is still running in the background. Wait 1-2 minutes and refresh to see results.`;
+        } else {
+          errorDetail = text.slice(0, 200) || `HTTP ${res.status}`;
+        }
+      }
+      throw new Error(errorDetail);
     }
 
     return res.json();
@@ -146,8 +159,21 @@ class ApiClient {
       throw new Error("Unauthorized");
     }
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: "Request failed" }));
-      throw new Error(err.detail || `HTTP ${res.status}`);
+      // Try JSON first, then text — Render/proxy may return HTML on 502/504 timeouts
+      let errorDetail: string;
+      const contentType = res.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        const err = await res.json().catch(() => null);
+        errorDetail = err?.detail || `HTTP ${res.status}`;
+      } else {
+        const text = await res.text().catch(() => "");
+        if (res.status === 502 || res.status === 504) {
+          errorDetail = `Server timeout (${res.status}) — the pipeline is still running in the background. Wait 1-2 minutes and refresh to see results.`;
+        } else {
+          errorDetail = text.slice(0, 200) || `HTTP ${res.status}`;
+        }
+      }
+      throw new Error(errorDetail);
     }
 
     const reader = res.body?.getReader();

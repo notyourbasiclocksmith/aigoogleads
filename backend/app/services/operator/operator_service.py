@@ -3,6 +3,7 @@ Google Ads Operator Service — orchestrates the full read → analyze → propo
 
 This is the main service that the API endpoints call.
 """
+import asyncio
 import uuid
 import time
 from datetime import datetime, timezone
@@ -137,6 +138,149 @@ class GoogleAdsOperatorService:
             fallback["_pipeline_failed"] = True
             fallback["_pipeline_error"] = str(e)
             return fallback
+
+    async def _run_pipeline_background(
+        self,
+        conversation_id: str,
+        tenant_id: str,
+        customer_id: str,
+        user_message: str,
+        account_context: Dict[str, Any],
+        claude_intent: Dict[str, Any],
+        image_engine: Optional[str] = None,
+        enhanced_data: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Background task: runs the campaign pipeline and saves the result
+        as a new assistant message in the conversation.
+
+        Uses its own DB session since the original request's session is closed
+        by the time the pipeline finishes.
+        """
+        from app.core.database import async_session_factory
+
+        enhanced_data = enhanced_data or {}
+        logger.info("Background pipeline started", conversation_id=conversation_id)
+
+        try:
+            # Run pipeline with its own DB session (original request session is closed)
+            async with async_session_factory() as pipeline_db:
+                pipeline = CampaignAgentPipeline(pipeline_db, tenant_id, customer_id)
+                intent_payload = claude_intent.get("payload", {})
+                intent_hints = {
+                    "campaign_type": intent_payload.get("campaign", {}).get("campaign_type"),
+                    "services": intent_payload.get("services"),
+                    "locations": intent_payload.get("locations"),
+                    "forward_phone": intent_payload.get("forward_phone"),
+                    "image_engine": image_engine or "google",
+                }
+                try:
+                    pipeline_spec = await pipeline.run(
+                        user_prompt=user_message,
+                        account_context=account_context,
+                        conversation_id=conversation_id,
+                        intent_hints=intent_hints,
+                    )
+                except Exception as e:
+                    logger.error("Background campaign pipeline failed", error=str(e))
+                    pipeline_spec = claude_intent.get("payload", {})
+                    pipeline_spec["_pipeline_failed"] = True
+                    pipeline_spec["_pipeline_error"] = str(e)
+
+            # Validate pipeline spec
+            pipeline_failed = pipeline_spec.get("_pipeline_failed", False)
+            has_ad_groups = len(pipeline_spec.get("ad_groups", [])) > 0
+            has_asset_groups = len(pipeline_spec.get("asset_groups", [])) > 0
+            has_campaign = bool(pipeline_spec.get("campaign", {}).get("name"))
+
+            async with async_session_factory() as db:
+                if pipeline_failed or not has_campaign or (not has_ad_groups and not has_asset_groups):
+                    logger.error(
+                        "Background pipeline produced invalid spec",
+                        has_campaign=has_campaign,
+                        ad_groups=has_ad_groups,
+                        asset_groups=has_asset_groups,
+                    )
+                    error_msg = OperatorMessage(
+                        id=str(uuid.uuid4()),
+                        conversation_id=conversation_id,
+                        role="assistant",
+                        content=(
+                            "⚠️ The campaign pipeline failed to produce a valid campaign spec. "
+                            "Please try again or provide more details about the campaign you'd like to create."
+                        ),
+                        structured_payload={"type": "pipeline_error"},
+                    )
+                    db.add(error_msg)
+                else:
+                    # Attach image prompts from enhancer
+                    if enhanced_data.get("image_prompts"):
+                        pipeline_spec["_image_prompts"] = enhanced_data["image_prompts"]
+
+                    # Build recommended_actions with the enriched spec
+                    campaign_name = pipeline_spec.get("campaign", {}).get("name", "AI Campaign")
+                    meta = pipeline_spec.get("_pipeline_metadata", {})
+                    qa_score = meta.get("qa_score")
+                    reasoning = claude_intent.get("reasoning", "Expert multi-agent campaign pipeline")
+                    if qa_score:
+                        reasoning = f"{reasoning} [Pipeline QA Score: {qa_score}/100]"
+
+                    structured = {
+                        "type": "campaign_proposal",
+                        "summary": f"Campaign '{campaign_name}' is ready for your review.",
+                        "recommended_actions": [{
+                            "action_type": "deploy_full_campaign",
+                            "label": f"Deploy Campaign: {campaign_name}",
+                            "reasoning": reasoning,
+                            "expected_impact": claude_intent.get("payload", {}).get("expected_impact", "high"),
+                            "risk_level": "medium",
+                            "action_payload": pipeline_spec,
+                        }],
+                    }
+
+                    result_msg = OperatorMessage(
+                        id=str(uuid.uuid4()),
+                        conversation_id=conversation_id,
+                        role="assistant",
+                        content=f"Campaign '{campaign_name}' is ready for your review.",
+                        structured_payload=structured,
+                    )
+                    db.add(result_msg)
+                    await db.flush()
+
+                    # Save the proposed action so it can be approved
+                    pa = ProposedAction(
+                        id=str(uuid.uuid4()),
+                        conversation_id=conversation_id,
+                        message_id=result_msg.id,
+                        action_type="deploy_full_campaign",
+                        label=f"Deploy Campaign: {campaign_name}",
+                        reasoning=reasoning,
+                        expected_impact=claude_intent.get("payload", {}).get("expected_impact", "high"),
+                        risk_level="medium",
+                        action_payload=pipeline_spec,
+                        status="proposed",
+                    )
+                    db.add(pa)
+
+                await db.commit()
+                logger.info("Background pipeline completed and saved", conversation_id=conversation_id)
+
+        except Exception as e:
+            logger.error("Background pipeline crashed", error=str(e), conversation_id=conversation_id)
+            try:
+                async with async_session_factory() as db:
+                    error_msg = OperatorMessage(
+                        id=str(uuid.uuid4()),
+                        conversation_id=conversation_id,
+                        role="assistant",
+                        content=f"⚠️ Campaign pipeline failed: {str(e)}. Please try again.",
+                        structured_payload={"type": "pipeline_error", "error": str(e)},
+                    )
+                    db.add(error_msg)
+                    await db.commit()
+            except Exception as save_err:
+                logger.error("Failed to save pipeline error message", error=str(save_err))
 
     # ── LANDING PAGE ACTION DETECTION & EXECUTION ────────────────
 
@@ -576,11 +720,14 @@ class GoogleAdsOperatorService:
         )
 
         # ── PIPELINE INTERCEPT: If Claude recommends deploy_full_campaign,
-        # run the multi-agent pipeline to produce an expert-quality spec ──
+        # launch the multi-agent pipeline as a background task so the HTTP
+        # response returns immediately (avoids Render's 60-second proxy timeout).
+        # The background task saves its result as a new message in the conversation.
+        pipeline_launched = False
         if self._should_use_pipeline(claude_response):
-            logger.info("Pipeline intercept triggered", conversation_id=conversation_id)
+            logger.info("Pipeline intercept triggered — launching background task", conversation_id=conversation_id)
             intent = self._extract_campaign_intent(claude_response, effective_message)
-            pipeline_spec = await self._run_campaign_pipeline(
+            asyncio.create_task(self._run_pipeline_background(
                 conversation_id=conversation_id,
                 tenant_id=tenant_id,
                 customer_id=customer_id,
@@ -588,39 +735,20 @@ class GoogleAdsOperatorService:
                 account_context=account_context,
                 claude_intent=intent,
                 image_engine=image_engine,
+                enhanced_data=enhanced_data,
+            ))
+            pipeline_launched = True
+            # Rewrite Claude's message to inform the user
+            claude_response["message"] = (
+                "I'm building your expert campaign with 6 AI agents now. "
+                "This takes 2-5 minutes — you'll see the proposal appear here when it's ready."
             )
-            # Validate pipeline spec has minimum required structure
-            pipeline_failed = pipeline_spec.get("_pipeline_failed", False)
-            has_ad_groups = len(pipeline_spec.get("ad_groups", [])) > 0
-            has_asset_groups = len(pipeline_spec.get("asset_groups", [])) > 0
-            has_campaign = bool(pipeline_spec.get("campaign", {}).get("name"))
-            if pipeline_failed or not has_campaign or (not has_ad_groups and not has_asset_groups):
-                logger.error("Pipeline produced invalid spec — missing campaign or ad groups",
-                    has_campaign=has_campaign, ad_groups=has_ad_groups, asset_groups=has_asset_groups)
-                # Do NOT inject invalid spec — keep original Claude thin payload and warn user
-                claude_response["message"] = (
-                    claude_response.get("message", "") +
-                    "\n\n⚠️ The campaign pipeline failed to produce a valid campaign spec. "
-                    "Please try again or provide more details about the campaign you'd like to create."
-                ).strip()
-            else:
-                # Replace the thin Claude payload with the pipeline-generated spec
-                for action in claude_response.get("recommended_actions", []):
-                    if action.get("action_type") == "deploy_full_campaign":
-                        action["action_payload"] = pipeline_spec
-                        action["label"] = f"Deploy Campaign: {pipeline_spec.get('campaign', {}).get('name', 'AI Campaign')}"
-                        # Enrich reasoning with pipeline metadata
-                        meta = pipeline_spec.get("_pipeline_metadata", {})
-                        qa_score = meta.get("qa_score")
-                        if qa_score:
-                            action["reasoning"] = (
-                                f"{action.get('reasoning', '')} "
-                                f"[Pipeline QA Score: {qa_score}/100]"
-                            ).strip()
-
-                        # Attach image prompts from enhancer for post-deploy generation
-                        if enhanced_data.get("image_prompts"):
-                            pipeline_spec["_image_prompts"] = enhanced_data["image_prompts"]
+            # Remove the deploy_full_campaign action from the immediate response
+            # (it will be re-added by the background task with the full spec)
+            claude_response["recommended_actions"] = [
+                a for a in claude_response.get("recommended_actions", [])
+                if a.get("action_type") != "deploy_full_campaign"
+            ]
 
         # ── LANDING PAGE ACTION INTERCEPT: Auto-execute landing page actions
         # since they are non-destructive (don't modify ad account) ──
@@ -730,6 +858,7 @@ class GoogleAdsOperatorService:
             "message": claude_response.get("message", ""),
             "next_steps": claude_response.get("next_steps", []),
             "landing_page_results": lp_results if lp_results else None,
+            "pipeline_running": pipeline_launched,
         }
 
     # ── APPROVE / REJECT / EXECUTE ──────────────────────────────

@@ -1011,6 +1011,7 @@ export default function OperatorPage() {
   const [liveLog, setLiveLog] = useState<string[]>([]);
   const logTimerRef = useRef<NodeJS.Timeout | null>(null);
   const pipelinePollRef = useRef<NodeJS.Timeout | null>(null);
+  const pipelineBackgroundActive = useRef(false);
 
   // ── Session History State ──
   const [sessions, setSessions] = useState<ConversationSession[]>([]);
@@ -1212,6 +1213,37 @@ export default function OperatorPage() {
           proposed_actions: m.proposed_actions,
           created_at: m.created_at,
         }));
+
+        // Check for pipeline completion (campaign_proposal or pipeline_error)
+        const completionMsg = allMsgs.find(
+          (m) =>
+            (m.structured_payload?.type === "campaign_proposal" ||
+             m.structured_payload?.type === "pipeline_error") &&
+            !seenIds.has(m.id)
+        );
+        if (completionMsg) {
+          seenIds.add(completionMsg.id);
+          setMessages((prev) => {
+            const existingIds = new Set(prev.map((m) => m.id));
+            if (existingIds.has(completionMsg.id)) return prev;
+            // Remove any "pipeline_running" placeholder messages
+            const filtered = prev.filter(
+              (m) => m.structured_payload?.type !== "pipeline_running"
+            );
+            return [...filtered, completionMsg];
+          });
+          // Pipeline finished — stop polling and clear loading state
+          stopPipelinePolling();
+          setSending(false);
+          if (logTimerRef.current) {
+            clearInterval(logTimerRef.current);
+            logTimerRef.current = null;
+          }
+          setLiveLog([]);
+          return;
+        }
+
+        // Check for progress updates
         const progressMsgs = allMsgs.filter(
           (m) => m.structured_payload?.type === "pipeline_progress" && !seenIds.has(m.id)
         );
@@ -1303,13 +1335,34 @@ export default function OperatorPage() {
 
       const result = await api.post(`${apiBase}/chat`, body, { signal: controller.signal });
 
-      // Stop polling now that the response arrived
-      stopPipelinePolling();
-
       if (!conversationId && result.conversation_id) {
         setConversationId(result.conversation_id);
         if (showSessions) loadSessions();
       }
+
+      // If the pipeline was launched in the background, show a status message
+      // and keep polling — don't stop until the pipeline result arrives.
+      if (result.pipeline_running) {
+        const statusMsg: Message = {
+          id: `pipeline-${Date.now()}`,
+          role: "assistant",
+          content: result.message || "Building your expert campaign with 6 AI agents. This takes 2-5 minutes...",
+          structured_payload: { type: "pipeline_running" },
+          created_at: new Date().toISOString(),
+        };
+        setMessages(prev => [...prev, statusMsg]);
+        // Keep polling for the pipeline result (don't stop, don't clear sending)
+        const pollConvId = result.conversation_id || conversationId;
+        if (pollConvId) {
+          startPipelinePolling(pollConvId);
+        }
+        // Skip the finally cleanup — polling and sending state stay active
+        pipelineBackgroundActive.current = true;
+        return;
+      }
+
+      // Stop polling now that the response arrived (non-pipeline case)
+      stopPipelinePolling();
 
       const assistantMsg: Message = {
         id: result.message_id || `assistant-${Date.now()}`,
@@ -1338,6 +1391,12 @@ export default function OperatorPage() {
         setError(err.message || "Failed to send message");
       }
     } finally {
+      // If a background pipeline is running, don't clean up — polling handles it
+      if (pipelineBackgroundActive.current) {
+        pipelineBackgroundActive.current = false;
+        abortRef.current = null;
+        return;
+      }
       setSending(false);
       abortRef.current = null;
       stopPipelinePolling();
@@ -1877,16 +1936,16 @@ export default function OperatorPage() {
               )}
 
               {error && (
-                <div className="flex items-start gap-2 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-2.5">
-                  <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                  <div className="flex flex-col gap-1">
-                    <span>{error}</span>
-                    {error.includes("timed out") && (
+                <div className="flex items-start gap-2 text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-3">
+                  <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5" />
+                  <div className="flex flex-col gap-1.5">
+                    <span className="font-medium">{error}</span>
+                    {(error.includes("timed out") || error.includes("timeout") || error.includes("502") || error.includes("504") || error.includes("still running")) && (
                       <button
                         onClick={() => { setError(""); window.location.reload(); }}
-                        className="text-left text-red-300 underline hover:text-red-200"
+                        className="text-left text-red-300 underline hover:text-red-200 text-xs"
                       >
-                        Refresh to check results
+                        Click to refresh and check results
                       </button>
                     )}
                   </div>
