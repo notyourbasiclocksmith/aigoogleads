@@ -130,6 +130,47 @@ const MODE_CONFIG: Record<OperatorMode, ModeConfig> = {
   },
 };
 
+// ── URL Linkifier ──────────────────────────────────────────
+// Renders text with URLs (both absolute https:// and relative /lp/...) as clickable links
+
+function Linkified({ text, className }: { text: string; className?: string }) {
+  // Match absolute URLs or relative paths starting with /lp/
+  const urlPattern = /(https?:\/\/[^\s]+|\/lp\/[^\s]+)/g;
+  const parts = text.split(urlPattern);
+  const matches = text.match(urlPattern) || [];
+
+  if (matches.length === 0) {
+    return <span className={className}>{text}</span>;
+  }
+
+  const elements: React.ReactNode[] = [];
+  let matchIdx = 0;
+  for (let i = 0; i < parts.length; i++) {
+    if (parts[i]) {
+      // Check if this part is a URL match
+      if (matchIdx < matches.length && parts[i] === matches[matchIdx]) {
+        elements.push(
+          <a
+            key={i}
+            href={parts[i]}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-400 hover:text-blue-300 underline underline-offset-2 inline-flex items-center gap-0.5"
+          >
+            {parts[i]}
+            <ExternalLink className="w-3 h-3 inline-block" />
+          </a>
+        );
+        matchIdx++;
+      } else {
+        elements.push(<span key={i}>{parts[i]}</span>);
+      }
+    }
+  }
+
+  return <span className={className}>{elements}</span>;
+}
+
 // ── Quick Prompts per Mode ──────────────────────────────────
 
 const QUICK_PROMPTS: Record<OperatorMode, { icon: any; label: string; prompt: string }[]> = {
@@ -582,7 +623,7 @@ function PipelineProgressCard({ messages: pipelineMsgs }: { messages: Message[] 
                   <span className={st.status === "running" ? "text-white/70 font-medium" : st.status === "error" ? "text-red-400" : "text-white/50"}>
                     {agent}
                   </span>
-                  <p className="text-white/30 text-[10px] leading-tight mt-0.5">{st.detail}</p>
+                  <Linkified text={st.detail} className="text-white/30 text-[10px] leading-tight mt-0.5 block whitespace-pre-wrap" />
                 </div>
               </div>
             );
@@ -1823,10 +1864,10 @@ export default function OperatorPage() {
                           <div className="rounded-2xl rounded-tl-md bg-white/[0.03] border border-white/5 px-4 py-3">
                             <SystemsUsedPills systems={msg.structured_payload?._systems_used} />
                             {msg.content && (
-                              <p className="text-sm text-white/80 leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+                              <Linkified text={msg.content} className="text-sm text-white/80 leading-relaxed whitespace-pre-wrap block" />
                             )}
                             {msg.structured_payload?.message && msg.structured_payload.message !== msg.content && (
-                              <p className="text-sm text-white/60 mt-2 leading-relaxed">{msg.structured_payload.message}</p>
+                              <Linkified text={msg.structured_payload.message} className="text-sm text-white/60 mt-2 leading-relaxed block" />
                             )}
                             <FindingsCard findings={msg.structured_payload?.findings || []} />
                             <ActionsCard

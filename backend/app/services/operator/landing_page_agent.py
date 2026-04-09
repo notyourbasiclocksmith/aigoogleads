@@ -213,15 +213,22 @@ class LandingPageAgent:
                     qa_summary_parts.append(f"{key}: {qs}/100{fix_note}")
             qa_line = f" QA scores: {', '.join(qa_summary_parts)}." if qa_summary_parts else ""
 
+            slug = page_result.get("slug", "")
+            preview_url = f"/lp/{slug}" if slug else ""
+            preview_line = f"\nPreview: {preview_url}" if preview_url else ""
+
             await self._emit_progress(
                 conversation_id,
                 f"Generated 3 landing page variants for '{service}'. "
-                f"QA reviewed by Claude.{qa_line} Ready for review.",
+                f"QA reviewed by Claude.{qa_line} Ready for review."
+                f"{preview_line}",
                 "landing_page_ready",
                 extra={
                     "type": "landing_page_preview",
                     "landing_page_id": page_result.get("landing_page_id"),
                     "service": service,
+                    "slug": slug,
+                    "preview_url": preview_url,
                     "variants": [
                         {
                             "id": v.get("id"),

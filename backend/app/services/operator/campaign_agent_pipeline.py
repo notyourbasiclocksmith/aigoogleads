@@ -681,9 +681,17 @@ class CampaignAgentPipeline:
 
             generated_count = sum(1 for p in lp_result.get("pages", []) if p.get("status") == "generated")
             existing_count = sum(1 for p in lp_result.get("pages", []) if p.get("status") == "existing")
+            # Build preview links for generated/existing pages
+            preview_links = []
+            for p in lp_result.get("pages", []):
+                url = p.get("url", "")
+                svc = p.get("service", "")
+                if url and svc:
+                    preview_links.append(f"{svc}: {url}")
+            preview_section = "\n" + "\n".join(preview_links) if preview_links else ""
             await self._emit_progress("Landing Pages", "done",
                 f"{existing_count} existing + {generated_count} new landing pages "
-                f"linked to ad groups")
+                f"linked to ad groups{preview_section}")
 
         except Exception as e:
             logger.error("PIPELINE AGENT FAILED: Landing Pages", error=str(e), traceback=traceback.format_exc(), conversation_id=conversation_id)
