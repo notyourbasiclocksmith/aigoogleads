@@ -594,36 +594,81 @@ function PipelineProgressCard({ messages: pipelineMsgs }: { messages: Message[] 
 
   if (Object.keys(agentStatus).length === 0) return null;
 
+  // Calculate overall progress
+  const totalSteps = PIPELINE_AGENTS.length;
+  const completedSteps = PIPELINE_AGENTS.filter(a => agentStatus[a] && agentStatus[a].status !== "running").length;
+  const runningSteps = PIPELINE_AGENTS.filter(a => agentStatus[a]?.status === "running").length;
+  // Count running as half-complete for smoother progress
+  const progressPct = Math.round(((completedSteps + runningSteps * 0.5) / totalSteps) * 100);
+  const isComplete = completedSteps === totalSteps && runningSteps === 0;
+
   return (
     <div className="space-y-3 mt-3">
       <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-4">
-        <div className="flex items-center gap-2 mb-3">
-          <Sparkles className="w-4 h-4 text-violet-400" />
-          <span className="text-xs font-semibold text-violet-300 uppercase tracking-wider">Campaign Builder Pipeline</span>
+        {/* Header with overall progress */}
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-violet-400" />
+            <span className="text-xs font-semibold text-violet-300 uppercase tracking-wider">Campaign Builder Pipeline</span>
+          </div>
+          <span className={`text-xs font-bold ${isComplete ? "text-emerald-400" : "text-violet-300"}`}>
+            {isComplete ? "Complete" : `${progressPct}%`}
+          </span>
         </div>
-        <div className="space-y-2">
-          {PIPELINE_AGENTS.map((agent) => {
+
+        {/* Overall progress bar */}
+        <div className="w-full h-1.5 bg-white/5 rounded-full mb-3 overflow-hidden">
+          <div
+            className={`h-full rounded-full transition-all duration-700 ease-out ${
+              isComplete ? "bg-emerald-400" : "bg-gradient-to-r from-violet-500 to-blue-400"
+            }`}
+            style={{ width: `${progressPct}%` }}
+          />
+        </div>
+
+        {/* Agent steps */}
+        <div className="space-y-1.5">
+          {PIPELINE_AGENTS.map((agent, idx) => {
             const st = agentStatus[agent];
             if (!st) return (
-              <div key={agent} className="flex items-center gap-2.5 text-xs text-white/20">
+              <div key={agent} className="flex items-center gap-2.5 text-xs text-white/20 py-0.5">
                 <div className="w-4 h-4 rounded-full border border-white/10 flex-shrink-0" />
-                <span>{agent}</span>
+                <span className="flex-1">{agent}</span>
+                <span className="text-[10px] text-white/10">{idx + 1}/{totalSteps}</span>
               </div>
             );
+
+            const isRunning = st.status === "running";
+            const isError = st.status === "error";
+            const isDone = !isRunning && !isError;
+
             return (
-              <div key={agent} className="flex items-start gap-2.5 text-xs">
-                {st.status === "running" ? (
-                  <Loader2 className="w-4 h-4 animate-spin text-blue-400 flex-shrink-0 mt-0.5" />
-                ) : st.status === "error" ? (
-                  <XCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
-                ) : (
-                  <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
-                )}
-                <div>
-                  <span className={st.status === "running" ? "text-white/70 font-medium" : st.status === "error" ? "text-red-400" : "text-white/50"}>
-                    {agent}
-                  </span>
-                  <Linkified text={st.detail} className="text-white/30 text-[10px] leading-tight mt-0.5 block whitespace-pre-wrap" />
+              <div key={agent} className="text-xs">
+                <div className="flex items-start gap-2.5 py-0.5">
+                  {isRunning ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-blue-400 flex-shrink-0 mt-0.5" />
+                  ) : isError ? (
+                    <XCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+                  ) : (
+                    <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between">
+                      <span className={isRunning ? "text-white/80 font-medium" : isError ? "text-red-400" : "text-white/50"}>
+                        {agent}
+                      </span>
+                      <span className={`text-[10px] ml-2 ${isDone ? "text-emerald-400/60" : isRunning ? "text-blue-400/60" : "text-red-400/60"}`}>
+                        {isDone ? "done" : isRunning ? "working..." : "failed"}
+                      </span>
+                    </div>
+                    {/* Individual step progress bar for running agent */}
+                    {isRunning && (
+                      <div className="w-full h-0.5 bg-white/5 rounded-full mt-1 overflow-hidden">
+                        <div className="h-full bg-blue-400/60 rounded-full animate-pulse" style={{ width: "60%" }} />
+                      </div>
+                    )}
+                    <Linkified text={st.detail} className="text-white/30 text-[10px] leading-tight mt-0.5 block whitespace-pre-wrap" />
+                  </div>
                 </div>
               </div>
             );
