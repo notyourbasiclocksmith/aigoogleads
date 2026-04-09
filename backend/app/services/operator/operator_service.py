@@ -1044,7 +1044,7 @@ class GoogleAdsOperatorService:
                                 "prompt": ip.get("prompt", ""),
                                 "engine": ip.get("engine", "google"),
                                 "style": ip.get("style", "photorealistic"),
-                                "size": "1200x628",  # Google Ads landscape
+                                "size": "1792x1024",  # Closest DALL-E landscape to Google Ads 1200x628
                                 "upload_to_google": True,
                                 "campaign_id": campaign_id,
                                 "asset_name": f"{ip.get('service', 'Ad')} - Campaign Image",

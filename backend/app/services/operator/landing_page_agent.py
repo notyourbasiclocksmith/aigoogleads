@@ -87,11 +87,12 @@ class LandingPageAgent:
         }
         """
         results = []
+        location = locations[0] if locations else ""
 
+        # ── Phase 1: Check existing pages (fast, sequential DB queries) ──
+        services_to_generate = []
         for service in services:
-            # Check if landing page already exists for this service
             existing = await self._find_existing_page(service)
-
             if existing:
                 results.append({
                     "service": service,
@@ -107,122 +108,141 @@ class LandingPageAgent:
                     f"(score: {existing.audit_score or 'unaudited'})",
                     "landing_page_check",
                 )
-                continue
+            else:
+                services_to_generate.append(service)
 
-            # Generate a new landing page
+        if not services_to_generate:
+            # All pages already exist — skip generation
+            pass
+        else:
             await self._emit_progress(
                 conversation_id,
-                f"No landing page found for '{service}'. Generating 3 variants "
-                f"(Emergency, Savings, Expert)...",
+                f"Generating landing pages for {len(services_to_generate)} services in parallel...",
                 "landing_page_generating",
             )
 
-            svc_keywords = campaign_keywords.get(service, [])
-            svc_headlines = campaign_headlines.get(service, [])
-            location = locations[0] if locations else ""
+            # ── Phase 2: Generate all new pages IN PARALLEL ──
+            import asyncio as _aio
 
-            page_result = await self._generate_page(
-                service=service,
-                location=location,
-                keywords=svc_keywords,
-                headlines=svc_headlines,
-                business_context=business_context,
+            async def _gen_one(svc: str):
+                """Generate a single landing page — runs concurrently."""
+                svc_keywords = campaign_keywords.get(svc, [])
+                svc_headlines = campaign_headlines.get(svc, [])
+                return svc, await self._generate_page(
+                    service=svc,
+                    location=location,
+                    keywords=svc_keywords,
+                    headlines=svc_headlines,
+                    business_context=business_context,
+                    use_own_session=True,
+                )
+
+            gen_results = await _aio.gather(
+                *[_gen_one(svc) for svc in services_to_generate],
+                return_exceptions=True,
             )
 
-            if page_result.get("error"):
+            # ── Phase 3: Post-process each result ──
+            for item in gen_results:
+                if isinstance(item, Exception):
+                    logger.error("Landing page generation exception", error=str(item))
+                    continue
+
+                service, page_result = item
+
+                if page_result.get("error"):
+                    results.append({
+                        "service": service,
+                        "status": "failed",
+                        "error": page_result["error"],
+                    })
+                    await self._emit_progress(
+                        conversation_id,
+                        f"Failed to generate landing page for '{service}': {page_result['error']}",
+                        "landing_page_error",
+                    )
+                    continue
+
+                # Inject tracking phone number into landing page CTAs
+                if tracking_phone:
+                    for variant in page_result.get("variants", []):
+                        content = variant.get("content", {})
+                        hero = content.get("hero", {})
+                        if hero:
+                            hero["cta_phone"] = tracking_phone
+                        cta_footer = content.get("cta_footer", {})
+                        if cta_footer:
+                            cta_footer["phone"] = tracking_phone
+                        content["_tracking_phone"] = tracking_phone
+
+                # Create FormsAI contact form and embed it in the landing page
+                form_embed = await self._create_contact_form(
+                    service=service,
+                    location=location,
+                    business_context=business_context,
+                    campaign_id=None,
+                )
+                if form_embed:
+                    for variant in page_result.get("variants", []):
+                        content = variant.get("content", {})
+                        content["contact_form"] = {
+                            "embed_slug": form_embed.get("slug", ""),
+                            "embed_url": form_embed.get("embed_url", ""),
+                            "form_id": form_embed.get("form_id", ""),
+                            "share_url": form_embed.get("share_url", ""),
+                        }
+
+                # Generate HTML preview for each variant
+                variants_with_preview = []
+                for variant in page_result.get("variants", []):
+                    preview_html = self._render_preview_html(
+                        variant.get("content", {}),
+                        business_context,
+                        page_result.get("strategy", {}),
+                    )
+                    variants_with_preview.append({
+                        **variant,
+                        "preview_html": preview_html,
+                    })
+
                 results.append({
                     "service": service,
-                    "status": "failed",
-                    "error": page_result["error"],
+                    "landing_page_id": page_result.get("landing_page_id"),
+                    "url": self._build_absolute_url(page_result.get("slug", "")),
+                    "status": "generated",
+                    "name": page_result.get("name"),
+                    "variants": variants_with_preview,
+                    "qa_scores": {
+                        v.get("key", chr(65 + i)): {
+                            "score": v.get("qa_score"),
+                            "issues": v.get("qa_issues", []),
+                            "fixed": v.get("qa_fixed", False),
+                        }
+                        for i, v in enumerate(page_result.get("variants", []))
+                    },
                 })
+
+                # Build QA summary for progress message
+                qa_summary_parts = []
+                for v in page_result.get("variants", []):
+                    qs = v.get("qa_score")
+                    fixed = v.get("qa_fixed", False)
+                    key = v.get("key", "?")
+                    if qs is not None:
+                        fix_note = " (auto-fixed)" if fixed else ""
+                        qa_summary_parts.append(f"{key}: {qs}/100{fix_note}")
+                qa_line = f" QA scores: {', '.join(qa_summary_parts)}." if qa_summary_parts else ""
+
+                slug = page_result.get("slug", "")
+                preview_url = f"/lp/{slug}" if slug else ""
+                preview_line = f"\nPreview: {preview_url}" if preview_url else ""
+
                 await self._emit_progress(
                     conversation_id,
-                    f"Failed to generate landing page for '{service}': {page_result['error']}",
-                    "landing_page_error",
-                )
-                continue
-
-            # Inject tracking phone number into landing page CTAs
-            if tracking_phone:
-                for variant in page_result.get("variants", []):
-                    content = variant.get("content", {})
-                    hero = content.get("hero", {})
-                    if hero:
-                        hero["cta_phone"] = tracking_phone
-                    cta_footer = content.get("cta_footer", {})
-                    if cta_footer:
-                        cta_footer["phone"] = tracking_phone
-                    content["_tracking_phone"] = tracking_phone
-
-            # Create FormsAI contact form and embed it in the landing page
-            form_embed = await self._create_contact_form(
-                service=service,
-                location=location,
-                business_context=business_context,
-                campaign_id=None,
-            )
-            if form_embed:
-                # Inject form embed data into each variant's content
-                for variant in page_result.get("variants", []):
-                    content = variant.get("content", {})
-                    content["contact_form"] = {
-                        "embed_slug": form_embed.get("slug", ""),
-                        "embed_url": form_embed.get("embed_url", ""),
-                        "form_id": form_embed.get("form_id", ""),
-                        "share_url": form_embed.get("share_url", ""),
-                    }
-
-            # Generate HTML preview for each variant
-            variants_with_preview = []
-            for variant in page_result.get("variants", []):
-                preview_html = self._render_preview_html(
-                    variant.get("content", {}),
-                    business_context,
-                    page_result.get("strategy", {}),
-                )
-                variants_with_preview.append({
-                    **variant,
-                    "preview_html": preview_html,
-                })
-
-            results.append({
-                "service": service,
-                "landing_page_id": page_result.get("landing_page_id"),
-                "url": self._build_absolute_url(page_result.get("slug", "")),
-                "status": "generated",
-                "name": page_result.get("name"),
-                "variants": variants_with_preview,
-                "qa_scores": {
-                    v.get("key", chr(65 + i)): {
-                        "score": v.get("qa_score"),
-                        "issues": v.get("qa_issues", []),
-                        "fixed": v.get("qa_fixed", False),
-                    }
-                    for i, v in enumerate(page_result.get("variants", []))
-                },
-            })
-
-            # Build QA summary for progress message
-            qa_summary_parts = []
-            for v in page_result.get("variants", []):
-                qs = v.get("qa_score")
-                fixed = v.get("qa_fixed", False)
-                key = v.get("key", "?")
-                if qs is not None:
-                    fix_note = " (auto-fixed)" if fixed else ""
-                    qa_summary_parts.append(f"{key}: {qs}/100{fix_note}")
-            qa_line = f" QA scores: {', '.join(qa_summary_parts)}." if qa_summary_parts else ""
-
-            slug = page_result.get("slug", "")
-            preview_url = f"/lp/{slug}" if slug else ""
-            preview_line = f"\nPreview: {preview_url}" if preview_url else ""
-
-            await self._emit_progress(
-                conversation_id,
-                f"Generated 3 landing page variants for '{service}'. "
-                f"QA reviewed by Claude.{qa_line} Ready for review."
-                f"{preview_line}",
-                "landing_page_ready",
+                    f"Generated 3 landing page variants for '{service}'. "
+                    f"QA reviewed by Claude.{qa_line} Ready for review."
+                    f"{preview_line}",
+                    "landing_page_ready",
                 extra={
                     "type": "landing_page_preview",
                     "landing_page_id": page_result.get("landing_page_id"),
@@ -641,9 +661,36 @@ class LandingPageAgent:
         keywords: List[str],
         headlines: List[str],
         business_context: Dict[str, Any],
+        *,
+        use_own_session: bool = False,
     ) -> Dict[str, Any]:
-        """Call the existing LandingPageGenerator to create a page."""
+        """Call the existing LandingPageGenerator to create a page.
+
+        When use_own_session=True, creates an independent DB session so
+        multiple calls can run concurrently via asyncio.gather().
+        """
         from app.services.landing_page_generator import LandingPageGenerator
+
+        if use_own_session:
+            from app.core.database import async_session_factory
+            async with async_session_factory() as db:
+                generator = LandingPageGenerator(db, self.tenant_id)
+                result = await generator.generate(
+                    service=service,
+                    location=location,
+                    industry=business_context.get("industry", ""),
+                    business_name=business_context.get("name", ""),
+                    phone=business_context.get("phone", ""),
+                    website=business_context.get("website", ""),
+                    usps=business_context.get("usps", []),
+                    offers=business_context.get("offers", []),
+                    campaign_keywords=keywords,
+                    campaign_headlines=headlines,
+                    trust_signals=business_context.get("trust_signals", []),
+                    description=business_context.get("description", ""),
+                )
+                await db.commit()
+                return result
 
         generator = LandingPageGenerator(self.db, self.tenant_id)
         return await generator.generate(

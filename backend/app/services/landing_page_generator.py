@@ -11,6 +11,7 @@ Pipeline agents:
 """
 import asyncio
 import json
+import re
 import uuid
 import time
 from typing import Dict, List, Optional, Any
@@ -124,7 +125,9 @@ class LandingPageGenerator:
         )
 
         # Save to DB
-        slug = f"{service.lower().replace(' ', '-')}-{location.lower().replace(' ', '-')}-{uuid.uuid4().hex[:6]}"
+        _svc_part = re.sub(r"[^a-z0-9-]", "", service.lower().replace(" ", "-"))
+        _loc_part = re.sub(r"[^a-z0-9-]", "", location.lower().replace(" ", "-"))
+        slug = f"{_svc_part}-{_loc_part}-{uuid.uuid4().hex[:6]}"
         slug = slug.replace("--", "-").strip("-")[:250]
 
         lp = LandingPage(
@@ -279,7 +282,9 @@ Use the real business name, phone, and details throughout."""
         adapt_prompt: str = "",
     ) -> Dict[str, Any]:
         """Clone a landing page, optionally adapting content for a new service/location."""
-        slug = f"{(new_service or source_lp.service or 'page').lower().replace(' ', '-')}-{(new_location or source_lp.location or 'local').lower().replace(' ', '-')}-{uuid.uuid4().hex[:6]}"
+        _svc_part = re.sub(r"[^a-z0-9-]", "", (new_service or source_lp.service or "page").lower().replace(" ", "-"))
+        _loc_part = re.sub(r"[^a-z0-9-]", "", (new_location or source_lp.location or "local").lower().replace(" ", "-"))
+        slug = f"{_svc_part}-{_loc_part}-{uuid.uuid4().hex[:6]}"
         slug = slug.replace("--", "-").strip("-")[:250]
 
         new_lp = LandingPage(

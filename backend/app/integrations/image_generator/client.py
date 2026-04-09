@@ -227,11 +227,16 @@ class ImageGeneratorClient:
         if longitude is not None:
             metadata["longitude"] = str(longitude)
 
+        # DALL-E only supports 1024x1024, 1024x1792, 1792x1024
+        # Normalize any non-standard size to the closest DALL-E landscape
+        _DALLE_SIZES = {"1024x1024", "1024x1792", "1792x1024"}
+        dalle_safe_size = size if size in _DALLE_SIZES else "1792x1024"
+
         result = await self.generate_single(
             prompt=prompt,
             engine=engine,
             style=style,
-            size=size,
+            size=dalle_safe_size if engine == "dalle" else size,
             metadata=metadata,
         )
 
@@ -243,7 +248,7 @@ class ImageGeneratorClient:
                 prompt=prompt,
                 engine="dalle",
                 style=style,
-                size=size,
+                size=dalle_safe_size,
                 metadata=metadata,
             )
 
