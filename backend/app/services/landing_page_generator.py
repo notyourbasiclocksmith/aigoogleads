@@ -59,7 +59,7 @@ class LandingPageGenerator:
         trust_signals: List[str] = None,
         description: str = "",
         constraints: Dict[str, Any] = None,
-        image_engine: str = "google",
+        image_engine: str = "dalle",
         image_model: str = "",
     ) -> Dict[str, Any]:
         """

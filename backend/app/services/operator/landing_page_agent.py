@@ -506,7 +506,7 @@ class LandingPageAgent:
         self,
         landing_page_id: str,
         conversation_id: str = "",
-        engine: str = "google",
+        engine: str = "dalle",
         engine_model: str = "",
     ) -> Dict[str, Any]:
         """Generate hero and section images for all variants using SEOpix.

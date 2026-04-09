@@ -122,7 +122,7 @@ class GoogleAdsOperatorService:
                 "services": intent_payload.get("services"),
                 "locations": intent_payload.get("locations"),
                 "forward_phone": intent_payload.get("forward_phone"),
-                "image_engine": image_engine or "google",
+                "image_engine": image_engine or "dalle",
             }
             spec = await pipeline.run(
                 user_prompt=user_message,
@@ -172,7 +172,7 @@ class GoogleAdsOperatorService:
                     "services": intent_payload.get("services"),
                     "locations": intent_payload.get("locations"),
                     "forward_phone": intent_payload.get("forward_phone"),
-                    "image_engine": image_engine or "google",
+                    "image_engine": image_engine or "dalle",
                 }
                 try:
                     pipeline_spec = await pipeline.run(
@@ -1042,7 +1042,7 @@ class GoogleAdsOperatorService:
                             "generate_ad_image",
                             {
                                 "prompt": ip.get("prompt", ""),
-                                "engine": ip.get("engine", "google"),
+                                "engine": ip.get("engine", "dalle"),
                                 "style": ip.get("style", "photorealistic"),
                                 "size": "1792x1024",  # Closest DALL-E landscape to Google Ads 1200x628
                                 "upload_to_google": True,

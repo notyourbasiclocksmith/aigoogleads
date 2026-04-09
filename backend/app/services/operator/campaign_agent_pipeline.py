@@ -601,7 +601,7 @@ class CampaignAgentPipeline:
                             city=biz.get("city", ""),
                             state=biz.get("state", ""),
                             size="1792x1024",
-                            engine=self._intent_hints.get("image_engine", "google"),
+                            engine=self._intent_hints.get("image_engine", "dalle"),
                         )
                         if result.get("success") or result.get("imageUrl"):
                             image_results.append({

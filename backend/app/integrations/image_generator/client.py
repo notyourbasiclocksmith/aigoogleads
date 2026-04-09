@@ -121,7 +121,31 @@ class ImageGeneratorClient:
                     return {"success": False, "error": error}
 
         except httpx.TimeoutException:
-            logger.error("Image generation timed out", engine=engine)
+            logger.warning("Image generation timed out", engine=engine)
+            # Fallback to DALL-E on timeout (Google Imagen often times out on Render)
+            if engine != "dalle":
+                try:
+                    logger.info("Retrying with DALL-E after timeout", original_engine=engine)
+                    async with httpx.AsyncClient(timeout=self.timeout) as fb_client:
+                        fb_payload = {**payload, "engine": "dalle"}
+                        fb_payload.pop("googleModel", None)
+                        fb_resp = await fb_client.post(
+                            f"{self.base_url}/api/generate-single",
+                            json=fb_payload,
+                            headers=self._headers(),
+                        )
+                        if fb_resp.status_code in (200, 201):
+                            data = fb_resp.json()
+                            logger.info("Fallback DALL-E image generated after timeout", filename=data.get("filename"))
+                            return {
+                                "success": True,
+                                "filename": data.get("filename"),
+                                "image_url": data.get("imageUrl"),
+                                "message": "Generated with DALL-E fallback (original engine timed out)",
+                                "fallback_engine": "dalle",
+                            }
+                except Exception as fb_err:
+                    logger.warning("DALL-E fallback after timeout also failed", error=str(fb_err)[:100])
             return {"success": False, "error": "Image generation timed out. Try again."}
         except Exception as e:
             logger.error("Image generation exception", error=str(e))
