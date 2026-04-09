@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,11 +35,31 @@ class EventRequest(BaseModel):
 # ── Helpers ───────────────────────────────────────────────────────
 
 async def _get_published_page(slug: str, db: AsyncSession) -> LandingPage:
-    """Fetch a landing page by slug, raising 404 if not serveable."""
+    """Fetch a landing page by slug, raising 404 if not serveable.
+
+    Falls back to a LIKE query matching the slug ignoring commas, for
+    backwards-compat with pages created before slug sanitization fix.
+    """
+    import re as _re
+
     result = await db.execute(
         select(LandingPage).where(LandingPage.slug == slug)
     )
     page = result.scalar_one_or_none()
+
+    # Fallback: the DB might have commas but the URL was cleaned (or vice versa).
+    # Try matching by stripping non-alphanum-hyphen from both sides.
+    if not page:
+        # Build a pattern: insert optional commas/spaces around hyphens
+        # e.g. "arlington-tx" should match "arlington,-tx" in DB
+        from sqlalchemy import func, text
+        # Try: find any slug that matches when commas are removed
+        result = await db.execute(
+            select(LandingPage).where(
+                func.replace(LandingPage.slug, ",", "") == slug.replace(",", "")
+            )
+        )
+        page = result.scalar_one_or_none()
 
     if not page:
         raise HTTPException(status_code=404, detail="Landing page not found")
@@ -103,6 +123,15 @@ async def serve_landing_page(
     db: AsyncSession = Depends(get_db),
 ):
     """Serve a published landing page by slug. Tracks a visit event."""
+    import re as _re
+
+    # If the URL slug has special chars (commas etc.), redirect to the clean version
+    cleaned_slug = _re.sub(r"[^a-z0-9-]", "", slug.lower()).replace("--", "-").strip("-")
+    if cleaned_slug != slug:
+        qs = str(request.query_params)
+        redirect_url = f"/lp/{cleaned_slug}" + (f"?{qs}" if qs else "")
+        return RedirectResponse(url=redirect_url, status_code=301)
+
     page = await _get_published_page(slug, db)
     variant = _pick_variant(page)
 

@@ -44,6 +44,27 @@ async def lifespan(app: FastAPI):
             logger.error("Alembic migration failed", stderr=result.stderr.strip())
     except Exception as e:
         logger.error("Alembic migration error", error=str(e))
+    # 3. Clean up landing page slugs (remove commas/special chars)
+    try:
+        import re
+        from app.core.database import async_session_factory
+        from sqlalchemy import select
+        from app.models.landing_page import LandingPage
+        async with async_session_factory() as db:
+            result = await db.execute(
+                select(LandingPage).where(LandingPage.slug.contains(","))
+            )
+            dirty_pages = result.scalars().all()
+            if dirty_pages:
+                for page in dirty_pages:
+                    old_slug = page.slug
+                    page.slug = re.sub(r"[^a-z0-9-]", "", old_slug.lower()).replace("--", "-").strip("-")
+                    logger.info("Cleaned landing page slug", old=old_slug, new=page.slug)
+                await db.commit()
+                logger.info("Cleaned landing page slugs", count=len(dirty_pages))
+    except Exception as e:
+        logger.warning("Slug cleanup failed (non-critical)", error=str(e))
+
     yield
     logger.info("Shutting down IntelliAds AI backend")
 
