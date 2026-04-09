@@ -62,6 +62,21 @@ async def lifespan(app: FastAPI):
                     logger.info("Cleaned landing page slug", old=old_slug, new=page.slug)
                 await db.commit()
                 logger.info("Cleaned landing page slugs", count=len(dirty_pages))
+
+            # Also promote AI-generated draft pages to preview so they're serveable
+            draft_result = await db.execute(
+                select(LandingPage).where(
+                    LandingPage.status == "draft",
+                    LandingPage.is_ai_generated == True,
+                )
+            )
+            draft_pages = draft_result.scalars().all()
+            if draft_pages:
+                for page in draft_pages:
+                    page.status = "preview"
+                    logger.info("Promoted draft→preview", slug=page.slug)
+                await db.commit()
+                logger.info("Promoted AI draft pages to preview", count=len(draft_pages))
     except Exception as e:
         logger.warning("Slug cleanup failed (non-critical)", error=str(e))
 
