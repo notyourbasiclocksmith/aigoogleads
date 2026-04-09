@@ -114,15 +114,27 @@ class LandingPageGenerator:
         if not variants or not isinstance(variants, list) or len(variants) == 0:
             return {"error": "AI failed to generate landing page variants"}
 
-        # Agent 3: QA Reviewer — validates and auto-fixes each variant
-        variants = await self._agent_qa_reviewer(variants, context, strategy)
+        # Agent 3 + 4: QA review and image generation run IN PARALLEL
+        # (QA reviews copy text, images come from hero prompts — no dependency)
+        # Deep-copy variants for images to avoid concurrent mutation
+        import copy
+        img_variants_input = copy.deepcopy(variants)
 
-        # Agent 4: Generate hero images for each variant
-        variants = await self._generate_variant_images(
-            variants, service=service, business_name=business_name,
-            industry=industry, location=location,
-            engine=image_engine, engine_model=image_model,
+        qa_variants, img_variants = await asyncio.gather(
+            self._agent_qa_reviewer(variants, context, strategy),
+            self._generate_variant_images(
+                img_variants_input, service=service, business_name=business_name,
+                industry=industry, location=location,
+                engine=image_engine, engine_model=image_model,
+            ),
         )
+
+        # Merge: take QA scores/fixes from qa_variants, images from img_variants
+        for qv, iv in zip(qa_variants, img_variants):
+            hero_url = iv.get("content", {}).get("hero", {}).get("hero_image_url")
+            if hero_url:
+                qv.setdefault("content", {}).setdefault("hero", {})["hero_image_url"] = hero_url
+        variants = qa_variants
 
         # Save to DB
         _svc_part = re.sub(r"[^a-z0-9-]", "", service.lower().replace(" ", "-"))
@@ -595,13 +607,13 @@ The location MUST be mentioned: {context.get('location', 'N/A')}."""
             elif engine == "stability":
                 engine_kwargs["stability_model"] = engine_model
 
-        for variant in variants:
+        async def _gen_hero(variant):
+            """Generate a single hero image — runs concurrently."""
             content = variant.get("content", {})
             hero = content.get("hero", {})
             prompt = hero.get("hero_image_prompt", "")
 
             if not prompt:
-                # Build a default prompt from context
                 prompt = (
                     f"Professional {industry or 'service'} business photo: "
                     f"a licensed {service.lower()} expert performing work for a customer. "
@@ -622,7 +634,7 @@ The location MUST be mentioned: {context.get('location', 'N/A')}."""
                     prompt=prompt,
                     engine=engine,
                     style="photorealistic",
-                    size="1792x1024",  # Wide hero format
+                    size="1792x1024",
                     metadata=metadata,
                     **engine_kwargs,
                 )
@@ -641,8 +653,11 @@ The location MUST be mentioned: {context.get('location', 'N/A')}."""
 
             content["hero"] = hero
             variant["content"] = content
+            return variant
 
-        return variants
+        # Generate all hero images concurrently
+        variants = await asyncio.gather(*[_gen_hero(v) for v in variants])
+        return list(variants)
 
     async def _call_ai(self, system: str, user_prompt: str, temperature: float = 0.6, max_tokens: int = 4000) -> Optional[Dict]:
         """Call Claude Opus with GPT-4o fallback for landing page generation."""
