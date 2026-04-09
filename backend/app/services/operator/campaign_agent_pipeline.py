@@ -2309,6 +2309,20 @@ Return this JSON:
             lines.append(f"")
 
         lines.append(f"**Quality Score: {qa_score}/100 ({qa_grade})**")
+        # Include QA recommendations in text summary
+        strategic = qa_result.get("strategic_issues", []) if qa_result else []
+        programmatic = [i for i in (qa_result.get("programmatic_issues", []) if qa_result else [])
+                        if i.get("severity") in ("critical", "warning")]
+        if programmatic:
+            lines.append(f"")
+            lines.append(f"⚠️ **QA Warnings ({len(programmatic)})**")
+            for issue in programmatic[:5]:
+                lines.append(f"• {issue.get('message', str(issue))}")
+        if strategic:
+            lines.append(f"")
+            lines.append(f"💡 **Recommendations ({len(strategic)})**")
+            for issue in strategic[:5]:
+                lines.append(f"• {issue.get('message', str(issue))}")
         lines.append(f"")
 
         lines.append(f"**What to Expect (estimated)**")
@@ -2355,6 +2369,16 @@ Return this JSON:
             "est_clicks_month": f"{est_clicks_month}-{est_clicks_month * 2}",
             "est_conversions_month": f"{est_conversions_month}-{est_conversions_month * 2}",
             "est_cpa": f"${est_cpa:.0f}-${est_cpa * 1.5:.0f}",
+            # QA recommendations for user review before approval
+            "qa_recommendations": [
+                {"severity": i.get("severity", "info"), "message": i.get("message", str(i))}
+                for i in (qa_result.get("strategic_issues", []) if qa_result else [])
+            ],
+            "qa_warnings": [
+                {"severity": i.get("severity", "critical"), "message": i.get("message", str(i))}
+                for i in (qa_result.get("programmatic_issues", []) if qa_result else [])
+                if i.get("severity") in ("critical", "warning")
+            ],
         }
 
     # ── FALLBACK ─────────────────────────────────────────────────

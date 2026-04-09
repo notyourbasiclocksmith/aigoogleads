@@ -826,6 +826,42 @@ function CampaignSummaryCard({ summary }: { summary: any }) {
             </div>
           )}
 
+          {/* QA Warnings */}
+          {s.qa_warnings?.length > 0 && (
+            <div className="bg-gradient-to-r from-red-500/10 to-orange-500/10 border border-red-500/15 rounded-lg px-3 py-2">
+              <p className="text-[10px] text-red-300/70 uppercase tracking-wide mb-1.5 flex items-center gap-1">
+                <XCircle className="w-3 h-3" /> Issues ({s.qa_warnings.length})
+              </p>
+              <div className="space-y-1">
+                {s.qa_warnings.map((w: any, i: number) => (
+                  <p key={i} className="text-[10px] text-white/60 flex items-start gap-1.5">
+                    <span className={`mt-0.5 w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                      w.severity === "critical" ? "bg-red-400" : "bg-amber-400"
+                    }`} />
+                    {typeof w === "string" ? w : w.message}
+                  </p>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* QA Recommendations */}
+          {s.qa_recommendations?.length > 0 && (
+            <div className="bg-gradient-to-r from-amber-500/10 to-yellow-500/10 border border-amber-500/15 rounded-lg px-3 py-2">
+              <p className="text-[10px] text-amber-300/70 uppercase tracking-wide mb-1.5 flex items-center gap-1">
+                <AlertTriangle className="w-3 h-3" /> Recommendations ({s.qa_recommendations.length})
+              </p>
+              <div className="space-y-1">
+                {s.qa_recommendations.map((r: any, i: number) => (
+                  <p key={i} className="text-[10px] text-white/60 flex items-start gap-1.5">
+                    <span className="mt-0.5 w-1.5 h-1.5 rounded-full flex-shrink-0 bg-amber-400/60" />
+                    {typeof r === "string" ? r : r.message}
+                  </p>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Estimates */}
           <div className="bg-gradient-to-r from-violet-500/10 to-blue-500/10 border border-violet-500/10 rounded-lg px-3 py-2">
             <p className="text-[10px] text-white/40 uppercase tracking-wide mb-1">What to Expect (estimated)</p>
