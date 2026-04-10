@@ -1133,7 +1133,7 @@ class GoogleAdsClient:
             )
             failed = 0
             if response.partial_failure_error:
-                from google.ads.googleads.errors import GoogleAdsFailure
+                from google.ads.googleads.v23.errors.types.errors import GoogleAdsFailure
                 failure = GoogleAdsFailure()
                 failure._pb.MergeFrom(response.partial_failure_error)
                 for error in failure.errors:
@@ -1570,7 +1570,7 @@ class GoogleAdsClient:
             # Check for partial failures
             failed = 0
             if response.partial_failure_error:
-                from google.ads.googleads.errors import GoogleAdsFailure
+                from google.ads.googleads.v23.errors.types.errors import GoogleAdsFailure
                 failure = GoogleAdsFailure()
                 failure._pb.MergeFrom(response.partial_failure_error)
                 for error in failure.errors:
@@ -2571,7 +2571,7 @@ class GoogleAdsClient:
 
             # Check partial failures
             if response.partial_failure_error:
-                from google.ads.googleads.errors import GoogleAdsFailure
+                from google.ads.googleads.v23.errors.types.errors import GoogleAdsFailure
                 failure = GoogleAdsFailure()
                 failure._pb.MergeFrom(response.partial_failure_error)
                 for error in failure.errors:
