@@ -2485,7 +2485,39 @@ class GoogleAdsClient:
                     if ek and err.get("is_exemptible"):
                         exemption_keys.append(ek)
 
-                if exemption_keys and not spec.get("_policy_retry_done"):
+                # ── Duplicate campaign name retry: append suffix and retry ──
+                has_dup_name = any("DUPLICATE_CAMPAIGN_NAME" in str(e.get("error_code", "")) for e in errors)
+                if has_dup_name and not spec.get("_name_retry_done"):
+                    spec["_name_retry_done"] = True
+                    import time
+                    suffix = time.strftime("%m%d-%H%M")
+                    for op in operations:
+                        if op._pb.HasField("campaign_operation"):
+                            old_name = op.campaign_operation.create.name
+                            op.campaign_operation.create.name = f"{old_name} ({suffix})"
+                            logger.warning("Duplicate campaign name — retrying with suffix",
+                                old_name=old_name, new_name=op.campaign_operation.create.name)
+                        if op._pb.HasField("campaign_budget_operation"):
+                            old_bname = op.campaign_budget_operation.create.name
+                            op.campaign_budget_operation.create.name = f"{old_bname} ({suffix})"
+                    try:
+                        response = await self._run_sync(
+                            ga_service.mutate,
+                            customer_id=self.customer_id,
+                            mutate_operations=operations,
+                        )
+                        logger.info("Duplicate name retry succeeded")
+                    except GoogleAdsException as retry_ex:
+                        retry_errors = self._extract_google_ads_errors(retry_ex)
+                        logger.error("Duplicate name retry also failed",
+                            errors=retry_errors[:5], request_id=retry_ex.request_id)
+                        return {
+                            "status": "error",
+                            "error": f"Google Ads API error: {retry_errors[0]['message'] if retry_errors else str(retry_ex)}",
+                            "errors": retry_errors,
+                            "request_id": retry_ex.request_id,
+                        }
+                elif exemption_keys and not spec.get("_policy_retry_done"):
                     spec["_policy_retry_done"] = True
                     logger.warning("Policy violations detected — retrying with exemptions",
                         exemptible=len(exemption_keys),
