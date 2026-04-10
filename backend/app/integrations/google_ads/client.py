@@ -2411,7 +2411,12 @@ class GoogleAdsClient:
 
             # 4. Negative keywords (campaign-level)
             # Merge ad-group negatives + explicit campaign negatives
-            campaign_negatives = set(all_neg_kws)
+            # Normalize to strings first (negatives can be str or dict)
+            campaign_negatives = set()
+            for nk in all_neg_kws:
+                text = nk.get("text", "") if isinstance(nk, dict) else str(nk)
+                if text.strip():
+                    campaign_negatives.add(text.strip())
             for cn in spec.get("campaign_negative_keywords", []):
                 text = cn.get("text", cn) if isinstance(cn, dict) else str(cn)
                 if text.strip():

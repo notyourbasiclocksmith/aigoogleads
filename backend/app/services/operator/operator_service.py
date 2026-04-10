@@ -952,6 +952,8 @@ class GoogleAdsOperatorService:
                     "action_type": action.action_type,
                     "label": action.label,
                     "status": exec_status,
+                    "error": exec_result.get("error") if exec_status != "success" else None,
+                    "summary": exec_result.get("summary") if exec_status == "success" else None,
                     "details": exec_result,
                 })
             except Exception as e:
