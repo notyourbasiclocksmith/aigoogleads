@@ -115,11 +115,22 @@ class CallFluxClient:
                         "user_id": data.get("user_id"),
                         "password": password,
                     }
-                elif resp.status_code == 409:
-                    # Tenant/email already exists — try login instead
-                    logger.info("CallFlux tenant already exists, attempting login",
-                        email=email)
-                    return await self.login(email, password)
+                elif resp.status_code in (400, 409):
+                    # Email/tenant already exists — try login as fallback
+                    detail = ""
+                    try:
+                        detail = resp.json().get("detail", resp.text[:200])
+                    except Exception:
+                        detail = resp.text[:200]
+                    logger.info("CallFlux tenant may already exist, attempting login",
+                        email=email, status=resp.status_code, detail=detail)
+                    login_result = await self.login(email, password)
+                    if login_result.get("error"):
+                        # Login also failed — likely the email exists with a different password
+                        # from a previous partial registration. Return a clear error.
+                        return {"error": f"CallFlux account exists but login failed. "
+                            f"Registration: {detail}. Login: {login_result['error']}"}
+                    return login_result
                 elif resp.status_code == 404:
                     logger.error("CallFlux registration endpoint not found (404). "
                         "Check CALLFLUX_API_URL configuration — the API may be "
