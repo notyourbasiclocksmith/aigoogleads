@@ -2486,22 +2486,16 @@ class GoogleAdsClient:
                         total_errors=len(errors),
                         request_id=ex.request_id)
 
-                    # Build exemption keys for each operation type
+                    # Build exemption keys for keyword operations only.
+                    # RSA ads do NOT support exempt_policy_violation_keys —
+                    # they go through review automatically once keywords are exempted.
                     for op in operations:
-                        # Add exemptions to keyword operations
                         if op._pb.HasField("ad_group_criterion_operation"):
                             for ek in exemption_keys:
                                 key = client.get_type("PolicyViolationKey")
                                 key.policy_name = ek["policy_name"]
                                 key.violating_text = ek["violating_text"]
                                 op.ad_group_criterion_operation.exempt_policy_violation_keys.append(key)
-                        # Add exemptions to ad operations
-                        if op._pb.HasField("ad_group_ad_operation"):
-                            for ek in exemption_keys:
-                                key = client.get_type("PolicyViolationKey")
-                                key.policy_name = ek["policy_name"]
-                                key.violating_text = ek["violating_text"]
-                                op.ad_group_ad_operation.policy_validation_parameter.exempt_policy_violation_keys.append(key)
 
                     try:
                         response = await self._run_sync(

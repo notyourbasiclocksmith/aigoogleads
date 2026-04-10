@@ -1966,20 +1966,28 @@ Return this JSON:
 
         biz = context.get("business", {})
         services = strategy.get("services", [])
+        if not isinstance(services, list):
+            services = list(services) if services else []
+        usps = biz.get("usps", [])
+        if not isinstance(usps, list):
+            usps = list(usps) if usps else []
 
         # Extract current ad groups to preserve keywords and structure
         current_ad_groups = spec.get("ad_groups", [])
         ag_context = []
         for ag in current_ad_groups:
+            kw_list = ag.get("keywords", [])
+            if not isinstance(kw_list, list):
+                kw_list = []
             kws = [kw.get("text", kw) if isinstance(kw, dict) else str(kw)
-                   for kw in ag.get("keywords", [])[:10]]
+                   for kw in kw_list[:10]]
             ag_context.append(f"Ad Group '{ag.get('name')}': keywords = {', '.join(kws)}")
 
         prompt = f"""You are rewriting ad copy for a Google Ads campaign that scored {qa_result.get('score', 0)}/100 on quality review.
 
 BUSINESS: {biz.get('name', '')} — {biz.get('type', '')} in {biz.get('city', '')}, {biz.get('state', '')}
-SERVICES: {', '.join(services[:10])}
-USPs: {', '.join(biz.get('usps', [])[:5])}
+SERVICES: {', '.join(str(s) for s in services[:10])}
+USPs: {', '.join(str(u) for u in usps[:5])}
 
 QA FEEDBACK TO ADDRESS:
 {feedback_text}
