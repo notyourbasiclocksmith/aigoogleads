@@ -91,8 +91,33 @@ class GoogleAdsClient:
                     err["field_path"] = ".".join(
                         str(e.field_name) for e in error.location.field_path_elements
                     )
+                    # Extract operation index from field path (e.g. "operations[5]")
+                    for elem in error.location.field_path_elements:
+                        if elem.field_name == "mutate_operations" and elem.index is not None:
+                            err["operation_index"] = elem.index
+                            break
                 if error.trigger and error.trigger.string_value:
                     err["trigger"] = error.trigger.string_value
+                # Extract policy violation keys for exemption retry
+                if hasattr(error, "details") and error.details:
+                    pvd = error.details.policy_violation_details
+                    if pvd and pvd.external_policy_name:
+                        err["policy_name"] = pvd.external_policy_name
+                        err["is_exemptible"] = pvd.is_exemptible
+                        if pvd.key:
+                            err["exemption_key"] = {
+                                "policy_name": pvd.key.policy_name,
+                                "violating_text": pvd.key.violating_text,
+                            }
+                    pfd = error.details.policy_finding_details
+                    if pfd and pfd.policy_topic_entries:
+                        topics = []
+                        for entry in pfd.policy_topic_entries:
+                            topics.append({
+                                "topic": entry.topic,
+                                "type": str(entry.type_),
+                            })
+                        err["policy_topics"] = topics
                 errors.append(err)
         except Exception:
             errors.append({"message": str(ex)})
@@ -2444,14 +2469,67 @@ class GoogleAdsClient:
                 )
             except GoogleAdsException as ex:
                 errors = self._extract_google_ads_errors(ex)
-                logger.error("Atomic campaign deploy failed",
-                    errors=errors, request_id=ex.request_id)
-                return {
-                    "status": "error",
-                    "error": f"Google Ads API error: {errors[0]['message'] if errors else str(ex)}",
-                    "errors": errors,
-                    "request_id": ex.request_id,
-                }
+
+                # ── Policy violation retry: collect exemption keys and retry ──
+                # Trademark keywords (e.g. "Land Rover") trigger POLICY_ERROR
+                # that can be exempted for legitimate service providers.
+                exemption_keys = []
+                for err in errors:
+                    ek = err.get("exemption_key")
+                    if ek and err.get("is_exemptible"):
+                        exemption_keys.append(ek)
+
+                if exemption_keys and not spec.get("_policy_retry_done"):
+                    spec["_policy_retry_done"] = True
+                    logger.warning("Policy violations detected — retrying with exemptions",
+                        exemptible=len(exemption_keys),
+                        total_errors=len(errors),
+                        request_id=ex.request_id)
+
+                    # Build exemption keys for each operation type
+                    for op in operations:
+                        # Add exemptions to keyword operations
+                        if op._pb.HasField("ad_group_criterion_operation"):
+                            for ek in exemption_keys:
+                                key = client.get_type("PolicyViolationKey")
+                                key.policy_name = ek["policy_name"]
+                                key.violating_text = ek["violating_text"]
+                                op.ad_group_criterion_operation.exempt_policy_violation_keys.append(key)
+                        # Add exemptions to ad operations
+                        if op._pb.HasField("ad_group_ad_operation"):
+                            for ek in exemption_keys:
+                                key = client.get_type("PolicyViolationKey")
+                                key.policy_name = ek["policy_name"]
+                                key.violating_text = ek["violating_text"]
+                                op.ad_group_ad_operation.policy_validation_parameter.exempt_policy_violation_keys.append(key)
+
+                    try:
+                        response = await self._run_sync(
+                            ga_service.mutate,
+                            customer_id=self.customer_id,
+                            mutate_operations=operations,
+                        )
+                        logger.info("Policy exemption retry succeeded",
+                            exemptions=len(exemption_keys))
+                    except GoogleAdsException as retry_ex:
+                        retry_errors = self._extract_google_ads_errors(retry_ex)
+                        logger.error("Policy exemption retry also failed",
+                            errors=retry_errors[:5], request_id=retry_ex.request_id)
+                        return {
+                            "status": "error",
+                            "error": f"Google Ads policy error (even with exemptions): {retry_errors[0]['message'] if retry_errors else str(retry_ex)}",
+                            "errors": retry_errors,
+                            "request_id": retry_ex.request_id,
+                        }
+                else:
+                    logger.error("Atomic campaign deploy failed",
+                        errors=errors, request_id=ex.request_id)
+                    return {
+                        "status": "error",
+                        "error": f"Google Ads API error: {errors[0]['message'] if errors else str(ex)}",
+                        "errors": errors,
+                        "request_id": ex.request_id,
+                    }
 
             # ── Parse response ───────────────────────────────────────
             # The response contains results in the SAME ORDER as operations
