@@ -756,6 +756,29 @@ class CampaignAgentPipeline:
                 f"Score: {score}/100 ({qa_result.get('grade', '?')}) \u2022 "
                 f"{prog_count} programmatic + {strat_count} strategic issues \u2022 "
                 f"Keyword-headline match: {kw_match}% \u2022 Auto-fixed")
+
+            # ── Correction round: re-run ad copy if QA score < 70 ──
+            if score < 70 and not spec.get("_qa_retry"):
+                spec["_qa_retry"] = True
+                await self._emit_progress("Ad Copy Correction", "running",
+                    f"QA score {score}/100 — re-running ad copy with QA feedback...")
+                try:
+                    t0_corr = time.time()
+                    corrected = await self._correction_round_ad_copy(
+                        spec, context, strategy, qa_result)
+                    corr_elapsed = round(time.time() - t0_corr, 1)
+                    if corrected:
+                        spec = corrected
+                        spec = self._apply_qa_fixes(spec, qa_result)  # re-apply truncation
+                        await self._emit_progress("Ad Copy Correction", "done",
+                            f"Ad copy improved in {corr_elapsed}s")
+                    else:
+                        await self._emit_progress("Ad Copy Correction", "done",
+                            "Correction round skipped — no improvements available")
+                except Exception as e:
+                    logger.warning("Correction round failed", error=str(e)[:200])
+                    await self._emit_progress("Ad Copy Correction", "done",
+                        f"Correction skipped: {str(e)[:80]}")
         else:
             await self._emit_progress("Quality Assurance", "done", "Review complete")
 
@@ -1900,15 +1923,118 @@ Return this JSON:
         if snippets.get("values"):
             snippets["values"] = [v[:25] if isinstance(v, str) else str(v)[:25] for v in snippets["values"]]
 
-        # ── If QA score < 70 and we haven't retried, trigger correction round ──
-        if qa_result.get("score", 100) < 70 and not spec.get("_qa_retry"):
-            spec["_qa_retry"] = True
-            logger.warning("QA score below 70 — correction round recommended",
-                score=qa_result.get("score"),
-                critical=len([i for i in qa_result.get("programmatic_issues", []) if i.get("severity") == "critical"]),
-            )
+        # ── Auto-fix negative keywords that block positive keywords ──
+        for ag in spec.get("ad_groups", []):
+            pos_texts = set()
+            for kw in ag.get("keywords", []):
+                text = kw.get("text", "").lower() if isinstance(kw, dict) else str(kw).lower()
+                pos_texts.add(text)
+
+            original_negs = ag.get("negative_keywords", [])
+            cleaned_negs = []
+            for neg in original_negs:
+                neg_text = neg.get("text", "").lower() if isinstance(neg, dict) else str(neg).lower()
+                blocks = any(neg_text in pos_kw for pos_kw in pos_texts)
+                if blocks:
+                    logger.info("Auto-removed blocking negative keyword",
+                        negative=neg_text,
+                        ad_group=ag.get("name", ""))
+                else:
+                    cleaned_negs.append(neg)
+            ag["negative_keywords"] = cleaned_negs
 
         return spec
+
+    async def _correction_round_ad_copy(
+        self, spec: Dict, context: Dict, strategy: Dict, qa_result: Dict
+    ) -> Optional[Dict]:
+        """
+        Re-run ad copy generation with QA feedback to improve score.
+        Focuses on the strategic issues identified by QA — headline variety,
+        description completeness, urgency messaging, differentiators.
+        """
+        strategic_issues = qa_result.get("strategic_issues", [])
+        if not strategic_issues:
+            return None
+
+        # Build feedback summary for the ad copy agent
+        feedback_lines = []
+        for issue in strategic_issues:
+            msg = issue.get("message", str(issue)) if isinstance(issue, dict) else str(issue)
+            feedback_lines.append(f"- {msg[:200]}")
+        feedback_text = "\n".join(feedback_lines[:8])
+
+        biz = context.get("business", {})
+        services = strategy.get("services", [])
+
+        # Extract current ad groups to preserve keywords and structure
+        current_ad_groups = spec.get("ad_groups", [])
+        ag_context = []
+        for ag in current_ad_groups:
+            kws = [kw.get("text", kw) if isinstance(kw, dict) else str(kw)
+                   for kw in ag.get("keywords", [])[:10]]
+            ag_context.append(f"Ad Group '{ag.get('name')}': keywords = {', '.join(kws)}")
+
+        prompt = f"""You are rewriting ad copy for a Google Ads campaign that scored {qa_result.get('score', 0)}/100 on quality review.
+
+BUSINESS: {biz.get('name', '')} — {biz.get('type', '')} in {biz.get('city', '')}, {biz.get('state', '')}
+SERVICES: {', '.join(services[:10])}
+USPs: {', '.join(biz.get('usps', [])[:5])}
+
+QA FEEDBACK TO ADDRESS:
+{feedback_text}
+
+CURRENT AD GROUPS:
+{chr(10).join(ag_context)}
+
+RULES:
+- Each ad group MUST have exactly 15 headlines (max 30 chars each) and 4 descriptions (max 90 chars each)
+- Headlines must be VARIED — use different angles: service, location, urgency, USP, CTA, price, trust
+- Descriptions must be COMPLETE sentences (not truncated)
+- Include emergency/urgency messaging where appropriate
+- Highlight key differentiators from the business USPs
+- Include geo-modifiers (city, region) in at least 3 headlines per group
+
+Return JSON with a single key "ad_groups" containing an array. Each element:
+{{
+  "name": "exact ad group name from above",
+  "ads": [{{
+    "headlines": ["headline1", ...],  // exactly 15
+    "descriptions": ["desc1", ...],   // exactly 4
+    "final_url": "keep existing URL"
+  }}]
+}}"""
+
+        try:
+            result = await self._call_claude_json(prompt, max_tokens=4096, temperature=0.7)
+            if not result or not result.get("ad_groups"):
+                return None
+
+            # Merge corrected ad copy back into spec, preserving keywords and structure
+            corrected_by_name = {ag.get("name", ""): ag for ag in result["ad_groups"]}
+            for ag in spec.get("ad_groups", []):
+                corrected = corrected_by_name.get(ag.get("name", ""))
+                if corrected and corrected.get("ads"):
+                    for ad in corrected["ads"]:
+                        # Validate before replacing
+                        headlines = ad.get("headlines", [])
+                        descriptions = ad.get("descriptions", [])
+                        if len(headlines) >= 10 and len(descriptions) >= 3:
+                            # Preserve existing final_url
+                            existing_url = ""
+                            if ag.get("ads"):
+                                existing_url = ag["ads"][0].get("final_url", "")
+                            ad["final_url"] = ad.get("final_url") or existing_url
+                            ag["ads"] = [ad]
+
+            logger.info("Correction round applied",
+                corrected_groups=len(corrected_by_name),
+                total_groups=len(spec.get("ad_groups", [])))
+            return spec
+
+        except Exception as e:
+            logger.warning("Correction round Claude call failed", error=str(e)[:200])
+            return None
 
     # ── CAMPAIGN SUMMARY BUILDER ────────────────────────────────
 
