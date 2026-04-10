@@ -2403,12 +2403,16 @@ class GoogleAdsClient:
                         "DESCRIPTION_2": client.enums.ServedAssetFieldTypeEnum.DESCRIPTION_2,
                     }
 
+                    import re
+                    _phone_re = re.compile(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}')
                     for headline in headlines[:15]:
                         text = headline if isinstance(headline, str) else headline.get("text", "") if isinstance(headline, dict) else str(headline)
-                        if not text.strip():
+                        text = _phone_re.sub('', text).strip()
+                        text = re.sub(r'\s{2,}', ' ', text)
+                        if not text:
                             continue
                         h = client.get_type("AdTextAsset")
-                        h.text = text.strip()[:30]
+                        h.text = text[:30]
                         if isinstance(headline, dict) and headline.get("pinned_position"):
                             pin_enum = pin_map.get(headline["pinned_position"].upper())
                             if pin_enum:
@@ -2417,10 +2421,12 @@ class GoogleAdsClient:
 
                     for desc in descriptions[:4]:
                         text = desc if isinstance(desc, str) else desc.get("text", "") if isinstance(desc, dict) else str(desc)
-                        if not text.strip():
+                        text = _phone_re.sub('', text).strip()
+                        text = re.sub(r'\s{2,}', ' ', text)
+                        if not text:
                             continue
                         d = client.get_type("AdTextAsset")
-                        d.text = text.strip()[:90]
+                        d.text = text[:90]
                         if isinstance(desc, dict) and desc.get("pinned_position"):
                             pin_enum = pin_map.get(desc["pinned_position"].upper())
                             if pin_enum:

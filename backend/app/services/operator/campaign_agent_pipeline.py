@@ -1361,6 +1361,7 @@ CHARACTER LIMITS ARE ABSOLUTE:
 - If the business name is too long, abbreviate it.
 
 NEVER USE: "Best", "#1", "Top Rated" (without proof), "Quality Service", "Great Prices" — these are generic garbage that tanks CTR.
+NEVER PUT PHONE NUMBERS IN HEADLINES OR DESCRIPTIONS. Google Ads PROHIBITS phone numbers in RSA ad text (PHONE_NUMBER_IN_AD_TEXT policy). Phone numbers belong ONLY in call extensions, NOT in ad copy. Do NOT write "Call 555-1234", "Call (817) 555-1234", or any phone digits in headlines/descriptions.
 ALWAYS USE: Specific numbers, credentials, real trust signals, the actual service name.
 
 Competitor gaps to exploit: {json.dumps(competitors.get('opportunity_gaps', []))}
@@ -1693,7 +1694,7 @@ Return this JSON:
                     f"{biz_name}"[:30] if biz_name else f"Trusted {svc}"[:30],
                     f"Free Estimate Available"[:30],
                     f"Licensed & Insured"[:30],
-                    f"Call {phone}"[:30] if phone else f"Call Now for {svc}"[:30],
+                    f"Call Now for {svc}"[:30],
                     f"Serving {location} Area"[:30] if location else f"Local {svc} Pros"[:30],
                     f"Fast Response Time"[:30],
                     f"{trust[0]}"[:30] if trust else f"5★ Rated Service"[:30],
@@ -1906,6 +1907,29 @@ Return this JSON:
                 ad["headlines"] = [_truncate_headline(h) for h in ad.get("headlines", [])]
                 ad["descriptions"] = [_truncate_description(d) for d in ad.get("descriptions", [])]
 
+                # Strip phone numbers — Google Ads PROHIBITS them in RSA text
+                import re
+                _phone_re = re.compile(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}')
+
+                def _strip_phone(item):
+                    if isinstance(item, str):
+                        cleaned = _phone_re.sub('', item).strip()
+                        cleaned = re.sub(r'\s{2,}', ' ', cleaned)
+                        return cleaned if cleaned else None
+                    if isinstance(item, dict):
+                        text = item.get("text", "")
+                        cleaned = _phone_re.sub('', text).strip()
+                        cleaned = re.sub(r'\s{2,}', ' ', cleaned)
+                        if not cleaned:
+                            return None
+                        item_copy = dict(item)
+                        item_copy["text"] = cleaned
+                        return item_copy
+                    return item
+
+                ad["headlines"] = [h for h in (_strip_phone(h) for h in ad["headlines"]) if h]
+                ad["descriptions"] = [d for d in (_strip_phone(d) for d in ad["descriptions"]) if d]
+
         # Truncate sitelink fields
         for sl in spec.get("sitelinks", []):
             if sl.get("link_text"):
@@ -2014,7 +2038,11 @@ Return JSON with a single key "ad_groups" containing an array. Each element:
 }}"""
 
         try:
-            result = await self._call_claude_json(prompt, max_tokens=4096, temperature=0.7)
+            result = await self._call_claude_json(
+                system="You are an expert Google Ads copywriter. Return valid JSON only.",
+                user_msg=prompt,
+                max_tokens=4096, temperature=0.7,
+            )
             if not result or not result.get("ad_groups"):
                 return None
 
