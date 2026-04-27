@@ -643,37 +643,52 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str, full_sync
             )
 
             # Step 6: Performance metrics — upsert by (tenant, campaign_id, date)
+            # Wrapped in try/except + rollback so one bad row doesn't poison the session for
+            # downstream steps (matches the pattern used by Steps 7-13 below).
             await _update_sync_progress(db, integration, "syncing", f"Pulling {date_range} performance data...", 75)
-            metrics = await client.get_performance_metrics(date_range)
             metrics_count = 0
-            for m in metrics:
-                # Use google campaign_id as entity_id so dashboard joins work
-                google_cid = m["campaign_id"]
-                existing_perf = await db.execute(
-                    select(PerformanceDaily).where(
-                        PerformanceDaily.tenant_id == tenant_id,
-                        PerformanceDaily.entity_type == "campaign",
-                        PerformanceDaily.entity_id == google_cid,
-                        PerformanceDaily.date == m["date"],
+            try:
+                metrics = await client.get_performance_metrics(date_range)
+                from datetime import datetime as _dt_cls, date as _date_cls
+                for m in metrics:
+                    # Use google campaign_id as entity_id so dashboard joins work
+                    google_cid = m["campaign_id"]
+                    # Defensive str→date coercion — some upstream paths return ISO strings
+                    # rather than date objects. asyncpg refuses strings on Date columns.
+                    m_date = m["date"]
+                    if isinstance(m_date, str):
+                        m_date = _dt_cls.fromisoformat(m_date.split(" ")[0]).date()
+                    elif isinstance(m_date, _dt_cls):
+                        m_date = m_date.date()
+                    existing_perf = await db.execute(
+                        select(PerformanceDaily).where(
+                            PerformanceDaily.tenant_id == tenant_id,
+                            PerformanceDaily.entity_type == "campaign",
+                            PerformanceDaily.entity_id == google_cid,
+                            PerformanceDaily.date == m_date,
+                        )
                     )
-                )
-                perf = existing_perf.scalar_one_or_none()
-                if not perf:
-                    perf = PerformanceDaily(
-                        tenant_id=tenant_id,
-                        entity_type="campaign",
-                        entity_id=google_cid,
-                        date=m["date"],
-                    )
-                    db.add(perf)
-                perf.impressions = m.get("impressions", 0)
-                perf.clicks = m.get("clicks", 0)
-                perf.cost_micros = m.get("cost_micros", 0)
-                perf.conversions = m.get("conversions", 0)
-                perf.conv_value = m.get("conv_value", 0)
-                perf.ctr = m.get("ctr", 0)
-                perf.cpc_micros = m.get("avg_cpc", 0)
-                metrics_count += 1
+                    perf = existing_perf.scalar_one_or_none()
+                    if not perf:
+                        perf = PerformanceDaily(
+                            tenant_id=tenant_id,
+                            entity_type="campaign",
+                            entity_id=google_cid,
+                            date=m_date,
+                        )
+                        db.add(perf)
+                    perf.impressions = m.get("impressions", 0)
+                    perf.clicks = m.get("clicks", 0)
+                    perf.cost_micros = m.get("cost_micros", 0)
+                    perf.conversions = m.get("conversions", 0)
+                    perf.conv_value = m.get("conv_value", 0)
+                    perf.ctr = m.get("ctr", 0)
+                    perf.cpc_micros = m.get("avg_cpc", 0)
+                    metrics_count += 1
+                await db.flush()
+            except Exception as perf_err:
+                await db.rollback()
+                logger.warning("Performance metrics sync failed", error=str(perf_err), exc_info=True)
 
             # Step 7: Keyword performance
             await _update_sync_progress(db, integration, "syncing", "Pulling keyword performance...", 78)
@@ -712,7 +727,8 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str, full_sync
                     kw_perf_count += 1
                 await db.flush()
             except Exception as kp_err:
-                logger.warning("Keyword performance sync failed", error=str(kp_err))
+                await db.rollback()
+                logger.warning("Keyword performance sync failed", error=str(kp_err), exc_info=True)
 
             # Step 8: Ad performance
             await _update_sync_progress(db, integration, "syncing", "Pulling ad performance...", 82)
@@ -748,7 +764,8 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str, full_sync
                     ad_perf_count += 1
                 await db.flush()
             except Exception as ap_err:
-                logger.warning("Ad performance sync failed", error=str(ap_err))
+                await db.rollback()
+                logger.warning("Ad performance sync failed", error=str(ap_err), exc_info=True)
 
             # Step 9: Ad group performance
             await _update_sync_progress(db, integration, "syncing", "Pulling ad group performance...", 85)
@@ -783,7 +800,8 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str, full_sync
                     ag_perf_count += 1
                 await db.flush()
             except Exception as agp_err:
-                logger.warning("Ad group performance sync failed", error=str(agp_err))
+                await db.rollback()
+                logger.warning("Ad group performance sync failed", error=str(agp_err), exc_info=True)
 
             # Step 10: Search terms
             await _update_sync_progress(db, integration, "syncing", "Pulling search terms...", 88)
@@ -822,7 +840,8 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str, full_sync
                     st_count += 1
                 await db.flush()
             except Exception as st_err:
-                logger.warning("Search terms sync failed", error=str(st_err))
+                await db.rollback()
+                logger.warning("Search terms sync failed", error=str(st_err), exc_info=True)
 
             # Step 11: Landing pages
             await _update_sync_progress(db, integration, "syncing", "Pulling landing page data...", 91)
@@ -859,7 +878,8 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str, full_sync
                     lp_count += 1
                 await db.flush()
             except Exception as lp_err:
-                logger.warning("Landing page sync failed", error=str(lp_err))
+                await db.rollback()
+                logger.warning("Landing page sync failed", error=str(lp_err), exc_info=True)
 
             # Step 12: Auction insights (skipped during lightweight sync — heavy + changes daily)
             ai_count = 0
@@ -902,7 +922,8 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str, full_sync
                         ai_count += 1
                 await db.flush()
             except Exception as ai_err:
-                logger.warning("Auction insights sync failed", error=str(ai_err))
+                await db.rollback()
+                logger.warning("Auction insights sync failed", error=str(ai_err), exc_info=True)
 
             # Step 13: Google recommendations (skipped during lightweight sync)
             rec_count = 0
