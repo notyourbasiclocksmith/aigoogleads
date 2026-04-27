@@ -976,6 +976,27 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str, full_sync
                 lsa_leads = await client.get_lsa_leads(days=30)
                 # Build a mapping: lead_resource_name -> our LSALead UUID
                 lsa_resource_to_uuid = {}
+
+                def _coerce_dt(v):
+                    """Defensive: Google LSA API returns timestamps as ISO strings, but
+                    asyncpg requires datetime instances on TIMESTAMPTZ columns.
+                    The STRING `'2026-04-25 18:07:37.874633'` slipping through here is
+                    what was crashing the entire sync from step 14 → step 15 with the
+                    misleading 'Session has been rolled back' wrapper error."""
+                    if v is None or isinstance(v, datetime):
+                        return v
+                    if isinstance(v, str):
+                        from datetime import datetime as _dt
+                        try:
+                            # Try ISO 8601 first, fall back to space-separated
+                            return _dt.fromisoformat(v.replace("Z", "+00:00"))
+                        except ValueError:
+                            try:
+                                return _dt.strptime(v, "%Y-%m-%d %H:%M:%S.%f")
+                            except ValueError:
+                                return _dt.strptime(v, "%Y-%m-%d %H:%M:%S")
+                    return v
+
                 for ll in lsa_leads:
                     existing_ll = await db.execute(
                         select(LSALead).where(
@@ -1000,7 +1021,7 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str, full_sync
                             contact_email=ll.get("contact_email"),
                             lead_charged=ll.get("lead_charged", False),
                             credit_state=ll.get("credit_state"),
-                            lead_creation_datetime=ll.get("creation_date_time"),
+                            lead_creation_datetime=_coerce_dt(ll.get("creation_date_time")),
                             synced_at=datetime.now(timezone.utc),
                         )
                         db.add(lead_obj)
@@ -1047,7 +1068,7 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str, full_sync
                             conversation_resource_name=lc["resource_name"],
                             channel=lc["channel"],
                             participant_type=lc.get("participant_type"),
-                            event_datetime=lc.get("event_date_time"),
+                            event_datetime=_coerce_dt(lc.get("event_date_time")),
                             call_duration_ms=lc.get("call_duration_ms"),
                             call_recording_url=lc.get("call_recording_url"),
                             message_text=lc.get("message_text"),
@@ -1062,7 +1083,11 @@ async def _sync_ads_account_async(tenant_id: str, integration_id: str, full_sync
                     lsa_conv_count += 1
                 await db.flush()
             except Exception as lsa_err:
-                logger.warning("LSA leads sync failed (account may not have LSA)", error=str(lsa_err))
+                # MUST rollback — without it the session stays poisoned and step 15
+                # (Complete) crashes when it tries to commit, surfacing as the misleading
+                # 'Session has been rolled back due to a previous exception' outer error.
+                await db.rollback()
+                logger.warning("LSA leads sync failed (account may not have LSA)", error=str(lsa_err), exc_info=True)
 
             # Step 15: Complete
             integration.last_sync_at = datetime.now(timezone.utc)
