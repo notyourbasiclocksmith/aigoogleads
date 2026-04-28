@@ -1350,6 +1350,61 @@ class GoogleAdsClient:
 
     async def upload_offline_conversions(self, conversions: List[Dict[str, Any]],
                                           conversion_action_id: str) -> Dict[str, Any]:
+        """Upload click-keyed offline conversions (OCI) to Google Ads.
+
+        Google requires `conversion_date_time` to be exactly
+        ``yyyy-mm-dd HH:mm:ss±HH:mm`` (note the SPACE separator and the
+        explicit timezone offset). Python's ``datetime.isoformat()``
+        produces ``yyyy-mm-ddTHH:mm:ss±HH:MM`` (T separator) which
+        Google rejects with INVALID_ARGUMENT. We normalize defensively
+        here so all callers (keybot Sprint-1 uploader, future CSV
+        uploads, etc.) get the format right regardless of how they
+        serialize their datetimes.
+
+        Returns a partial-failure-aware result with per-row outcomes so
+        callers can surface row-level errors (the #1 silent OCI bug is
+        accepting a 200 from a partial-failure response while every row
+        actually failed validation).
+        """
+        from datetime import datetime as _dt
+        import re as _re
+
+        def _to_google_dt(raw):
+            """Coerce assorted ISO/space-separated strings → Google's
+            required `yyyy-mm-dd HH:mm:ss±HH:mm` format. Accepts:
+              - "2026-04-28T15:30:00+00:00" (Python isoformat)
+              - "2026-04-28T15:30:00Z"      (Z = UTC)
+              - "2026-04-28 15:30:00+00:00" (already correct)
+              - datetime objects
+            Raises ValueError if it can't parse OR if no timezone is
+            present (Google rejects timezone-less strings)."""
+            if isinstance(raw, _dt):
+                if raw.tzinfo is None:
+                    raise ValueError("conversion_time has no timezone — Google Ads requires explicit offset")
+                return raw.strftime("%Y-%m-%d %H:%M:%S%z")[:-2] + ":" + raw.strftime("%z")[-2:]
+            if not isinstance(raw, str):
+                raise ValueError(f"conversion_time must be str or datetime, got {type(raw).__name__}")
+            s = raw.strip()
+            if not s:
+                raise ValueError("conversion_time is empty")
+            # Normalize trailing Z to +00:00 so fromisoformat can parse
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            try:
+                d = _dt.fromisoformat(s)
+            except ValueError:
+                # Already might be in Google's space format — try harder
+                m = _re.match(r"(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})([+-]\d{2}:?\d{2})", s)
+                if not m:
+                    raise ValueError(f"unparseable conversion_time: {raw!r}")
+                d = _dt.fromisoformat(f"{m.group(1)}T{m.group(2)}{m.group(3)}")
+            if d.tzinfo is None:
+                raise ValueError("conversion_time has no timezone — Google Ads requires explicit offset")
+            # Google format: space separator, ±HH:MM offset
+            offset = d.strftime("%z")  # +0000
+            offset_with_colon = f"{offset[:3]}:{offset[3:]}"  # +00:00
+            return d.strftime("%Y-%m-%d %H:%M:%S") + offset_with_colon
+
         try:
             client = self._get_client()
             conversion_upload_service = client.get_service("ConversionUploadService")
@@ -1358,9 +1413,11 @@ class GoogleAdsClient:
             for conv in conversions:
                 click_conversion = client.get_type("ClickConversion")
                 click_conversion.gclid = conv["gclid"]
-                click_conversion.conversion_action = f"customers/{self.customer_id}/conversionActions/{conversion_action_id}"
-                click_conversion.conversion_date_time = conv["conversion_time"]
-                click_conversion.conversion_value = conv.get("conversion_value", 0)
+                click_conversion.conversion_action = (
+                    f"customers/{self.customer_id}/conversionActions/{conversion_action_id}"
+                )
+                click_conversion.conversion_date_time = _to_google_dt(conv["conversion_time"])
+                click_conversion.conversion_value = float(conv.get("conversion_value", 0) or 0)
                 click_conversion.currency_code = conv.get("currency", "USD")
                 operations.append(click_conversion)
 
@@ -1370,8 +1427,55 @@ class GoogleAdsClient:
             request.partial_failure = True
 
             response = conversion_upload_service.upload_click_conversions(request=request)
+
+            # Partial-failure handling: with partial_failure=True, Google
+            # returns 200 even if individual rows failed validation. The
+            # row-level errors live in `response.partial_failure_error`
+            # and per-row in `response.results[i]` (where a failed row
+            # has empty gclid). Callers MUST see this distinction or
+            # they'll celebrate "200 OK" while every conversion silently
+            # dropped.
             success_count = sum(1 for r in response.results if r.gclid)
-            return {"status": "uploaded", "total": len(conversions), "success": success_count}
+            failed_count = len(conversions) - success_count
+            partial_err = getattr(response, "partial_failure_error", None)
+            partial_msg = getattr(partial_err, "message", "") if partial_err else ""
+
+            row_errors: List[Dict[str, Any]] = []
+            if failed_count > 0:
+                # Map each empty-gclid result back to its input for visibility
+                for idx, r in enumerate(response.results):
+                    if not r.gclid and idx < len(conversions):
+                        row_errors.append({
+                            "index": idx,
+                            "gclid": (conversions[idx].get("gclid") or "")[:20] + "...",
+                            "conversion_time": conversions[idx].get("conversion_time"),
+                        })
+
+            status = "uploaded" if failed_count == 0 else (
+                "partial_failure" if success_count > 0 else "all_failed"
+            )
+            result = {
+                "status": status,
+                "total": len(conversions),
+                "success": success_count,
+                "failed": failed_count,
+            }
+            if partial_msg:
+                result["partial_failure_error"] = partial_msg
+            if row_errors:
+                result["row_errors"] = row_errors
+            if status != "uploaded":
+                logger.warning(
+                    "Offline conversions upload had failures",
+                    customer_id=self.customer_id, conversion_action_id=conversion_action_id,
+                    success=success_count, failed=failed_count,
+                    partial_error=partial_msg, row_errors=row_errors,
+                )
+            return result
+        except ValueError as ve:
+            # Pre-flight format errors (bad conversion_time etc.) — caller bug, surface clearly
+            logger.error("Offline conversion validation failed", error=str(ve))
+            return {"status": "error", "error": f"validation: {ve}"}
         except Exception as e:
             logger.error("Failed to upload offline conversions", error=str(e))
             return {"status": "error", "error": str(e)}
