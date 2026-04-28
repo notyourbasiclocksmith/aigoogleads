@@ -657,6 +657,86 @@ async def brain_call_conversions(
     ]
 
 
+# ── OFFLINE CONVERSION UPLOADS (OCI) ──────────────────────────
+#
+# Service-to-service entrypoint for offline conversion imports
+# (gclid + value). Called by keybot's aigoogleads_uploader at the
+# end of the closed-loop attribution pipeline:
+#
+#   Google Ads click → call → quote → completed sale →
+#       keybot uploads net_to_business profit here →
+#       aigoogleads forwards to Google Ads UploadClickConversions →
+#       Smart Bidding learns which clicks → which paying jobs.
+#
+# Auth: brain key + X-Tenant-Id (aigoogleads internal tenant UUID).
+# Tenant must have an active IntegrationGoogleAds row.
+#
+# The actual conversion_date_time format normalization (Google needs
+# space-separated, not Python's T-separator) lives in the underlying
+# upload_offline_conversions() so all callers benefit.
+
+@router.post("/conversions/offline-upload")
+async def brain_upload_offline_conversions(
+    payload: dict,
+    _key: str = Depends(_require_brain_key),
+    tenant_id: str = Depends(_tenant_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Body shape (matches /api/v1/ads-data/conversions/upload):
+        {
+            "conversion_action_id": "<numeric Google Ads conversion-action id>",
+            "conversions": [
+                {
+                    "gclid": "<from URL at click time>",
+                    "conversion_time": "<ISO 8601 OR Google space format; tz required>",
+                    "conversion_value": <float, in CURRENCY units (dollars), not micros>,
+                    "currency": "USD"
+                }
+            ]
+        }
+
+    Returns the upload result dict from the Google Ads client, which
+    includes per-row error visibility when partial_failure is hit.
+    """
+    from app.integrations.google_ads.client import GoogleAdsClient
+    from app.models.integration_google_ads import IntegrationGoogleAds
+
+    conversion_action_id = (payload.get("conversion_action_id") or "").strip()
+    conversions = payload.get("conversions") or []
+    if not conversion_action_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "conversion_action_id required")
+    if not isinstance(conversions, list) or not conversions:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "conversions[] must be a non-empty list")
+
+    # Resolve tenant → IntegrationGoogleAds → client
+    res = await db.execute(
+        select(IntegrationGoogleAds).where(
+            IntegrationGoogleAds.tenant_id == tenant_id,
+            IntegrationGoogleAds.is_active == True,  # noqa: E712
+        )
+    )
+    integration = res.scalar_one_or_none()
+    if not integration:
+        raise HTTPException(404, f"No active Google Ads integration for tenant {tenant_id}")
+
+    gc = GoogleAdsClient(
+        customer_id=integration.customer_id,
+        refresh_token_encrypted=integration.refresh_token_encrypted,
+        login_customer_id=integration.login_customer_id,
+    )
+    result = await gc.upload_offline_conversions(conversions, conversion_action_id)
+    if result.get("status") == "error":
+        # Surface validation / Google-Ads errors to the caller (HTTP 400/500)
+        # rather than letting them swallow a 200. Most common: bad timestamp
+        # format, expired gclid, currency mismatch.
+        msg = result.get("error", "")
+        code = 400 if msg.startswith("validation:") else 500
+        raise HTTPException(code, msg)
+    # status: uploaded | partial_failure | all_failed — caller inspects
+    return result
+
+
 @router.get("/conversions/lag")
 async def brain_conversion_lag(
     date_from: Optional[str] = Query(None),
